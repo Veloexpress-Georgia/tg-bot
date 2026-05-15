@@ -132,7 +132,30 @@ Use the test bot and test Telegram group/topic before touching the real Veloexpr
 
 ## Deployment
 
-`docker-compose.local.yml` starts Postgres and the bot for local development. `docker-compose.coolify.yml` is intended for a Coolify Git-based Docker Compose application using external secrets and a managed/external database URL.
+`docker-compose.local.yml` starts Postgres and the bot for local development. `docker-compose.coolify.yml` is intended for a Coolify Git-based Docker Compose application and includes a bundled Postgres service with a persistent volume.
+
+For Coolify, set these environment variables on the application:
+
+```env
+POSTGRES_DB=veloexpress
+POSTGRES_USER=veloexpress
+POSTGRES_PASSWORD=change-me
+TELEGRAM_BOT_TOKEN=123456:...
+TELEGRAM_ADMIN_IDS=123456789
+TELEGRAM_TARGET_CHAT_ID=-1001234567890
+TELEGRAM_TARGET_THREAD_ID=
+TELEGRAM_PIN_POLL=true
+```
+
+By default the bot connects to the bundled `db` service. Later, if you move Postgres to a separate managed/write database, set `DATABASE_URL` explicitly:
+
+```env
+DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@HOST:5432/DATABASE
+```
+
+`DATABASE_URL` must point to a Postgres host reachable from the bot container. Do not use `localhost` or `127.0.0.1` in Coolify unless Postgres runs inside the same container, which it does not. The Docker image runs `alembic upgrade head` before starting the bot.
+
+If `DATABASE_URL` is empty in production, the bot derives it from `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_HOST` with `POSTGRES_HOST=db` by default.
 
 GitHub Actions contains:
 

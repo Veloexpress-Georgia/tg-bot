@@ -4,6 +4,7 @@ WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    APP_ENV=production \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
@@ -14,4 +15,4 @@ RUN uv sync --frozen --no-dev
 COPY alembic.ini ./
 COPY alembic ./alembic
 
-CMD ["uv", "run", "--no-dev", "python", "-m", "veloexpress_bot"]
+CMD ["sh", "-c", "uv run --no-dev alembic upgrade head && uv run --no-dev python -m veloexpress_bot"]
