@@ -1,0 +1,10 @@
+.git
+.venv
+.env
+.mcp.json
+local
+.pytest_cache
+.ruff_cache
+.omx
+__pycache__
+*.pyc

@@ -1,0 +1,34 @@
+set dotenv-load := true
+
+setup:
+    uv sync --dev
+
+dev: db-up db-migrate
+    uv run watchfiles "python -m veloexpress_bot" src alembic .env pyproject.toml
+
+run:
+    uv run python -m veloexpress_bot
+
+register-admin-rights:
+    uv run python -m veloexpress_bot.bot.admin_rights
+
+webhook-delete:
+    curl --fail --show-error "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook"
+
+format:
+    uv run ruff format .
+    uv run ruff check --fix .
+
+check:
+    uv run ruff format --check .
+    uv run ruff check .
+    uv run pytest
+
+db-up:
+    docker compose -f docker-compose.local.yml up -d db
+
+db-migrate:
+    uv run alembic upgrade head
+
+test:
+    uv run pytest

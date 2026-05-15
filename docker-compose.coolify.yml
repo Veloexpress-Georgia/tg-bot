@@ -1,0 +1,17 @@
+# Intended for a Coolify Git-based Docker Compose application.
+# The build context assumes Coolify has checked out this repository.
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      APP_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
+      TELEGRAM_ADMIN_IDS: ${TELEGRAM_ADMIN_IDS:?TELEGRAM_ADMIN_IDS is required}
+      TELEGRAM_TARGET_CHAT_ID: ${TELEGRAM_TARGET_CHAT_ID:?TELEGRAM_TARGET_CHAT_ID is required}
+      TELEGRAM_TARGET_THREAD_ID: ${TELEGRAM_TARGET_THREAD_ID:-}
+      TELEGRAM_PIN_POLL: ${TELEGRAM_PIN_POLL:-true}
+    restart: unless-stopped
