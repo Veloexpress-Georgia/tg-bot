@@ -160,4 +160,9 @@ If `DATABASE_URL` is empty in production, the bot derives it from `POSTGRES_DB`,
 GitHub Actions contains:
 
 - `CI`: lint, format check, tests, Docker build validation.
-- `CD / Coolify`: triggers the Coolify deploy webhook after successful CI on `main`, or manually via workflow dispatch.
+- `CD / Coolify`: triggers the Coolify dev deploy webhook after successful CI on `dev`, production deploy after successful CI on `main`, or manually via workflow dispatch.
+
+Configure GitHub environments:
+
+- `Development`: `COOLIFY_WEBHOOK`, `COOLIFY_TOKEN`
+- `Production`: `COOLIFY_WEBHOOK`, `COOLIFY_TOKEN`
