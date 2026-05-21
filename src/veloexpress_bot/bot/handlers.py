@@ -13,6 +13,7 @@ from veloexpress_bot.bot.states import PollSetupStates
 from veloexpress_bot.config import Settings
 from veloexpress_bot.polls.defaults import DEFAULT_LIFTS, StartLocation
 from veloexpress_bot.polls.service import DuplicatePollError, PollPostingService, PollSetup
+from veloexpress_bot.telegram.errors import TelegramPollPostError, TelegramTargetForbiddenError
 
 router = Router(name="admin_poll_setup")
 logger = logging.getLogger(__name__)
@@ -25,6 +26,14 @@ DUPLICATE_POLL_TEXT = (
     "remaining poll."
 )
 EXPIRED_SETUP_TEXT = "This poll setup expired. Run /create_lift_poll again."
+POLL_POST_FAILED_ALERT = "Could not create poll. Check logs and try again."
+POLL_POST_FAILED_TEXT = "Could not create poll. The setup is still open; check logs and try again."
+POLL_TARGET_FORBIDDEN_ALERT = "Bot cannot post to target chat. Re-add it or update chat ID."
+POLL_TARGET_FORBIDDEN_TEXT = (
+    "Could not create poll: Telegram rejected the target chat. The bot was likely removed "
+    "from the configured group/topic. Add it back or update TELEGRAM_TARGET_CHAT_ID, "
+    "then try again."
+)
 POLL_SETUP_CANCELLED_TEXT = "Poll setup cancelled."
 STALE_SETUP_ALERT = "This setup expired. Run /create_lift_poll again."
 
@@ -230,6 +239,18 @@ async def confirm_setup(
         results = [await poll_service.pin_created_poll(result) for result in results]
     except DuplicatePollError:
         await callback.answer("One of these polls was already posted.", show_alert=True)
+        return
+    except TelegramTargetForbiddenError:
+        logger.exception("Poll creation failed because target chat rejected the bot")
+        await callback.answer(POLL_TARGET_FORBIDDEN_ALERT, show_alert=True)
+        if callback.message:
+            await callback.message.answer(POLL_TARGET_FORBIDDEN_TEXT)
+        return
+    except TelegramPollPostError:
+        logger.exception("Poll creation failed while sending Telegram poll")
+        await callback.answer(POLL_POST_FAILED_ALERT, show_alert=True)
+        if callback.message:
+            await callback.message.answer(POLL_POST_FAILED_TEXT)
         return
 
     setup_message_ids = tuple(int(item) for item in data.get("setup_message_ids", []))

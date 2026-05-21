@@ -17,6 +17,7 @@ from veloexpress_bot.polls.service import (
     PollSetup,
     SentPollMessage,
 )
+from veloexpress_bot.telegram.errors import TelegramTargetForbiddenError
 
 
 class FakeTelegramClient:
@@ -24,6 +25,7 @@ class FakeTelegramClient:
         self,
         *,
         fail_send_once: bool = False,
+        send_error_once: Exception | None = None,
         fail_pin_once: bool = False,
         existing_message_ids: set[int] | None = None,
     ) -> None:
@@ -31,6 +33,7 @@ class FakeTelegramClient:
         self.pinned: list[int] = []
         self.deleted: list[int] = []
         self.fail_send_once = fail_send_once
+        self.send_error_once = send_error_once
         self.fail_pin_once = fail_pin_once
         self.existing_message_ids = existing_message_ids
 
@@ -43,6 +46,10 @@ class FakeTelegramClient:
     ) -> SentPollMessage:
         assert chat_id == -100123
         assert message_thread_id == 7
+        if self.send_error_once:
+            error = self.send_error_once
+            self.send_error_once = None
+            raise error
         if self.fail_send_once:
             self.fail_send_once = False
             msg = "temporary Telegram failure"
@@ -210,6 +217,31 @@ async def test_poll_service_reuses_failed_pre_send_idempotency_key(db: SharedDat
     assert batches[0].id == failed_batch.id
     assert batches[0].status == "posted"
     assert len(messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_poll_service_marks_forbidden_target_chat_as_failed(db: SharedDatabase) -> None:
+    client = FakeTelegramClient(
+        send_error_once=TelegramTargetForbiddenError(
+            "Telegram target chat rejected poll posting.",
+            telegram_message="Forbidden: bot was kicked from the supergroup chat",
+        )
+    )
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    setup = PollSetup(service_date=date(2026, 5, 16), created_by_user_id=1)
+
+    with pytest.raises(TelegramTargetForbiddenError):
+        await service.create_poll(setup)
+
+    async with db.session() as session:
+        failed_batch = await session.scalar(select(PollBatch))
+
+    assert failed_batch is not None
+    assert failed_batch.status == "failed"
 
 
 @pytest.mark.asyncio

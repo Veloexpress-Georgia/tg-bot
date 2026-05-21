@@ -1,10 +1,11 @@
 import logging
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 
 from veloexpress_bot.polls.render import PollDraft
 from veloexpress_bot.polls.service import SentPollMessage
+from veloexpress_bot.telegram.errors import TelegramPollPostError, TelegramTargetForbiddenError
 
 logger = logging.getLogger(__name__)
 
@@ -20,14 +21,33 @@ class AiogramTelegramClient:
         message_thread_id: int | None,
         draft: PollDraft,
     ) -> SentPollMessage:
-        message = await self._bot.send_poll(
-            chat_id=chat_id,
-            message_thread_id=message_thread_id,
-            question=draft.question,
-            options=list(draft.options),
-            is_anonymous=draft.is_anonymous,
-            allows_multiple_answers=draft.allows_multiple_answers,
-        )
+        try:
+            message = await self._bot.send_poll(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                question=draft.question,
+                options=list(draft.options),
+                is_anonymous=draft.is_anonymous,
+                allows_multiple_answers=draft.allows_multiple_answers,
+            )
+        except TelegramForbiddenError as error:
+            logger.warning(
+                "Telegram target chat rejected poll posting",
+                extra={"chat_id": chat_id, "message_thread_id": message_thread_id},
+            )
+            raise TelegramTargetForbiddenError(
+                "Telegram target chat rejected poll posting.",
+                telegram_message=error.message,
+            ) from error
+        except TelegramAPIError as error:
+            logger.exception(
+                "Failed to send poll",
+                extra={"chat_id": chat_id, "message_thread_id": message_thread_id},
+            )
+            raise TelegramPollPostError(
+                "Telegram failed to create poll.",
+                telegram_message=error.message,
+            ) from error
         return SentPollMessage(
             message_id=message.message_id,
             poll_id=message.poll.id if message.poll else None,
