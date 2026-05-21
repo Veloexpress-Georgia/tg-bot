@@ -41,4 +41,4 @@ async def run_polling() -> None:
     dispatcher = build_dispatcher(settings=settings, poll_service=poll_service)
     await register_bot_commands(bot)
     await register_default_admin_rights(bot)
-    await dispatcher.start_polling(bot)
+    await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())

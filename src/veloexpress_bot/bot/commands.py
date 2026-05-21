@@ -2,8 +2,8 @@ from aiogram import Bot
 from aiogram.types import BotCommand
 
 BOT_COMMANDS = (
-    BotCommand(command="help", description="Show bot help"),
-    BotCommand(command="create_lift_poll", description="Create a Veloexpress lift poll"),
+    BotCommand(command="start", description="🚐 Open menu"),
+    BotCommand(command="create_lift_poll", description="📊 Create lift polls"),
 )
 
 

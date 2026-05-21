@@ -6,6 +6,18 @@ The first MVP is intentionally narrow: an admin command creates weekend Telegram
 
 Out of scope for the first MVP: payment tracking, balances, overbooking, scheduling, miniapp, website, and template editing.
 
+## Product Principle
+
+The bot should be helpful without becoming a maintenance workflow. Admins should
+be able to keep using Telegram naturally: delete old polls manually, clean setup
+messages, pin/unpin messages, and continue operating in the chat without running
+sync or repair commands.
+
+At decision points, the bot reconciles its stored state with Telegram. If an old
+poll was deleted manually, the bot should catch up silently and allow a normal
+create flow. If a stale poll still exists, the bot should offer recreate and
+preserve tracked votes before cleanup.
+
 ## Stack
 
 - Python 3.14
@@ -52,8 +64,14 @@ just dev
 migrations, starts the bot in long-polling mode, and restarts it when Python
 code, Alembic files, `.env`, or `pyproject.toml` change.
 
-`just db-up` waits for the Postgres healthcheck before migrations run. If you
+`just up` starts local Postgres and waits for the healthcheck before migrations run. If you
 override `POSTGRES_PORT`, update the port in `DATABASE_URL` as well.
+
+To stop local Docker infrastructure:
+
+```sh
+just down
+```
 
 Use `just run` only when Postgres is already running and you want a one-shot bot
 process without hot reload.
@@ -113,7 +131,7 @@ lefthook run pre-commit
 ## Bot Command
 
 ```text
-/help
+/start
 /create_lift_poll
 ```
 

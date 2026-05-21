@@ -3,7 +3,7 @@ set dotenv-load := true
 setup:
     uv sync --dev
 
-dev: db-up db-migrate
+dev: up db-migrate
     uv run watchfiles "python -m veloexpress_bot" src alembic .env pyproject.toml
 
 run:
@@ -25,8 +25,11 @@ check:
     uv run pyright
     uv run pytest
 
-db-up:
+up:
     docker compose -f docker-compose.local.yml up -d --wait db
+
+down:
+    docker compose -f docker-compose.local.yml down
 
 db-migrate:
     uv run alembic upgrade head
