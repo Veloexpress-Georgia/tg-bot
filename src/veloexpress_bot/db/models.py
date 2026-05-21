@@ -38,6 +38,7 @@ class PollMessage(Base):
     batch_id: Mapped[int] = mapped_column(ForeignKey("poll_batch.id", ondelete="CASCADE"))
     telegram_message_id: Mapped[int] = mapped_column(BigInteger)
     poll_id: Mapped[str | None] = mapped_column(Text)
+    message_kind: Mapped[str] = mapped_column(String(32), default="poll", server_default="poll")
     pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     cleanup_status: Mapped[str] = mapped_column(String(64), default="not_attempted")
     created_at: Mapped[datetime] = mapped_column(

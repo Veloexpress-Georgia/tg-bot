@@ -4,7 +4,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 
 from veloexpress_bot.polls.render import PollDraft
-from veloexpress_bot.polls.service import SentPollMessage
+from veloexpress_bot.polls.service import SentPollMessage, SentTextMessage
 from veloexpress_bot.telegram.errors import TelegramPollPostError, TelegramTargetForbiddenError
 
 logger = logging.getLogger(__name__)
@@ -13,6 +13,39 @@ logger = logging.getLogger(__name__)
 class AiogramTelegramClient:
     def __init__(self, bot: Bot) -> None:
         self._bot = bot
+
+    async def send_text(
+        self,
+        *,
+        chat_id: int,
+        message_thread_id: int | None,
+        text: str,
+    ) -> SentTextMessage:
+        try:
+            message = await self._bot.send_message(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                text=text,
+            )
+        except TelegramForbiddenError as error:
+            logger.warning(
+                "Telegram target chat rejected message posting",
+                extra={"chat_id": chat_id, "message_thread_id": message_thread_id},
+            )
+            raise TelegramTargetForbiddenError(
+                "Telegram target chat rejected message posting.",
+                telegram_message=error.message,
+            ) from error
+        except TelegramAPIError as error:
+            logger.exception(
+                "Failed to send text message",
+                extra={"chat_id": chat_id, "message_thread_id": message_thread_id},
+            )
+            raise TelegramPollPostError(
+                "Telegram failed to create text message.",
+                telegram_message=error.message,
+            ) from error
+        return SentTextMessage(message_id=message.message_id)
 
     async def send_poll(
         self,

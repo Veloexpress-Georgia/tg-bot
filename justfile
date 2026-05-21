@@ -22,13 +22,17 @@ format:
 check:
     uv run ruff format --check .
     uv run ruff check .
+    uv run pyright
     uv run pytest
 
 db-up:
-    docker compose -f docker-compose.local.yml up -d db
+    docker compose -f docker-compose.local.yml up -d --wait db
 
 db-migrate:
     uv run alembic upgrade head
 
 test:
     uv run pytest
+
+typecheck:
+    uv run pyright

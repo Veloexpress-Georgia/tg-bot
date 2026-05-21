@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import select
@@ -16,6 +17,7 @@ from veloexpress_bot.polls.service import (
     PollPostingService,
     PollSetup,
     SentPollMessage,
+    SentTextMessage,
 )
 from veloexpress_bot.telegram.errors import TelegramTargetForbiddenError
 
@@ -30,12 +32,30 @@ class FakeTelegramClient:
         existing_message_ids: set[int] | None = None,
     ) -> None:
         self.sent: list[PollDraft] = []
+        self.sent_texts: list[str] = []
         self.pinned: list[int] = []
         self.deleted: list[int] = []
         self.fail_send_once = fail_send_once
         self.send_error_once = send_error_once
         self.fail_pin_once = fail_pin_once
         self.existing_message_ids = existing_message_ids
+        self.next_message_id = 42
+
+    async def send_text(
+        self,
+        *,
+        chat_id: int,
+        message_thread_id: int | None,
+        text: str,
+    ) -> SentTextMessage:
+        assert chat_id == -100123
+        assert message_thread_id == 7
+        self.sent_texts.append(text)
+        message_id = self.next_message_id
+        self.next_message_id += 1
+        if self.existing_message_ids is not None:
+            self.existing_message_ids.add(message_id)
+        return SentTextMessage(message_id=message_id)
 
     async def send_poll(
         self,
@@ -55,9 +75,11 @@ class FakeTelegramClient:
             msg = "temporary Telegram failure"
             raise RuntimeError(msg)
         self.sent.append(draft)
+        message_id = self.next_message_id
+        self.next_message_id += 1
         if self.existing_message_ids is not None:
-            self.existing_message_ids.add(42)
-        return SentPollMessage(message_id=42, poll_id="poll-42")
+            self.existing_message_ids.add(message_id)
+        return SentPollMessage(message_id=message_id, poll_id=f"poll-{message_id}")
 
     async def pin_message(self, *, chat_id: int, message_id: int) -> bool:
         assert chat_id == -100123
@@ -111,7 +133,8 @@ async def db() -> AsyncIterator[SharedDatabase]:
 
 
 def settings() -> Settings:
-    return Settings(
+    settings_factory = cast(Any, Settings)
+    return settings_factory(
         _env_file=None,
         app_env="test",
         telegram_bot_token="token",
@@ -153,6 +176,7 @@ async def test_poll_service_posts_and_persists_message(db: SharedDatabase) -> No
     assert batches[0].status == "posted"
     assert len(messages) == 1
     assert messages[0].telegram_message_id == 42
+    assert messages[0].message_kind == "poll"
 
 
 @pytest.mark.asyncio
@@ -184,8 +208,46 @@ async def test_poll_service_can_defer_pin_until_after_creation(db: SharedDatabas
 
     async with db.session() as session:
         message = await session.scalar(select(PollMessage))
-        assert message is not None
-        assert message.pinned is True
+    assert message is not None
+    assert message.pinned is True
+
+
+@pytest.mark.asyncio
+async def test_poll_service_can_send_notice_before_poll_and_pin_notice(
+    db: SharedDatabase,
+) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+
+    result = await service.create_poll(
+        PollSetup(service_date=date(2026, 5, 16), created_by_user_id=1),
+        include_notice=True,
+        pin_after_send=False,
+    )
+
+    assert result.notice_message_id == 42
+    assert result.message_id == 43
+    assert client.sent_texts == [
+        "💳 После голосования внесите предоплату.\nPlease send the prepayment after voting."
+    ]
+    assert client.sent[0].question == "🚐 Суббота · 16 мая\nSaturday · May 16"
+
+    pinned_result = await service.pin_created_notice(result)
+
+    assert pinned_result.pinned is True
+    assert client.pinned == [42]
+
+    async with db.session() as session:
+        messages = (
+            await session.scalars(select(PollMessage).order_by(PollMessage.telegram_message_id))
+        ).all()
+
+    assert [message.message_kind for message in messages] == ["notice", "poll"]
+    assert [message.pinned for message in messages] == [True, False]
 
 
 @pytest.mark.asyncio
@@ -272,6 +334,7 @@ async def test_poll_service_marks_deleted_telegram_poll_as_inactive(db: SharedDa
     setup = PollSetup(service_date=date(2026, 5, 16), created_by_user_id=1)
 
     await service.create_poll(setup)
+    assert client.existing_message_ids is not None
     client.existing_message_ids.clear()
 
     assert await service.has_existing_active_poll(setup) is False
@@ -287,6 +350,23 @@ async def test_poll_service_marks_deleted_telegram_poll_as_inactive(db: SharedDa
 
 
 @pytest.mark.asyncio
+async def test_notice_does_not_keep_deleted_poll_active(db: SharedDatabase) -> None:
+    client = FakeTelegramClient(existing_message_ids=set())
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    setup = PollSetup(service_date=date(2026, 5, 16), created_by_user_id=1)
+
+    await service.create_poll(setup, include_notice=True)
+    assert client.existing_message_ids == {42, 43}
+    client.existing_message_ids = {42}
+
+    assert await service.has_existing_active_poll(setup) is False
+
+
+@pytest.mark.asyncio
 async def test_poll_service_reuses_deleted_batch_idempotency_key(db: SharedDatabase) -> None:
     client = FakeTelegramClient(existing_message_ids=set())
     service = PollPostingService(
@@ -297,6 +377,7 @@ async def test_poll_service_reuses_deleted_batch_idempotency_key(db: SharedDatab
     setup = PollSetup(service_date=date(2026, 5, 16), created_by_user_id=1)
 
     await service.create_poll(setup)
+    assert client.existing_message_ids is not None
     client.existing_message_ids.clear()
 
     result = await service.create_poll(setup)
@@ -305,7 +386,7 @@ async def test_poll_service_reuses_deleted_batch_idempotency_key(db: SharedDatab
         batches = (await session.scalars(select(PollBatch))).all()
         messages = (await session.scalars(select(PollMessage))).all()
 
-    assert result.message_id == 42
+    assert result.message_id == 43
     assert len(client.sent) == 2
     assert len(batches) == 1
     assert batches[0].status == "posted"
@@ -333,7 +414,7 @@ async def test_poll_service_can_manually_create_duplicate_poll(db: SharedDatabas
         batches = (await session.scalars(select(PollBatch))).all()
         messages = (await session.scalars(select(PollMessage))).all()
 
-    assert result.message_id == 42
+    assert result.message_id == 43
     assert len(client.sent) == 2
     assert len(batches) == 2
     assert len(messages) == 2

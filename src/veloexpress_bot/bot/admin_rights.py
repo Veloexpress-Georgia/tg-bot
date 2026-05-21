@@ -51,7 +51,7 @@ async def register_default_admin_rights_from_settings(settings: Settings) -> Non
         await register_default_admin_rights(bot)
         me = await bot.get_me()
         print("Registered default group admin rights.")
-        print(f"Admin invite link: {build_group_admin_invite_link(me.username or me.id)}")
+        print(f"Admin invite link: {build_group_admin_invite_link(me.username or str(me.id))}")
     finally:
         await bot.session.close()
 

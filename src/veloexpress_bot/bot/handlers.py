@@ -1,6 +1,8 @@
 import logging
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from typing import cast
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -12,7 +14,12 @@ from veloexpress_bot.bot.permissions import is_admin
 from veloexpress_bot.bot.states import PollSetupStates
 from veloexpress_bot.config import Settings
 from veloexpress_bot.polls.defaults import DEFAULT_LIFTS, StartLocation
-from veloexpress_bot.polls.service import DuplicatePollError, PollPostingService, PollSetup
+from veloexpress_bot.polls.service import (
+    DuplicatePollError,
+    PollCreationResult,
+    PollPostingService,
+    PollSetup,
+)
 from veloexpress_bot.telegram.errors import TelegramPollPostError, TelegramTargetForbiddenError
 
 router = Router(name="admin_poll_setup")
@@ -107,9 +114,10 @@ async def create_lift_poll(
 
 @router.callback_query(PollSetupStates.editing, F.data.startswith("day:toggle:"))
 async def toggle_service_day(callback: CallbackQuery, state: FSMContext) -> None:
-    service_date = date.fromisoformat(callback.data.removeprefix("day:toggle:"))
+    callback_data = callback.data or ""
+    service_date = date.fromisoformat(callback_data.removeprefix("day:toggle:"))
     data = await state.get_data()
-    selected_dates = set(data.get("selected_service_dates", data["service_dates"]))
+    selected_dates = set(_string_items(data.get("selected_service_dates", data["service_dates"])))
 
     if service_date.isoformat() in selected_dates:
         if len(selected_dates) == 1:
@@ -163,13 +171,13 @@ async def cancel_setup(
     setup_message_ids = tuple(int(item) for item in data.get("setup_message_ids", []))
     await state.clear()
     await callback.answer(POLL_SETUP_CANCELLED_TEXT)
-    if callback.message:
+    if message := _accessible_message(callback):
         cleanup = await poll_service.cleanup_setup_messages(
-            chat_id=callback.message.chat.id,
+            chat_id=message.chat.id,
             message_ids=setup_message_ids,
         )
         if cleanup.failed_count:
-            await callback.message.edit_text(POLL_SETUP_CANCELLED_TEXT)
+            await message.edit_text(POLL_SETUP_CANCELLED_TEXT)
 
 
 @router.callback_query(PollSetupStates.editing, F.data.in_({"poll:confirm", "poll:confirm_force"}))
@@ -204,8 +212,8 @@ async def confirm_setup(
                 break
 
     if has_existing_poll:
-        if callback.message:
-            await callback.message.edit_text(
+        if message := _accessible_message(callback):
+            await message.edit_text(
                 _setup_text(
                     setup_state.service_dates,
                     setup_state.first_lift_location,
@@ -232,38 +240,47 @@ async def confirm_setup(
             await poll_service.create_poll(
                 setup,
                 allow_duplicate=allow_duplicate,
+                include_notice=index == 0,
                 pin_after_send=False,
             )
-            for setup in setups
+            for index, setup in enumerate(setups)
         ]
-        results = [await poll_service.pin_created_poll(result) for result in results]
+        notice_result = next((result for result in results if result.notice_message_id), None)
+        if notice_result:
+            pinned_notice = await poll_service.pin_created_notice(notice_result)
+            results = [
+                pinned_notice if result.batch_id == pinned_notice.batch_id else result
+                for result in results
+            ]
+        else:
+            results = [await poll_service.pin_created_poll(result) for result in results]
     except DuplicatePollError:
         await callback.answer("One of these polls was already posted.", show_alert=True)
         return
     except TelegramTargetForbiddenError:
         logger.exception("Poll creation failed because target chat rejected the bot")
         await callback.answer(POLL_TARGET_FORBIDDEN_ALERT, show_alert=True)
-        if callback.message:
-            await callback.message.answer(POLL_TARGET_FORBIDDEN_TEXT)
+        if message := _accessible_message(callback):
+            await message.answer(POLL_TARGET_FORBIDDEN_TEXT)
         return
     except TelegramPollPostError:
         logger.exception("Poll creation failed while sending Telegram poll")
         await callback.answer(POLL_POST_FAILED_ALERT, show_alert=True)
-        if callback.message:
-            await callback.message.answer(POLL_POST_FAILED_TEXT)
+        if message := _accessible_message(callback):
+            await message.answer(POLL_POST_FAILED_TEXT)
         return
 
     setup_message_ids = tuple(int(item) for item in data.get("setup_message_ids", []))
     await state.clear()
     await callback.answer(f"Polls created: {_message_ids_text(results)}.")
-    if callback.message:
+    if message := _accessible_message(callback):
         cleanup = await poll_service.cleanup_setup_messages(
-            chat_id=callback.message.chat.id,
+            chat_id=message.chat.id,
             message_ids=setup_message_ids,
         )
         completion_text = _completion_text(
             message_ids=tuple(result.message_id for result in results),
-            pinned=all(result.pinned for result in results),
+            pinned=any(result.pinned for result in results),
             deleted_count=cleanup.deleted_count,
             failed_count=cleanup.failed_count,
         )
@@ -271,16 +288,16 @@ async def confirm_setup(
             "Poll setup completed",
             extra={
                 "message_ids": _message_ids_text(results),
-                "all_pinned": all(result.pinned for result in results),
+                "pinned": any(result.pinned for result in results),
                 "deleted_count": cleanup.deleted_count,
                 "failed_count": cleanup.failed_count,
             },
         )
         if _should_notify_completion(
-            pinned=all(result.pinned for result in results),
+            pinned=any(result.pinned for result in results),
             failed_count=cleanup.failed_count,
         ):
-            await callback.message.answer(completion_text)
+            await message.answer(completion_text)
 
 
 @router.callback_query(
@@ -298,7 +315,8 @@ async def handle_stale_setup_callback(
         await callback.answer(ADMIN_ONLY_TEXT, show_alert=True)
         return
 
-    if not callback.message:
+    message = _accessible_message(callback)
+    if message is None:
         await callback.answer(
             STALE_SETUP_ALERT,
             show_alert=True,
@@ -306,8 +324,8 @@ async def handle_stale_setup_callback(
         return
 
     cleanup = await poll_service.cleanup_setup_messages(
-        chat_id=callback.message.chat.id,
-        message_ids=(callback.message.message_id,),
+        chat_id=message.chat.id,
+        message_ids=(message.message_id,),
     )
 
     if callback.data == "poll:cancel":
@@ -319,22 +337,22 @@ async def handle_stale_setup_callback(
         )
 
     if cleanup.failed_count:
-        await callback.message.edit_text(EXPIRED_SETUP_TEXT)
+        await message.edit_text(EXPIRED_SETUP_TEXT)
 
     if callback.data == "poll:cancel":
         return
 
     logger.info(
         "Removed stale poll setup message",
-        extra={"message_id": callback.message.message_id, "callback_data": callback.data},
+        extra={"message_id": message.message_id, "callback_data": callback.data},
     )
 
 
 async def _refresh_setup(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     setup_state = _setup_state_data(data)
-    if callback.message:
-        await callback.message.edit_text(
+    if message := _accessible_message(callback):
+        await message.edit_text(
             _setup_text(
                 setup_state.service_dates,
                 setup_state.first_lift_location,
@@ -364,16 +382,18 @@ def _setup_message_ids_for_cleanup(
 
 def _setup_state_data(data: dict[str, object]) -> SetupStateData:
     return SetupStateData(
-        service_dates=tuple(date.fromisoformat(str(item)) for item in data["service_dates"]),
+        service_dates=tuple(
+            date.fromisoformat(item) for item in _string_items(data["service_dates"])
+        ),
         selected_service_dates=_selected_service_dates(data),
         first_lift_location=StartLocation(str(data["first_lift_location"])),
-        cancelled_lift_times=tuple(str(item) for item in data.get("cancelled_lift_times", [])),
+        cancelled_lift_times=tuple(_string_items(data.get("cancelled_lift_times", []))),
     )
 
 
 def _selected_service_dates(data: dict[str, object]) -> tuple[date, ...]:
     raw_dates = data.get("selected_service_dates", data["service_dates"])
-    return tuple(date.fromisoformat(str(item)) for item in raw_dates)
+    return tuple(date.fromisoformat(item) for item in _string_items(raw_dates))
 
 
 def _setup_text(
@@ -432,9 +452,23 @@ def _should_notify_completion(*, pinned: bool, failed_count: int) -> bool:
     return failed_count > 0 or not pinned
 
 
-def _message_ids_text(results_or_ids: object) -> str:
-    if isinstance(results_or_ids, tuple):
-        ids = results_or_ids
+def _accessible_message(callback: CallbackQuery) -> Message | None:
+    return callback.message if isinstance(callback.message, Message) else None
+
+
+def _string_items(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Iterable):
+        return tuple(str(item) for item in value)
+    return ()
+
+
+def _message_ids_text(results_or_ids: Sequence[int] | Sequence[PollCreationResult]) -> str:
+    if all(isinstance(item, int) for item in results_or_ids):
+        ids = cast(Sequence[int], results_or_ids)
     else:
-        ids = tuple(result.message_id for result in results_or_ids)
+        ids = tuple(
+            result.message_id for result in cast(Sequence[PollCreationResult], results_or_ids)
+        )
     return ", ".join(str(item) for item in ids)

@@ -17,6 +17,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-veloexpress}
       POSTGRES_USER: ${POSTGRES_USER:-veloexpress}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-veloexpress}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
     volumes:
       - postgres-data:/var/lib/postgresql
     ports:

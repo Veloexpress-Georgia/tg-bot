@@ -14,6 +14,7 @@ Out of scope for the first MVP: payment tracking, balances, overbooking, schedul
 - Postgres
 - uv
 - ruff
+- pyright
 - pytest
 - just
 - Lefthook
@@ -50,6 +51,9 @@ just dev
 `just dev` starts local Postgres with `docker-compose.local.yml`, runs Alembic
 migrations, starts the bot in long-polling mode, and restarts it when Python
 code, Alembic files, `.env`, or `pyproject.toml` change.
+
+`just db-up` waits for the Postgres healthcheck before migrations run. If you
+override `POSTGRES_PORT`, update the port in `DATABASE_URL` as well.
 
 Use `just run` only when Postgres is already running and you want a one-shot bot
 process without hot reload.
@@ -90,7 +94,14 @@ This runs:
 
 - Ruff format check
 - Ruff lint
+- pyright type check
 - pytest
+
+For only the Pylance-compatible type check:
+
+```sh
+just typecheck
+```
 
 If you use Lefthook locally:
 

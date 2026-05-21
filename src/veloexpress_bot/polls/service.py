@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
@@ -10,7 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.models import PollBatch, PollMessage
 from veloexpress_bot.polls.defaults import StartLocation
-from veloexpress_bot.polls.render import PollDraft, PollRenderInput, render_poll
+from veloexpress_bot.polls.render import (
+    PollDraft,
+    PollRenderInput,
+    render_payment_notice,
+    render_poll,
+)
 
 
 class DuplicatePollError(RuntimeError):
@@ -23,7 +29,20 @@ class SentPollMessage:
     poll_id: str | None = None
 
 
+@dataclass(frozen=True)
+class SentTextMessage:
+    message_id: int
+
+
 class TelegramPollClient(Protocol):
+    async def send_text(
+        self,
+        *,
+        chat_id: int,
+        message_thread_id: int | None,
+        text: str,
+    ) -> SentTextMessage: ...
+
     async def send_poll(
         self,
         *,
@@ -61,6 +80,7 @@ class PollCreationResult:
     message_id: int
     poll_id: str | None
     pinned: bool
+    notice_message_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -69,7 +89,7 @@ class CleanupResult:
     failed_count: int
 
 
-SessionFactory = Callable[[], AsyncSession]
+SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
 
 class PollPostingService:
@@ -97,6 +117,7 @@ class PollPostingService:
         setup: PollSetup,
         *,
         allow_duplicate: bool = False,
+        include_notice: bool = False,
         pin_after_send: bool = True,
     ) -> PollCreationResult:
         if self._settings.telegram_target_chat_id is None:
@@ -145,7 +166,14 @@ class PollPostingService:
             await session.flush()
             await session.commit()
 
+            notice_message: SentTextMessage | None = None
             try:
+                if include_notice:
+                    notice_message = await self._telegram_client.send_text(
+                        chat_id=self._settings.telegram_target_chat_id,
+                        message_thread_id=self._settings.telegram_target_thread_id,
+                        text=render_payment_notice(),
+                    )
                 sent_message = await self._telegram_client.send_poll(
                     chat_id=self._settings.telegram_target_chat_id,
                     message_thread_id=self._settings.telegram_target_thread_id,
@@ -154,21 +182,43 @@ class PollPostingService:
             except Exception:
                 batch.status = "failed"
                 await session.commit()
+                if notice_message is not None:
+                    await self._telegram_client.delete_message(
+                        chat_id=self._settings.telegram_target_chat_id,
+                        message_id=notice_message.message_id,
+                    )
                 raise
 
             pinned = False
             try:
                 if self._settings.telegram_pin_poll and pin_after_send:
+                    message_id_to_pin = (
+                        notice_message.message_id
+                        if notice_message is not None
+                        else sent_message.message_id
+                    )
                     pinned = await self._telegram_client.pin_message(
                         chat_id=self._settings.telegram_target_chat_id,
-                        message_id=sent_message.message_id,
+                        message_id=message_id_to_pin,
                     )
                 batch.status = "posted"
+                if notice_message is not None:
+                    session.add(
+                        PollMessage(
+                            batch_id=batch.id,
+                            telegram_message_id=notice_message.message_id,
+                            poll_id=None,
+                            message_kind="notice",
+                            pinned=pinned,
+                            cleanup_status="not_applicable",
+                        )
+                    )
                 message = PollMessage(
                     batch_id=batch.id,
                     telegram_message_id=sent_message.message_id,
                     poll_id=sent_message.poll_id,
-                    pinned=pinned,
+                    message_kind="poll",
+                    pinned=pinned if notice_message is None else False,
                     cleanup_status="not_applicable",
                 )
                 session.add(message)
@@ -187,6 +237,7 @@ class PollPostingService:
                 message_id=sent_message.message_id,
                 poll_id=sent_message.poll_id,
                 pinned=pinned,
+                notice_message_id=notice_message.message_id if notice_message is not None else None,
             )
 
     async def pin_created_poll(self, result: PollCreationResult) -> PollCreationResult:
@@ -211,6 +262,36 @@ class PollPostingService:
             message_id=result.message_id,
             poll_id=result.poll_id,
             pinned=pinned,
+            notice_message_id=result.notice_message_id,
+        )
+
+    async def pin_created_notice(self, result: PollCreationResult) -> PollCreationResult:
+        if (
+            self._settings.telegram_target_chat_id is None
+            or not self._settings.telegram_pin_poll
+            or result.notice_message_id is None
+        ):
+            return result
+
+        pinned = await self._telegram_client.pin_message(
+            chat_id=self._settings.telegram_target_chat_id,
+            message_id=result.notice_message_id,
+        )
+        if pinned:
+            async with self._session_factory() as session:
+                await session.execute(
+                    update(PollMessage)
+                    .where(PollMessage.batch_id == result.batch_id)
+                    .where(PollMessage.telegram_message_id == result.notice_message_id)
+                    .values(pinned=True)
+                )
+                await session.commit()
+        return PollCreationResult(
+            batch_id=result.batch_id,
+            message_id=result.message_id,
+            poll_id=result.poll_id,
+            pinned=pinned,
+            notice_message_id=result.notice_message_id,
         )
 
     async def cleanup_setup_messages(
@@ -244,7 +325,9 @@ class PollPostingService:
 
         message_ids = (
             await session.scalars(
-                select(PollMessage.telegram_message_id).where(PollMessage.batch_id == batch.id)
+                select(PollMessage.telegram_message_id)
+                .where(PollMessage.batch_id == batch.id)
+                .where(PollMessage.message_kind == "poll")
             )
         ).all()
         if not message_ids:

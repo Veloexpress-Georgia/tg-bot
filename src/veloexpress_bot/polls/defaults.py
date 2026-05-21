@@ -38,5 +38,5 @@ DEFAULT_LIFTS: tuple[LiftTemplate, ...] = (
 
 CHECK_ANSWERS_OPTION = "👀 Посмотреть ответы / Check answers"
 PAYMENT_REMINDER = (
-    "💳 После голосования не забудьте внести предоплату.\nPlease send the prepayment after voting."
+    "💳 После голосования внесите предоплату.\nPlease send the prepayment after voting."
 )

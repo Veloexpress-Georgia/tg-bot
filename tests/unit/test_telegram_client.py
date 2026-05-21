@@ -1,4 +1,7 @@
+from typing import cast
+
 import pytest
+from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.methods import SendPoll
 
@@ -15,9 +18,9 @@ class ForbiddenBot:
         self.kwargs = kwargs
         raise TelegramForbiddenError(
             method=SendPoll(
-                chat_id=kwargs["chat_id"],
+                chat_id=cast(int | str, kwargs["chat_id"]),
                 question=str(kwargs["question"]),
-                options=list(kwargs["options"]),
+                options=list(cast(tuple[str, ...], kwargs["options"])),
             ),
             message="Forbidden: bot was kicked from the supergroup chat",
         )
@@ -26,7 +29,7 @@ class ForbiddenBot:
 @pytest.mark.asyncio
 async def test_send_poll_maps_forbidden_target_chat() -> None:
     bot = ForbiddenBot()
-    client = AiogramTelegramClient(bot)
+    client = AiogramTelegramClient(cast(Bot, bot))
 
     with pytest.raises(TelegramTargetForbiddenError) as error:
         await client.send_poll(

@@ -3,15 +3,13 @@ from datetime import date
 import pytest
 
 from veloexpress_bot.polls.defaults import CHECK_ANSWERS_OPTION, StartLocation
-from veloexpress_bot.polls.render import PollRenderInput, render_poll
+from veloexpress_bot.polls.render import PollRenderInput, render_payment_notice, render_poll
 
 
 def test_render_poll_uses_ru_en_weekend_template() -> None:
     draft = render_poll(PollRenderInput(service_date=date(2026, 5, 16)))
 
-    assert draft.question.startswith("💳 После голосования")
-    assert "🚐 Суббота 16.05 / Saturday" in draft.question
-    assert "Выберите время заброски / Choose departure time" in draft.question
+    assert draft.question == "🚐 Суббота · 16 мая\nSaturday · May 16"
     assert draft.options[-1] == CHECK_ANSWERS_OPTION
     assert draft.options[0] == "🚲 10:00 · Дом Юстиции / Justice hall"
     assert draft.options[1] == "🚲 11:45 · от Ваке парка / Vake park"
@@ -27,8 +25,14 @@ def test_render_poll_can_toggle_first_lift_to_vake() -> None:
         )
     )
 
-    assert "Воскресенье 17.05 / Sunday" in draft.question
+    assert draft.question == "🚐 Воскресенье · 17 мая\nSunday · May 17"
     assert draft.options[0] == "🚲 10:00 · от Ваке парка / Vake park"
+
+
+def test_render_payment_notice_is_short_ru_en_copy() -> None:
+    assert render_payment_notice() == (
+        "💳 После голосования внесите предоплату.\nPlease send the prepayment after voting."
+    )
 
 
 def test_render_poll_can_cancel_lifts() -> None:

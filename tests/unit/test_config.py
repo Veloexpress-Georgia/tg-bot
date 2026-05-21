@@ -1,12 +1,18 @@
+from typing import Any, cast
+
 import pytest
 from pydantic import ValidationError
 
 from veloexpress_bot.config import Settings
 
 
+def make_settings(**kwargs: object) -> Settings:
+    settings_factory = cast(Any, Settings)
+    return settings_factory(_env_file=None, **kwargs)
+
+
 def test_settings_parses_admin_ids_from_csv() -> None:
-    settings = Settings(
-        _env_file=None,
+    settings = make_settings(
         telegram_admin_ids="10, 20,30",
         telegram_bot_token="token",
     )
@@ -15,8 +21,7 @@ def test_settings_parses_admin_ids_from_csv() -> None:
 
 
 def test_settings_treats_empty_optional_telegram_ids_as_none() -> None:
-    settings = Settings(
-        _env_file=None,
+    settings = make_settings(
         telegram_bot_token="token",
         telegram_target_chat_id="",
         telegram_target_thread_id="",
@@ -28,8 +33,7 @@ def test_settings_treats_empty_optional_telegram_ids_as_none() -> None:
 
 def test_settings_rejects_localhost_database_in_production() -> None:
     with pytest.raises(ValidationError, match="DATABASE_URL must point to a production"):
-        Settings(
-            _env_file=None,
+        make_settings(
             app_env="production",
             database_url="postgresql+asyncpg://veloexpress:veloexpress@localhost:5432/veloexpress",
             telegram_bot_token="token",
@@ -37,8 +41,7 @@ def test_settings_rejects_localhost_database_in_production() -> None:
 
 
 def test_settings_derives_internal_database_url_in_production() -> None:
-    settings = Settings(
-        _env_file=None,
+    settings = make_settings(
         app_env="production",
         postgres_db="veloexpress",
         postgres_user="veloexpress",
@@ -51,8 +54,7 @@ def test_settings_derives_internal_database_url_in_production() -> None:
 
 
 def test_settings_allows_service_database_host_in_production() -> None:
-    settings = Settings(
-        _env_file=None,
+    settings = make_settings(
         app_env="production",
         database_url="postgresql+asyncpg://veloexpress:veloexpress@postgres:5432/veloexpress",
         telegram_bot_token="token",
