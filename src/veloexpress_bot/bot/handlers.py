@@ -803,6 +803,8 @@ def _setup_text(
     *,
     selected_service_dates: tuple[date, ...] | None = None,
 ) -> str:
+    cancelled_set = set(cancelled_lift_times)
+    enabled = ", ".join(lift.time for lift in DEFAULT_LIFTS if lift.time not in cancelled_set)
     cancelled = ", ".join(cancelled_lift_times) if cancelled_lift_times else "—"
     selected_dates = selected_service_dates or service_dates
     dates = " + ".join(
@@ -811,6 +813,7 @@ def _setup_text(
     return (
         f"🚐 Lift poll setup · {dates}\n"
         f"📍 First lift: {LOCATION_LABELS[first_lift_location].format()}\n"
+        f"🕓 Enabled times: {enabled or '—'}\n"
         f"🚫 Cancelled lifts: {cancelled}"
     )
 

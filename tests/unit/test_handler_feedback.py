@@ -107,6 +107,7 @@ def test_setup_text_shows_friendly_first_lift_label() -> None:
     )
 
     assert "📍 First lift: Дом Юстиции / Justice hall" in text
+    assert "🕓 Enabled times: 8:30, 10:00, 11:45, 13:30" in text
     assert "🚫 Cancelled lifts: 15:30" in text
     assert "justice_hall" not in text
 
