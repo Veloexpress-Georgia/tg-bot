@@ -30,7 +30,8 @@ class LiftTemplate:
 
 
 DEFAULT_LIFTS: tuple[LiftTemplate, ...] = (
-    LiftTemplate("10:00", StartLocation.JUSTICE_HALL),
+    LiftTemplate("8:30", StartLocation.JUSTICE_HALL),
+    LiftTemplate("10:00", StartLocation.VAKE),
     LiftTemplate("11:45", StartLocation.VAKE),
     LiftTemplate("13:30", StartLocation.VAKE),
     LiftTemplate("15:30", StartLocation.VAKE),

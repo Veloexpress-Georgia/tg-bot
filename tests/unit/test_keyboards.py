@@ -30,7 +30,7 @@ def test_setup_keyboard_main_view_summarizes_times() -> None:
     )
 
     assert keyboard.inline_keyboard[1][0].text == "📍 First lift: Justice Hall"
-    assert keyboard.inline_keyboard[2][0].text == "🕓 3 times enabled"
+    assert keyboard.inline_keyboard[2][0].text == "🕓 4 times enabled"
     assert keyboard.inline_keyboard[2][0].callback_data == "view:times"
 
 
@@ -44,11 +44,14 @@ def test_setup_keyboard_times_view_contains_lift_toggles_and_back() -> None:
     )
 
     assert [button.text for button in keyboard.inline_keyboard[0]] == [
-        "✅ 10:00 · Justice",
-        "✅ 11:45 · Vake",
+        "✅ 8:30 · Justice",
+        "✅ 10:00 · Vake",
     ]
     assert [button.text for button in keyboard.inline_keyboard[1]] == [
+        "✅ 11:45 · Vake",
         "🚫 13:30 · Vake",
+    ]
+    assert [button.text for button in keyboard.inline_keyboard[2]] == [
         "✅ 15:30 · Vake",
     ]
     assert keyboard.inline_keyboard[-1][0].text == "⬅️ Back"
