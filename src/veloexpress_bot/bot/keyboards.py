@@ -111,7 +111,7 @@ def _times_keyboard(
 def _times_summary(cancelled: set[str]) -> str:
     active_count = len(DEFAULT_LIFTS) - len(cancelled)
     if active_count == len(DEFAULT_LIFTS):
-        return "All 4 times enabled"
+        return f"All {active_count} times enabled"
     if active_count == 1:
         return "1 time enabled"
     return f"{active_count} times enabled"

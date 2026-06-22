@@ -34,6 +34,17 @@ def test_setup_keyboard_main_view_summarizes_times() -> None:
     assert keyboard.inline_keyboard[2][0].callback_data == "view:times"
 
 
+def test_setup_keyboard_summary_counts_all_enabled_lifts() -> None:
+    keyboard = setup_keyboard(
+        service_dates=(date(2026, 5, 16),),
+        selected_service_dates=(date(2026, 5, 16),),
+        cancelled_lift_times=(),
+        first_lift_location=StartLocation.JUSTICE_HALL,
+    )
+
+    assert keyboard.inline_keyboard[2][0].text == "🕓 All 5 times enabled"
+
+
 def test_setup_keyboard_times_view_contains_lift_toggles_and_back() -> None:
     keyboard = setup_keyboard(
         service_dates=(date(2026, 5, 16), date(2026, 5, 17)),
