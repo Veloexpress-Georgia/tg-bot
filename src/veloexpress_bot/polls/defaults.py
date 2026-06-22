@@ -37,6 +37,9 @@ DEFAULT_LIFTS: tuple[LiftTemplate, ...] = (
     LiftTemplate("15:30", StartLocation.VAKE),
 )
 
+# Lifts switched off when a new setup opens; admins can re-enable them.
+DEFAULT_CANCELLED_LIFT_TIMES: tuple[str, ...] = ("15:30",)
+
 CHECK_ANSWERS_OPTION = "👀 Посмотреть ответы / Check answers"
 PAYMENT_REMINDER = (
     "💳 После голосования внесите предоплату.\nPlease send the prepayment after voting."

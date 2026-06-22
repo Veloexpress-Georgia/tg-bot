@@ -16,7 +16,12 @@ from veloexpress_bot.bot.keyboards import setup_keyboard, start_menu_keyboard
 from veloexpress_bot.bot.permissions import is_admin
 from veloexpress_bot.bot.states import PollSetupStates
 from veloexpress_bot.config import Settings
-from veloexpress_bot.polls.defaults import DEFAULT_LIFTS, StartLocation
+from veloexpress_bot.polls.defaults import (
+    DEFAULT_CANCELLED_LIFT_TIMES,
+    DEFAULT_LIFTS,
+    LOCATION_LABELS,
+    StartLocation,
+)
 from veloexpress_bot.polls.service import (
     DuplicatePollError,
     PollCreationResult,
@@ -177,7 +182,7 @@ async def _open_poll_setup_from_message(
 ) -> None:
     service_dates = _upcoming_weekend_dates()
     first_lift_location = StartLocation.JUSTICE_HALL
-    cancelled_lift_times: tuple[str, ...] = ()
+    cancelled_lift_times: tuple[str, ...] = DEFAULT_CANCELLED_LIFT_TIMES
     setup_state = SetupStateData(
         service_dates=service_dates,
         selected_service_dates=service_dates,
@@ -224,7 +229,7 @@ async def _open_poll_setup_from_menu(
         service_dates=service_dates,
         selected_service_dates=service_dates,
         first_lift_location=StartLocation.JUSTICE_HALL,
-        cancelled_lift_times=(),
+        cancelled_lift_times=DEFAULT_CANCELLED_LIFT_TIMES,
     )
     await _store_setup_state(state=state, setup_state=setup_state)
     allow_recreate = await _has_active_conflicts(
@@ -798,15 +803,15 @@ def _setup_text(
     *,
     selected_service_dates: tuple[date, ...] | None = None,
 ) -> str:
-    cancelled = ", ".join(cancelled_lift_times) if cancelled_lift_times else "none"
+    cancelled = ", ".join(cancelled_lift_times) if cancelled_lift_times else "—"
     selected_dates = selected_service_dates or service_dates
     dates = " + ".join(
         f"{_service_day_name(item).title()} {item:%d.%m.%Y}" for item in selected_dates
     )
     return (
-        f"Lift poll setup for {dates}\n"
-        f"First lift: {first_lift_location.value}\n"
-        f"Cancelled lifts: {cancelled}"
+        f"🚐 Lift poll setup · {dates}\n"
+        f"📍 First lift: {LOCATION_LABELS[first_lift_location].format()}\n"
+        f"🚫 Cancelled lifts: {cancelled}"
     )
 
 

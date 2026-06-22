@@ -99,6 +99,18 @@ def test_setup_text_only_lists_selected_days() -> None:
     assert "Saturday 16.05.2026" not in text
 
 
+def test_setup_text_shows_friendly_first_lift_label() -> None:
+    text = _setup_text(
+        (date(2026, 5, 16),),
+        StartLocation.JUSTICE_HALL,
+        ("15:30",),
+    )
+
+    assert "📍 First lift: Дом Юстиции / Justice hall" in text
+    assert "🚫 Cancelled lifts: 15:30" in text
+    assert "justice_hall" not in text
+
+
 def test_setup_text_for_conflicts_surfaces_recreate_context_immediately() -> None:
     setup_state = SetupStateData(
         service_dates=(date(2026, 5, 16), date(2026, 5, 17)),
