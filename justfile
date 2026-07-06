@@ -15,6 +15,9 @@ register-admin-rights:
 webhook-delete:
     curl --fail --show-error "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook"
 
+healthcheck:
+    uv run python -m veloexpress_bot.healthcheck --skip-heartbeat
+
 format:
     uv run ruff format .
     uv run ruff check --fix .

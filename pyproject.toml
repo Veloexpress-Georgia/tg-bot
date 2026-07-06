@@ -29,6 +29,7 @@ dev = [
 
 [project.scripts]
 veloexpress-bot = "veloexpress_bot.__main__:main"
+veloexpress-bot-healthcheck = "veloexpress_bot.healthcheck:main"
 
 [tool.uv]
 package = true

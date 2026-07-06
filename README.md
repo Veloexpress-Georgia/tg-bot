@@ -186,6 +186,40 @@ DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@HOST:5432/DATABASE
 
 If `DATABASE_URL` is empty in production, the bot derives it from `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_HOST` with `POSTGRES_HOST=db` by default.
 
+### Healthchecks
+
+The Docker image and both Compose files define a container healthcheck:
+
+```sh
+python -m veloexpress_bot.healthcheck
+```
+
+It does not expose an HTTP port. The bot still runs in Telegram long-polling mode.
+The healthcheck verifies two things:
+
+- the bot event loop is alive by checking a heartbeat file updated by the running process;
+- Postgres is reachable with a lightweight `select 1`.
+
+Defaults are suitable for Coolify and Uptime Kuma Docker-container monitoring:
+
+```env
+APP_HEALTH_HEARTBEAT_FILE=/tmp/veloexpress-bot-heartbeat.json
+APP_HEALTH_HEARTBEAT_INTERVAL_SECONDS=15
+APP_HEALTH_MAX_AGE_SECONDS=90
+```
+
+In Uptime Kuma, use a Docker Container monitor for the Coolify bot container and treat Docker health status as the signal. To debug manually:
+
+```sh
+docker compose -f docker-compose.coolify.yml exec bot python -m veloexpress_bot.healthcheck
+```
+
+For a local DB-only check outside Docker, run:
+
+```sh
+just healthcheck
+```
+
 GitHub Actions contains:
 
 - `CI`: lint, format check, tests, Docker build validation.

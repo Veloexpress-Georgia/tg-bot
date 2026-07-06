@@ -5,6 +5,9 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     APP_ENV=production \
+    APP_HEALTH_HEARTBEAT_FILE=/tmp/veloexpress-bot-heartbeat.json \
+    APP_HEALTH_HEARTBEAT_INTERVAL_SECONDS=15 \
+    APP_HEALTH_MAX_AGE_SECONDS=90 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
@@ -12,7 +15,12 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 RUN uv sync --frozen --no-dev
 
+ENV PATH="/app/.venv/bin:${PATH}"
+
 COPY alembic.ini ./
 COPY alembic ./alembic
 
-CMD ["sh", "-c", "uv run --no-dev alembic upgrade head && uv run --no-dev python -m veloexpress_bot"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
+    CMD python -m veloexpress_bot.healthcheck
+
+CMD ["sh", "-c", "alembic upgrade head && python -m veloexpress_bot"]
