@@ -1,7 +1,6 @@
 from datetime import date
 
 from veloexpress_bot.bot.keyboards import setup_keyboard, start_menu_keyboard
-from veloexpress_bot.polls.defaults import StartLocation
 
 
 def test_setup_keyboard_includes_day_toggles() -> None:
@@ -9,7 +8,6 @@ def test_setup_keyboard_includes_day_toggles() -> None:
         service_dates=(date(2026, 5, 16), date(2026, 5, 17)),
         selected_service_dates=(date(2026, 5, 17),),
         cancelled_lift_times=(),
-        first_lift_location=StartLocation.JUSTICE_HALL,
     )
 
     first_button = keyboard.inline_keyboard[0][0]
@@ -26,12 +24,13 @@ def test_setup_keyboard_main_view_summarizes_times() -> None:
         service_dates=(date(2026, 5, 16), date(2026, 5, 17)),
         selected_service_dates=(date(2026, 5, 16), date(2026, 5, 17)),
         cancelled_lift_times=("13:30",),
-        first_lift_location=StartLocation.JUSTICE_HALL,
     )
 
-    assert keyboard.inline_keyboard[1][0].text == "📍 First lift: Justice Hall"
-    assert keyboard.inline_keyboard[2][0].text == "🕓 4 times enabled"
-    assert keyboard.inline_keyboard[2][0].callback_data == "view:times"
+    assert keyboard.inline_keyboard[1][0].text == "🕓 4 times enabled"
+    assert keyboard.inline_keyboard[1][0].callback_data == "view:times"
+    assert all(
+        button.callback_data != "first:toggle" for row in keyboard.inline_keyboard for button in row
+    )
 
 
 def test_setup_keyboard_summary_counts_all_enabled_lifts() -> None:
@@ -39,10 +38,9 @@ def test_setup_keyboard_summary_counts_all_enabled_lifts() -> None:
         service_dates=(date(2026, 5, 16),),
         selected_service_dates=(date(2026, 5, 16),),
         cancelled_lift_times=(),
-        first_lift_location=StartLocation.JUSTICE_HALL,
     )
 
-    assert keyboard.inline_keyboard[2][0].text == "🕓 All 5 times enabled"
+    assert keyboard.inline_keyboard[1][0].text == "🕓 All 5 times enabled"
 
 
 def test_setup_keyboard_times_view_contains_lift_toggles_and_back() -> None:
@@ -50,23 +48,33 @@ def test_setup_keyboard_times_view_contains_lift_toggles_and_back() -> None:
         service_dates=(date(2026, 5, 16), date(2026, 5, 17)),
         selected_service_dates=(date(2026, 5, 16), date(2026, 5, 17)),
         cancelled_lift_times=("13:30",),
-        first_lift_location=StartLocation.JUSTICE_HALL,
         view="times",
     )
 
     assert [button.text for button in keyboard.inline_keyboard[0]] == [
-        "✅ 8:30 · Justice",
-        "✅ 10:00 · Vake",
+        "✅ 8:30",
+        "✅ 10:00",
     ]
     assert [button.text for button in keyboard.inline_keyboard[1]] == [
-        "✅ 11:45 · Vake",
-        "🚫 13:30 · Vake",
+        "✅ 11:45",
+        "🚫 13:30",
     ]
     assert [button.text for button in keyboard.inline_keyboard[2]] == [
-        "✅ 15:30 · Vake",
+        "✅ 15:30 · extra",
     ]
     assert keyboard.inline_keyboard[-1][0].text == "⬅️ Back"
     assert keyboard.inline_keyboard[-1][0].callback_data == "view:main"
+
+
+def test_setup_keyboard_marks_additional_time_as_disabled_by_default() -> None:
+    keyboard = setup_keyboard(
+        service_dates=(date(2026, 5, 16),),
+        selected_service_dates=(date(2026, 5, 16),),
+        cancelled_lift_times=("15:30",),
+        view="times",
+    )
+
+    assert keyboard.inline_keyboard[2][0].text == "🚫 15:30 · extra"
 
 
 def test_setup_keyboard_uses_explicit_recreate_button_without_force_duplicate() -> None:
@@ -74,7 +82,6 @@ def test_setup_keyboard_uses_explicit_recreate_button_without_force_duplicate() 
         service_dates=(date(2026, 5, 16),),
         selected_service_dates=(date(2026, 5, 16),),
         cancelled_lift_times=(),
-        first_lift_location=StartLocation.JUSTICE_HALL,
         allow_recreate=True,
     )
 

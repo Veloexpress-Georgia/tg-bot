@@ -4,7 +4,6 @@ from datetime import date
 from veloexpress_bot.polls.defaults import (
     CHECK_ANSWERS_OPTION,
     DEFAULT_LIFTS,
-    LOCATION_LABELS,
     PAYMENT_REMINDER,
     LiftTemplate,
     StartLocation,
@@ -49,7 +48,6 @@ EN_MONTHS: dict[int, str] = {
 @dataclass(frozen=True)
 class PollRenderInput:
     service_date: date
-    first_lift_location: StartLocation = StartLocation.JUSTICE_HALL
     cancelled_lift_times: tuple[str, ...] = ()
 
 
@@ -62,7 +60,7 @@ class PollDraft:
 
 
 def render_poll(render_input: PollRenderInput) -> PollDraft:
-    lifts = _active_lifts(render_input.cancelled_lift_times, render_input.first_lift_location)
+    lifts = _active_lifts(render_input.cancelled_lift_times)
     if not lifts:
         msg = "At least one lift must remain in the poll."
         raise ValueError(msg)
@@ -79,28 +77,28 @@ def render_poll(render_input: PollRenderInput) -> PollDraft:
     return PollDraft(question=question, options=options)
 
 
-def render_payment_notice() -> str:
-    return PAYMENT_REMINDER
-
-
-def _active_lifts(
-    cancelled_lift_times: tuple[str, ...], first_location: StartLocation
-) -> list[LiftTemplate]:
-    cancelled = set(cancelled_lift_times)
-    active: list[LiftTemplate] = []
-    for index, lift in enumerate(DEFAULT_LIFTS):
-        if lift.time in cancelled:
-            continue
-        location = first_location if index == 0 else lift.default_location
-        active.append(
-            LiftTemplate(time=lift.time, default_location=location, capacity=lift.capacity)
+def render_poll_notice(first_lift_location: StartLocation) -> str:
+    if first_lift_location == StartLocation.VAKE:
+        route_notice = "📍 Все заброски — от Ваке-парка.\nAll lifts depart from Vake Park."
+    else:
+        route_notice = (
+            "📍 Первая состоявшаяся заброска дня — от Дома Юстиции. Если заброска "
+            "на 8:30 не набралась, первой считается следующее набравшееся время. "
+            "Остальные — от Ваке-парка.\n"
+            "The first running lift of the day departs from Justice Hall. If the 8:30 "
+            "lift does not run, the next running time becomes the first lift. All later "
+            "lifts depart from Vake Park."
         )
-    return active
+    return f"{route_notice}\n\n{PAYMENT_REMINDER}"
+
+
+def _active_lifts(cancelled_lift_times: tuple[str, ...]) -> list[LiftTemplate]:
+    cancelled = set(cancelled_lift_times)
+    return [lift for lift in DEFAULT_LIFTS if lift.time not in cancelled]
 
 
 def _format_lift_option(lift: LiftTemplate) -> str:
-    location = LOCATION_LABELS[lift.default_location].format()
-    return f"🚲 {lift.time} · {location}"
+    return f"🚲 {lift.time}"
 
 
 def _ru_date(service_date: date) -> str:

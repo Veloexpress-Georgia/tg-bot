@@ -2,7 +2,7 @@ from datetime import date
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from veloexpress_bot.polls.defaults import DEFAULT_LIFTS, StartLocation
+from veloexpress_bot.polls.defaults import DEFAULT_LIFTS, EXTRA_LIFT_TIME
 
 
 def start_menu_keyboard(*, is_admin: bool) -> InlineKeyboardMarkup | None:
@@ -26,16 +26,12 @@ def setup_keyboard(
     service_dates: tuple[date, ...],
     selected_service_dates: tuple[date, ...],
     cancelled_lift_times: tuple[str, ...],
-    first_lift_location: StartLocation,
     allow_recreate: bool = False,
     view: str = "main",
 ) -> InlineKeyboardMarkup:
     cancelled = set(cancelled_lift_times)
     if view == "times":
-        return _times_keyboard(
-            cancelled=cancelled,
-            first_lift_location=first_lift_location,
-        )
+        return _times_keyboard(cancelled=cancelled)
 
     selected_dates = set(selected_service_dates)
     rows: list[list[InlineKeyboardButton]] = []
@@ -50,15 +46,6 @@ def setup_keyboard(
             )
         )
     rows.append(day_row)
-
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text=f"📍 First lift: {_location_label(first_lift_location)}",
-                callback_data="first:toggle",
-            )
-        ]
-    )
 
     rows.append(
         [
@@ -84,16 +71,15 @@ def setup_keyboard(
 def _times_keyboard(
     *,
     cancelled: set[str],
-    first_lift_location: StartLocation,
 ) -> InlineKeyboardMarkup:
     lift_buttons: list[InlineKeyboardButton] = []
-    for index, lift in enumerate(DEFAULT_LIFTS):
+    for lift in DEFAULT_LIFTS:
         active = lift.time not in cancelled
         marker = "✅" if active else "🚫"
-        location = first_lift_location if index == 0 else StartLocation.VAKE
+        extra = " · extra" if lift.time == EXTRA_LIFT_TIME else ""
         lift_buttons.append(
             InlineKeyboardButton(
-                text=f"{marker} {lift.time} · {_short_location_label(location)}",
+                text=f"{marker} {lift.time}{extra}",
                 callback_data=f"lift:toggle:{lift.time}",
             )
         )
@@ -115,22 +101,6 @@ def _times_summary(cancelled: set[str]) -> str:
     if active_count == 1:
         return "1 time enabled"
     return f"{active_count} times enabled"
-
-
-def _location_label(location: StartLocation) -> str:
-    match location:
-        case StartLocation.JUSTICE_HALL:
-            return "Justice Hall"
-        case StartLocation.VAKE:
-            return "Vake"
-
-
-def _short_location_label(location: StartLocation) -> str:
-    match location:
-        case StartLocation.JUSTICE_HALL:
-            return "Justice"
-        case StartLocation.VAKE:
-            return "Vake"
 
 
 def _short_day_label(service_date: date) -> str:

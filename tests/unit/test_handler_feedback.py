@@ -81,7 +81,7 @@ def test_recreate_report_is_only_sent_when_votes_are_present() -> None:
     assert (
         _should_send_recreate_report(
             "Recreated existing polls.\n\nTracked votes before recreate:\n\n"
-            "2026-05-23:\n- 🚲 10:00 · Дом Юстиции / Justice hall: @stas"
+            "2026-05-23:\n- 🚲 10:00: @stas"
         )
         is True
     )
@@ -99,14 +99,14 @@ def test_setup_text_only_lists_selected_days() -> None:
     assert "Saturday 16.05.2026" not in text
 
 
-def test_setup_text_shows_friendly_first_lift_label() -> None:
+def test_setup_text_shows_fixed_dynamic_route() -> None:
     text = _setup_text(
         (date(2026, 5, 16),),
         StartLocation.JUSTICE_HALL,
         ("15:30",),
     )
 
-    assert "📍 First lift: Дом Юстиции / Justice hall" in text
+    assert "📍 Route: first running lift: Дом Юстиции / Justice Hall; later: Vake Park" in text
     assert "🕓 Enabled times: 8:30, 10:00, 11:45, 13:30" in text
     assert "🚫 Cancelled lifts: 15:30" in text
     assert "justice_hall" not in text

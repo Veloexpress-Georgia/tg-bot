@@ -251,7 +251,14 @@ async def test_poll_service_can_send_notice_before_poll_and_pin_poll(
     assert result.notice_message_id == 42
     assert result.message_id == 43
     assert client.sent_texts == [
-        "💳 После голосования внесите предоплату.\nPlease send the prepayment after voting."
+        "📍 Первая состоявшаяся заброска дня — от Дома Юстиции. Если заброска "
+        "на 8:30 не набралась, первой считается следующее набравшееся время. "
+        "Остальные — от Ваке-парка.\n"
+        "The first running lift of the day departs from Justice Hall. If the 8:30 "
+        "lift does not run, the next running time becomes the first lift. All later "
+        "lifts depart from Vake Park.\n\n"
+        "💳 После голосования внесите предоплату.\n"
+        "Please send the prepayment after voting."
     ]
     assert client.sent[0].question == "🚐 Суббота · 16 мая\nSaturday · May 16"
 
@@ -505,7 +512,7 @@ async def test_poll_service_tracks_votes_and_reports_by_option_label(
     report = await service.render_vote_report((result.batch_id,))
 
     assert "2026-05-16" in report
-    assert "🚲 8:30 · Дом Юстиции / Justice hall: @stas" in report
+    assert "🚲 8:30: @stas" in report
 
     async with db.session() as session:
         event = await session.scalar(select(PollVoteEvent))
@@ -709,8 +716,8 @@ async def test_recreate_report_uses_latest_vote_state_not_audit_history(
         (PollSetup(service_date=date(2026, 5, 16), created_by_user_id=1),)
     )
 
-    assert "🚲 8:30 · Дом Юстиции / Justice hall: @stas" not in recreate.report_text
-    assert "🚲 10:00 · от Ваке парка / Vake park: @stas" in recreate.report_text
+    assert "🚲 8:30: @stas" not in recreate.report_text
+    assert "🚲 10:00: @stas" in recreate.report_text
 
     async with db.session() as session:
         events = (await session.scalars(select(PollVoteEvent).order_by(PollVoteEvent.id))).all()
@@ -802,7 +809,7 @@ async def test_recreate_reports_votes_supersedes_old_and_preserves_single_day_no
     result = await service.recreate_polls((setup,))
 
     assert [created.message_id for created in result.created] == [45]
-    assert "🚲 8:30 · Дом Юстиции / Justice hall: @stas" in result.report_text
+    assert "🚲 8:30: @stas" in result.report_text
 
     cleanup = await service.cleanup_recreated_polls(result)
 
@@ -1019,7 +1026,7 @@ async def test_reused_deleted_batch_reports_current_poll_votes(db: SharedDatabas
 
     result = await service.recreate_polls((setup,))
 
-    assert "🚲 8:30 · Дом Юстиции / Justice hall: @stas" in result.report_text
+    assert "🚲 8:30: @stas" in result.report_text
     assert "@old" not in result.report_text
 
     async with db.session() as session:

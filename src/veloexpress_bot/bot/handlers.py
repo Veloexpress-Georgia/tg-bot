@@ -19,7 +19,6 @@ from veloexpress_bot.config import Settings
 from veloexpress_bot.polls.defaults import (
     DEFAULT_CANCELLED_LIFT_TIMES,
     DEFAULT_LIFTS,
-    LOCATION_LABELS,
     StartLocation,
 )
 from veloexpress_bot.polls.service import (
@@ -201,7 +200,6 @@ async def _open_poll_setup_from_message(
             service_dates=service_dates,
             selected_service_dates=service_dates,
             cancelled_lift_times=cancelled_lift_times,
-            first_lift_location=first_lift_location,
             allow_recreate=allow_recreate,
             view=setup_state.setup_view,
         ),
@@ -243,7 +241,6 @@ async def _open_poll_setup_from_menu(
             service_dates=setup_state.service_dates,
             selected_service_dates=setup_state.selected_service_dates,
             cancelled_lift_times=setup_state.cancelled_lift_times,
-            first_lift_location=setup_state.first_lift_location,
             allow_recreate=allow_recreate,
             view=setup_state.setup_view,
         ),
@@ -296,21 +293,6 @@ async def toggle_service_day(
 
     await state.update_data(selected_service_dates=sorted(selected_dates))
     await _refresh_setup(callback, state, poll_service, refresh_conflicts=True)
-
-
-@router.callback_query(PollSetupStates.editing, F.data == "first:toggle")
-async def toggle_first_location(
-    callback: CallbackQuery,
-    state: FSMContext,
-    poll_service: PollPostingService,
-) -> None:
-    data = await state.get_data()
-    current = StartLocation(data["first_lift_location"])
-    next_location = (
-        StartLocation.VAKE if current == StartLocation.JUSTICE_HALL else StartLocation.JUSTICE_HALL
-    )
-    await state.update_data(first_lift_location=next_location.value)
-    await _refresh_setup(callback, state, poll_service)
 
 
 @router.callback_query(PollSetupStates.editing, F.data.startswith("lift:toggle:"))
@@ -404,7 +386,6 @@ async def confirm_setup(
                     service_dates=setup_state.service_dates,
                     selected_service_dates=setup_state.selected_service_dates,
                     cancelled_lift_times=setup_state.cancelled_lift_times,
-                    first_lift_location=setup_state.first_lift_location,
                     allow_recreate=True,
                 ),
             )
@@ -505,8 +486,7 @@ async def track_poll_answer(answer: PollAnswer, poll_service: PollPostingService
 
 
 @router.callback_query(
-    (F.data == "first:toggle")
-    | F.data.startswith("day:toggle:")
+    F.data.startswith("day:toggle:")
     | F.data.startswith("lift:toggle:")
     | F.data.startswith("view:")
     | F.data.startswith("poll:")
@@ -651,7 +631,6 @@ async def _edit_setup_message(
                 service_dates=setup_state.service_dates,
                 selected_service_dates=setup_state.selected_service_dates,
                 cancelled_lift_times=setup_state.cancelled_lift_times,
-                first_lift_location=setup_state.first_lift_location,
                 allow_recreate=allow_recreate,
                 view=setup_state.setup_view,
             ),
@@ -812,10 +791,16 @@ def _setup_text(
     )
     return (
         f"🚐 Lift poll setup · {dates}\n"
-        f"📍 First lift: {LOCATION_LABELS[first_lift_location].format()}\n"
+        f"📍 Route: {_route_setup_label(first_lift_location)}\n"
         f"🕓 Enabled times: {enabled or '—'}\n"
         f"🚫 Cancelled lifts: {cancelled}"
     )
+
+
+def _route_setup_label(location: StartLocation) -> str:
+    if location == StartLocation.VAKE:
+        return "all lifts: от Ваке-парка / Vake Park"
+    return "first running lift: Дом Юстиции / Justice Hall; later: Vake Park"
 
 
 def _upcoming_weekend_dates(today: date | None = None) -> tuple[date, date]:

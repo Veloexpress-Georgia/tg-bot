@@ -8,37 +8,22 @@ class StartLocation(StrEnum):
 
 
 @dataclass(frozen=True)
-class LocationLabel:
-    ru: str
-    en: str
-
-    def format(self) -> str:
-        return f"{self.ru} / {self.en}"
-
-
-LOCATION_LABELS: dict[StartLocation, LocationLabel] = {
-    StartLocation.JUSTICE_HALL: LocationLabel("Дом Юстиции", "Justice hall"),
-    StartLocation.VAKE: LocationLabel("от Ваке парка", "Vake park"),
-}
-
-
-@dataclass(frozen=True)
 class LiftTemplate:
     time: str
-    default_location: StartLocation
     capacity: int = 10
 
 
 DEFAULT_LIFTS: tuple[LiftTemplate, ...] = (
-    LiftTemplate("8:30", StartLocation.JUSTICE_HALL),
-    LiftTemplate("10:00", StartLocation.VAKE),
-    LiftTemplate("11:45", StartLocation.VAKE),
-    LiftTemplate("13:30", StartLocation.VAKE),
-    LiftTemplate("15:30", StartLocation.VAKE),
+    LiftTemplate("8:30"),
+    LiftTemplate("10:00"),
+    LiftTemplate("11:45"),
+    LiftTemplate("13:30"),
+    LiftTemplate("15:30"),
 )
 
 # Lifts switched off when a new setup opens; admins can re-enable them.
-DEFAULT_CANCELLED_LIFT_TIMES: tuple[str, ...] = ("15:30",)
+EXTRA_LIFT_TIME = "15:30"
+DEFAULT_CANCELLED_LIFT_TIMES: tuple[str, ...] = (EXTRA_LIFT_TIME,)
 
 CHECK_ANSWERS_OPTION = "👀 Посмотреть ответы / Check answers"
 PAYMENT_REMINDER = (

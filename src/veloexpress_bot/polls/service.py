@@ -24,8 +24,8 @@ from veloexpress_bot.polls.defaults import StartLocation
 from veloexpress_bot.polls.render import (
     PollDraft,
     PollRenderInput,
-    render_payment_notice,
     render_poll,
+    render_poll_notice,
 )
 
 
@@ -201,7 +201,6 @@ class PollPostingService:
         draft = render_poll(
             PollRenderInput(
                 service_date=setup.service_date,
-                first_lift_location=setup.first_lift_location,
                 cancelled_lift_times=setup.cancelled_lift_times,
             )
         )
@@ -268,7 +267,7 @@ class PollPostingService:
                     notice_message = await self._telegram_client.send_text(
                         chat_id=self._settings.telegram_target_chat_id,
                         message_thread_id=self._settings.telegram_target_thread_id,
-                        text=render_payment_notice(),
+                        text=render_poll_notice(setup.first_lift_location),
                     )
                 sent_message = await self._telegram_client.send_poll(
                     chat_id=self._settings.telegram_target_chat_id,
