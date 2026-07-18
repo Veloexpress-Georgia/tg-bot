@@ -130,13 +130,16 @@ def _availability_marker(total_count: int, capacity: int) -> str:
     return "🟢"
 
 
+EN_SHORT_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
 def _long_day_label(service_date: date) -> str:
-    day = "Sun" if service_date.weekday() == 6 else "Sat"
+    day = EN_SHORT_WEEKDAYS[service_date.weekday()]
     return f"{day}, {service_date.day} {EN_SHORT_MONTHS[service_date.month]}"
 
 
 def _short_day_label(service_date: date) -> str:
-    day = "Sun" if service_date.weekday() == 6 else "Sat"
+    day = EN_SHORT_WEEKDAYS[service_date.weekday()]
     return f"{day} {service_date.day}"
 
 

@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     telegram_target_chat_id: int | None = None
     telegram_target_thread_id: int | None = None
     telegram_pin_poll: bool = True
+    schedule_timezone: str = "Asia/Tbilisi"
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod

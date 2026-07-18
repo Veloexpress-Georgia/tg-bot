@@ -76,22 +76,15 @@ just down
 Use `just run` only when Postgres is already running and you want a one-shot bot
 process without hot reload.
 
-In the test Telegram group/topic, or in a direct message with the bot, send:
+All admin controls live in a private chat with the bot. Send `/start` and pick an action; `/create_lift_poll` jumps straight to the weekend plan. Polls are always posted to `TELEGRAM_TARGET_CHAT_ID` and, when configured, `TELEGRAM_TARGET_THREAD_ID`.
 
-```text
-/create_lift_poll
-```
+`📋 Weekend plan` is the single source of truth for what gets posted: it shows the upcoming weekend, the lift-time range (learned from recent weeks), which days are enabled, and when the polls will open automatically. Edits are saved as a plan — nothing posts until the scheduled time or an explicit `🚀 Post now`. Posted days are marked and protected; `♻️ Recreate polls` (with confirmation) replaces an already-posted weekend and reports tracked votes first. A `⏭ Skip weekend` toggle suppresses one auto run.
 
-The setup menu can be used from DM. Polls are still posted to `TELEGRAM_TARGET_CHAT_ID`
-and, when configured, `TELEGRAM_TARGET_THREAD_ID`.
+`⏰ Poll schedule` controls only the "when": the posting day (Monday–Saturday) and time in `SCHEDULE_TIMEZONE` (default `Asia/Tbilisi`), plus an optional group announcement 1–3 hours before posting. A background worker checks the schedule every 30 seconds and stores all state in Postgres, so restarts never lose or duplicate a run. The worker posts whatever the weekend plan says, skips days that already have active polls, and deletes the announcement message once the polls are up.
 
-The bot should show setup buttons for:
+`➕ Extra lift day` covers mid-week lifts: pick a date within the next 7 days and a lift range, and the polls post to the group immediately (unpinned, so weekend polls stay pinned).
 
-- enabling/disabling Saturday and Sunday
-- choosing the first and last lift times as a continuous range
-- creating the weekend polls or closing the setup without changes
-
-Admins can also open `📊 Booking monitor` from `/start` in a private chat. The bot keeps one reusable live monitor message per admin, with Saturday/Sunday tabs and `➖`/`➕` controls for people booked outside Telegram. Public availability uses Telegram votes plus manual bookings; a manual contribution is shown only when it is non-zero. All admin monitors refresh when votes or manual counts change. An admin must open the private bot chat before Telegram will allow the monitor to be delivered.
+`📊 Booking monitor` keeps one reusable live monitor message per admin, with day tabs and `➖`/`➕` controls for people booked outside Telegram. Public availability uses Telegram votes plus manual bookings; a manual contribution is shown only when it is non-zero. All admin monitors refresh when votes or manual counts change. An admin must open the private bot chat before Telegram will allow the monitor to be delivered.
 
 The test bot needs permission to send polls. To fully test MVP behavior, also allow it to delete its setup messages and pin/unpin messages. Before deleting an old bot-managed poll, the bot unpins it; when a new weekend batch is pinned, older tracked poll pins are retired while both current service-day polls remain pinned. The bot also removes its own Telegram “pinned …” service notices from the configured lift topic so they do not later become “pinned Deleted message”; pin notices created manually by admins are preserved.
 

@@ -9,7 +9,15 @@ from veloexpress_bot.polls.defaults import (
     StartLocation,
 )
 
-DAY_LABELS: dict[int, str] = {5: "Saturday", 6: "Sunday"}
+DAY_LABELS: dict[int, str] = {
+    0: "Monday",
+    1: "Tuesday",
+    2: "Wednesday",
+    3: "Thursday",
+    4: "Friday",
+    5: "Saturday",
+    6: "Sunday",
+}
 
 EN_MONTHS: dict[int, str] = {
     1: "January",
@@ -26,7 +34,15 @@ EN_MONTHS: dict[int, str] = {
     12: "December",
 }
 
-SHORT_DAY_LABELS: dict[int, str] = {5: "Sat", 6: "Sun"}
+SHORT_DAY_LABELS: dict[int, str] = {
+    0: "Mon",
+    1: "Tue",
+    2: "Wed",
+    3: "Thu",
+    4: "Fri",
+    5: "Sat",
+    6: "Sun",
+}
 
 EN_SHORT_MONTHS: dict[int, str] = {
     1: "Jan",

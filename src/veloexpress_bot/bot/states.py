@@ -1,5 +1,5 @@
 from aiogram.fsm.state import State, StatesGroup
 
 
-class PollSetupStates(StatesGroup):
+class ExtraDayStates(StatesGroup):
     editing = State()

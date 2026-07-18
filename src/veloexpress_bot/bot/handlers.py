@@ -1,85 +1,61 @@
 import logging
-from asyncio import Task, create_task, sleep
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
-from time import perf_counter
+from collections.abc import Iterable
+from datetime import UTC, date, datetime
 from typing import cast
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message, PollAnswer
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, PollAnswer
 
-from veloexpress_bot.bookings.render import decode_monitor_date, decode_monitor_time
-from veloexpress_bot.bot.keyboards import setup_keyboard, start_menu_keyboard
+from veloexpress_bot.bot.keyboards import start_menu_keyboard
 from veloexpress_bot.bot.permissions import is_admin
-from veloexpress_bot.bot.states import PollSetupStates
+from veloexpress_bot.bot.states import ExtraDayStates
 from veloexpress_bot.config import Settings
-from veloexpress_bot.polls.defaults import StartLocation
+from veloexpress_bot.polls.autoposter import PollAutoScheduler
+from veloexpress_bot.polls.autoschedule import CardView
+from veloexpress_bot.polls.extraday import (
+    ExtraDayDraftState,
+    ExtraDayView,
+    render_extra_day_card,
+)
+from veloexpress_bot.polls.planner import WeekendPlanner
 from veloexpress_bot.polls.schedule import (
     RangeBoundary,
-    enabled_lift_count,
-    lift_range_from_cancelled,
     normalize_cancelled_lift_times,
     select_lift_range_boundary,
 )
 from veloexpress_bot.polls.service import (
     DuplicatePollError,
-    PollCreationResult,
     PollPostingService,
     PollSetup,
 )
+from veloexpress_bot.polls.weekendplan import PlanCardView
 from veloexpress_bot.telegram.errors import TelegramPollPostError, TelegramTargetForbiddenError
 
 router = Router(name="admin_poll_setup")
 logger = logging.getLogger(__name__)
 
 ADMIN_ONLY_TEXT = "Admins only."
-DUPLICATE_POLL_ALERT = "Poll already exists. Recreate requires explicit confirmation."
-DUPLICATE_POLL_TEXT = (
-    "One or more selected days already have active polls. Close this setup or recreate "
-    "the existing polls. Recreate will report tracked votes before deleting old polls."
-)
-EXPIRED_SETUP_TEXT = "This poll setup expired. Run /create_lift_poll again."
-POLL_POST_FAILED_TEXT = "Could not create poll. The setup is still open; check logs and try again."
+PRIVATE_ONLY_TEXT = "Open the bot in a private chat via /start."
+STALE_SETUP_ALERT = "This menu is outdated. Run /start again."
+TELEGRAM_NOT_MODIFIED_TEXT = "message is not modified"
+POLL_POST_FAILED_TEXT = "Could not post polls. Check logs and try again."
 POLL_TARGET_FORBIDDEN_TEXT = (
-    "Could not create poll: Telegram rejected the target chat. The bot was likely removed "
+    "Could not post polls: Telegram rejected the target chat. The bot was likely removed "
     "from the configured group/topic. Add it back or update TELEGRAM_TARGET_CHAT_ID, "
     "then try again."
 )
-POLL_SETUP_CANCELLED_TEXT = "Poll setup closed."
-STALE_SETUP_ALERT = "This setup expired. Run /create_lift_poll again."
-TELEGRAM_NOT_MODIFIED_TEXT = "message is not modified"
-SETUP_EDIT_DEBOUNCE_SECONDS = 0.75
+ALREADY_POSTED_ALERT = "Polls for this weekend are already posted."
 START_TEXT = (
     "🚐 Veloexpress Bot\n\n"
-    "I help admins create weekend lift polls and keep Telegram operations natural."
+    "I help admins plan weekend lift polls and keep Telegram operations natural."
 )
 
-
-@dataclass(frozen=True)
-class SetupStateData:
-    service_dates: tuple[date, ...]
-    selected_service_dates: tuple[date, ...]
-    first_lift_location: StartLocation
-    cancelled_lift_times: tuple[str, ...]
-    setup_view: str = "main"
-
-
-@dataclass(frozen=True)
-class PendingSetupEdit:
-    message: Message
-    text: str
-    setup_state: SetupStateData
-    allow_recreate: bool
-
-
-SetupEditKey = tuple[int, int]
-_pending_setup_edits: dict[SetupEditKey, PendingSetupEdit] = {}
-_setup_edit_tasks: dict[SetupEditKey, Task[None]] = {}
-_setup_edit_blocked_until: dict[SetupEditKey, float] = {}
+PLAN_VIEWS: set[str] = {"main", "first", "last", "recreate"}
+EXTRA_VIEWS: set[str] = {"date", "main", "first", "last"}
 
 
 @router.message(Command("start"))
@@ -108,42 +84,60 @@ async def show_start_menu(
 @router.message(Command("create_lift_poll"))
 async def create_lift_poll(
     message: Message,
-    state: FSMContext,
     settings: Settings,
+    planner: WeekendPlanner,
     poll_service: PollPostingService,
 ) -> None:
     if not is_admin(message.from_user.id if message.from_user else None, settings):
         await message.answer("This command is only available to Veloexpress admins.")
         return
+    if message.chat.type != "private":
+        await message.answer(PRIVATE_ONLY_TEXT)
+        return
 
-    await _open_poll_setup_from_message(
-        message=message,
-        state=state,
-        poll_service=poll_service,
+    card = await planner.plan_card()
+    await message.answer(card.text, reply_markup=card.reply_markup)
+    await poll_service.cleanup_setup_messages(
+        chat_id=message.chat.id,
+        message_ids=(message.message_id,),
     )
 
 
-@router.callback_query(F.data == "menu:create_lift_poll")
-async def create_lift_poll_from_menu(
+@router.callback_query(F.data.in_({"menu:weekend_plan", "menu:create_lift_poll"}))
+async def open_weekend_plan(
+    callback: CallbackQuery,
+    settings: Settings,
+    planner: WeekendPlanner,
+) -> None:
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+
+    card = await planner.plan_card()
+    await _edit_card(message, card.text, card.reply_markup)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "menu:extra_day")
+async def open_extra_day(
     callback: CallbackQuery,
     state: FSMContext,
     settings: Settings,
     poll_service: PollPostingService,
 ) -> None:
-    if not is_admin(callback.from_user.id, settings):
-        await callback.answer(ADMIN_ONLY_TEXT, show_alert=True)
-        return
-    message = _accessible_message(callback)
+    message = await _admin_private_message(callback, settings)
     if message is None:
-        await callback.answer("Open /start again.", show_alert=True)
         return
 
-    await _open_poll_setup_from_menu(
-        callback=callback,
-        message=message,
-        state=state,
-        poll_service=poll_service,
+    cancelled = await poll_service.suggested_cancelled_lift_times()
+    await state.set_state(ExtraDayStates.editing)
+    await state.update_data(extra_date=None, extra_cancelled=list(cancelled))
+    card = render_extra_day_card(
+        ExtraDayDraftState(selected_date=None, cancelled_lift_times=cancelled),
+        view="date",
+        today=_today(settings),
     )
+    await _edit_card(message, card.text, card.reply_markup)
     await callback.answer()
 
 
@@ -172,7 +166,7 @@ async def cancel_start_menu(
         chat_id=message.chat.id,
         message_ids=menu_message_ids,
     )
-    await _clear_menu_message_ids(state=state)
+    await state.update_data(menu_message_ids=[])
 
 
 @router.callback_query(F.data == "menu:booking_monitor")
@@ -199,377 +193,342 @@ async def open_booking_monitor(
     )
 
 
-@router.callback_query(F.data.startswith("mon:day:"))
-async def select_booking_monitor_day(
+@router.callback_query(F.data == "menu:poll_schedule")
+async def open_poll_schedule(
     callback: CallbackQuery,
     settings: Settings,
-    poll_service: PollPostingService,
+    auto_scheduler: PollAutoScheduler,
 ) -> None:
-    if not is_admin(callback.from_user.id, settings):
-        await callback.answer(ADMIN_ONLY_TEXT, show_alert=True)
-        return
-    message = _accessible_message(callback)
-    if message is None or message.chat.type != "private":
-        await callback.answer("Open the monitor in a private chat.", show_alert=True)
+    message = await _admin_private_message(callback, settings)
+    if message is None:
         return
 
-    selected_date = decode_monitor_date((callback.data or "").removeprefix("mon:day:"))
+    card = await auto_scheduler.schedule_card()
+    await _edit_card(message, card.text, card.reply_markup)
     await callback.answer()
-    await poll_service.open_booking_monitor(
-        admin_user_id=callback.from_user.id,
-        private_chat_id=message.chat.id,
-        selected_service_date=selected_date,
-    )
 
 
-@router.callback_query(F.data.startswith("mon:add:") | F.data.startswith("mon:sub:"))
-async def adjust_manual_booking(
+@router.callback_query(F.data.startswith("plan:"))
+async def handle_weekend_plan_card(
     callback: CallbackQuery,
     settings: Settings,
+    planner: WeekendPlanner,
     poll_service: PollPostingService,
 ) -> None:
-    if not is_admin(callback.from_user.id, settings):
-        await callback.answer(ADMIN_ONLY_TEXT, show_alert=True)
-        return
-    message = _accessible_message(callback)
-    if message is None or message.chat.type != "private":
-        await callback.answer("Open the monitor in a private chat.", show_alert=True)
+    message = await _admin_private_message(callback, settings)
+    if message is None:
         return
 
-    action, compact_date, compact_time = (callback.data or "").split(":")[1:]
-    delta = 1 if action == "add" else -1
-    await callback.answer("Updating…")
-    try:
-        await poll_service.adjust_manual_booking(
-            service_date=decode_monitor_date(compact_date),
-            lift_time=decode_monitor_time(compact_time),
-            delta=delta,
-            admin_user_id=callback.from_user.id,
-        )
-    except ValueError as error:
-        await message.answer(str(error))
+    parts = (callback.data or "").split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    value = parts[2] if len(parts) > 2 else ""
 
-
-@router.callback_query(F.data.startswith("mon:info:"))
-async def show_booking_lift_details(
-    callback: CallbackQuery,
-    settings: Settings,
-    poll_service: PollPostingService,
-) -> None:
-    if not is_admin(callback.from_user.id, settings):
-        await callback.answer(ADMIN_ONLY_TEXT, show_alert=True)
-        return
-    _, _, compact_date, compact_time = (callback.data or "").split(":")
-    details = await poll_service.booking_lift_details(
-        service_date=decode_monitor_date(compact_date),
-        lift_time=decode_monitor_time(compact_time),
-    )
-    await callback.answer(details, show_alert=True)
-
-
-async def _open_poll_setup_from_message(
-    *,
-    message: Message,
-    state: FSMContext,
-    poll_service: PollPostingService,
-) -> None:
-    service_dates = _upcoming_weekend_dates()
-    first_lift_location = StartLocation.JUSTICE_HALL
-    cancelled_lift_times = await poll_service.suggested_cancelled_lift_times()
-    setup_state = SetupStateData(
-        service_dates=service_dates,
-        selected_service_dates=service_dates,
-        first_lift_location=first_lift_location,
-        cancelled_lift_times=cancelled_lift_times,
-    )
-    await _store_setup_state(state=state, setup_state=setup_state)
-    allow_recreate = await _has_active_conflicts(
-        setup_state=setup_state,
-        created_by_user_id=message.from_user.id if message.from_user else 0,
-        poll_service=poll_service,
-    )
-    sent = await message.answer(
-        _setup_text_for_conflicts(setup_state=setup_state, allow_recreate=allow_recreate),
-        reply_markup=setup_keyboard(
-            service_dates=service_dates,
-            selected_service_dates=service_dates,
-            cancelled_lift_times=cancelled_lift_times,
-            allow_recreate=allow_recreate,
-            view=setup_state.setup_view,
-        ),
-    )
-    await state.update_data(
-        setup_message_ids=list(
-            _setup_message_ids_for_cleanup(
-                command_message_id=message.message_id,
-                setup_message_id=sent.message_id,
-            )
-        ),
-        allow_recreate=allow_recreate,
-    )
-
-
-async def _open_poll_setup_from_menu(
-    *,
-    callback: CallbackQuery,
-    message: Message,
-    state: FSMContext,
-    poll_service: PollPostingService,
-) -> None:
-    service_dates = _upcoming_weekend_dates()
-    cancelled_lift_times = await poll_service.suggested_cancelled_lift_times()
-    setup_state = SetupStateData(
-        service_dates=service_dates,
-        selected_service_dates=service_dates,
-        first_lift_location=StartLocation.JUSTICE_HALL,
-        cancelled_lift_times=cancelled_lift_times,
-    )
-    await _store_setup_state(state=state, setup_state=setup_state)
-    allow_recreate = await _has_active_conflicts(
-        setup_state=setup_state,
-        created_by_user_id=callback.from_user.id,
-        poll_service=poll_service,
-    )
-    await message.edit_text(
-        _setup_text_for_conflicts(setup_state=setup_state, allow_recreate=allow_recreate),
-        reply_markup=setup_keyboard(
-            service_dates=setup_state.service_dates,
-            selected_service_dates=setup_state.selected_service_dates,
-            cancelled_lift_times=setup_state.cancelled_lift_times,
-            allow_recreate=allow_recreate,
-            view=setup_state.setup_view,
-        ),
-    )
-    data = await state.get_data()
-    setup_message_ids = _setup_message_ids_from_menu_state(
-        data=data,
-        setup_message_id=message.message_id,
-    )
-    await state.update_data(
-        setup_message_ids=list(setup_message_ids),
-        menu_message_ids=[],
-        allow_recreate=allow_recreate,
-    )
-
-
-async def _store_setup_state(*, state: FSMContext, setup_state: SetupStateData) -> None:
-    await state.set_state(PollSetupStates.editing)
-    await state.update_data(
-        service_dates=[service_date.isoformat() for service_date in setup_state.service_dates],
-        selected_service_dates=[
-            service_date.isoformat() for service_date in setup_state.selected_service_dates
-        ],
-        first_lift_location=setup_state.first_lift_location.value,
-        cancelled_lift_times=list(setup_state.cancelled_lift_times),
-        setup_view=setup_state.setup_view,
-        setup_message_ids=[],
-        allow_recreate=False,
-    )
-
-
-@router.callback_query(PollSetupStates.editing, F.data.startswith("day:toggle:"))
-async def toggle_service_day(
-    callback: CallbackQuery,
-    state: FSMContext,
-    poll_service: PollPostingService,
-) -> None:
-    callback_data = callback.data or ""
-    service_date = date.fromisoformat(callback_data.removeprefix("day:toggle:"))
-    data = await state.get_data()
-    selected_dates = set(_string_items(data.get("selected_service_dates", data["service_dates"])))
-
-    if service_date.isoformat() in selected_dates:
-        if len(selected_dates) == 1:
-            await callback.answer("At least one day must remain.", show_alert=True)
-            return
-        selected_dates.remove(service_date.isoformat())
-    else:
-        selected_dates.add(service_date.isoformat())
-
-    await state.update_data(selected_service_dates=sorted(selected_dates))
-    await _refresh_setup(callback, state, poll_service, refresh_conflicts=True)
-
-
-@router.callback_query(PollSetupStates.editing, F.data.startswith("range:"))
-async def select_lift_range(
-    callback: CallbackQuery,
-    state: FSMContext,
-    poll_service: PollPostingService,
-) -> None:
-    callback_data = callback.data or ""
-    _, boundary, lift_time = callback_data.split(":", maxsplit=2)
-    data = await state.get_data()
-    cancelled = select_lift_range_boundary(
-        _string_items(data.get("cancelled_lift_times", [])),
-        boundary=cast(RangeBoundary, boundary),
-        selected_time=lift_time,
-    )
-    await state.update_data(
-        cancelled_lift_times=list(cancelled),
-        setup_view="main",
-    )
-    await _refresh_setup(callback, state, poll_service)
-
-
-@router.callback_query(
-    PollSetupStates.editing, F.data.in_({"view:main", "view:first", "view:last"})
-)
-async def switch_setup_view(
-    callback: CallbackQuery,
-    state: FSMContext,
-    poll_service: PollPostingService,
-) -> None:
-    setup_view = (callback.data or "view:main").removeprefix("view:")
-    await state.update_data(setup_view=setup_view)
-    await _refresh_setup(callback, state, poll_service)
-
-
-@router.callback_query(PollSetupStates.editing, F.data == "poll:cancel")
-async def cancel_setup(
-    callback: CallbackQuery,
-    state: FSMContext,
-    poll_service: PollPostingService,
-) -> None:
-    data = await state.get_data()
-    setup_message_ids = tuple(int(item) for item in data.get("setup_message_ids", []))
-    await state.clear()
-    await callback.answer(POLL_SETUP_CANCELLED_TEXT)
-    if message := _accessible_message(callback):
-        cleanup = await poll_service.cleanup_setup_messages(
+    if action == "close":
+        await callback.answer("Plan closed.")
+        await poll_service.cleanup_setup_messages(
             chat_id=message.chat.id,
-            message_ids=setup_message_ids,
+            message_ids=(message.message_id,),
         )
-        if cleanup.failed_count:
-            await message.edit_text(POLL_SETUP_CANCELLED_TEXT)
-
-
-@router.callback_query(
-    PollSetupStates.editing,
-    F.data.in_({"poll:confirm", "poll:recreate_confirm"}),
-)
-async def confirm_setup(
-    callback: CallbackQuery,
-    state: FSMContext,
-    settings: Settings,
-    poll_service: PollPostingService,
-) -> None:
-    if not is_admin(callback.from_user.id, settings):
-        await callback.answer(ADMIN_ONLY_TEXT, show_alert=True)
         return
-
-    data = await state.get_data()
-    setup_state = _setup_state_data(data)
-    recreate_existing = callback.data == "poll:recreate_confirm"
-    setups = _poll_setups_from_state(
-        setup_state=setup_state,
-        created_by_user_id=callback.from_user.id,
-    )
-
-    conflicts = await poll_service.find_active_conflicts(setups)
-
-    if conflicts and not recreate_existing:
-        if message := _accessible_message(callback):
-            await message.edit_text(
-                _setup_text(
-                    setup_state.service_dates,
-                    setup_state.first_lift_location,
-                    setup_state.cancelled_lift_times,
-                    selected_service_dates=setup_state.selected_service_dates,
-                )
-                + f"\n\n{DUPLICATE_POLL_TEXT}",
-                reply_markup=setup_keyboard(
-                    service_dates=setup_state.service_dates,
-                    selected_service_dates=setup_state.selected_service_dates,
-                    cancelled_lift_times=setup_state.cancelled_lift_times,
-                    allow_recreate=True,
-                ),
-            )
+    if action == "menu":
+        await _show_menu(message)
+        await callback.answer()
+        return
+    if action == "posted":
         await callback.answer(
-            DUPLICATE_POLL_ALERT,
+            "Already posted. Use ♻️ Recreate polls to replace this weekend.",
             show_alert=True,
         )
         return
 
-    recreate_existing = _should_recreate_existing(
-        requested=recreate_existing,
-        has_conflicts=bool(conflicts),
-    )
-    await callback.answer("Creating polls…")
-
+    view: PlanCardView = "main"
+    answer_text: str | None = None
     try:
-        recreate_result = None
-        report_text: str | None = None
-        if recreate_existing:
-            recreate_result = await poll_service.recreate_polls(setups)
-            results = list(recreate_result.created)
-            report_text = recreate_result.report_text
+        if action == "view" and value in PLAN_VIEWS:
+            view = cast(PlanCardView, value)
+        elif action == "day":
+            await planner.toggle_day(value, admin_user_id=callback.from_user.id)
+        elif action in {"first", "last"}:
+            await planner.set_range_boundary(
+                cast(RangeBoundary, action),
+                value,
+                admin_user_id=callback.from_user.id,
+            )
+        elif action == "skip":
+            await planner.toggle_skip(admin_user_id=callback.from_user.id)
+        elif action == "post":
+            answer_text, view = await _post_now(
+                callback=callback,
+                message=message,
+                planner=planner,
+            )
+            if answer_text is None:
+                return
+        elif action == "recreate":
+            answer_text = await _recreate_weekend(
+                callback=callback,
+                message=message,
+                planner=planner,
+            )
+            if answer_text is None:
+                return
         else:
-            results = [
-                await poll_service.create_poll(
-                    setup,
-                    include_notice=index == 0,
-                    pin_after_send=False,
-                )
-                for index, setup in enumerate(setups)
-            ]
-            results = list(await poll_service.pin_created_results(tuple(results)))
-    except DuplicatePollError:
-        if message := _accessible_message(callback):
-            await message.answer("One of these polls was already posted.")
+            await callback.answer()
+            return
+    except ValueError as error:
+        await callback.answer(str(error), show_alert=True)
         return
+
+    card = await planner.plan_card(view=view)
+    await _edit_card(message, card.text, card.reply_markup)
+    await callback.answer(answer_text)
+
+
+async def _post_now(
+    *,
+    callback: CallbackQuery,
+    message: Message,
+    planner: WeekendPlanner,
+) -> tuple[str | None, PlanCardView]:
+    try:
+        result = await planner.post_now(admin_user_id=callback.from_user.id)
     except TelegramTargetForbiddenError:
-        logger.exception("Poll creation failed because target chat rejected the bot")
-        if message := _accessible_message(callback):
-            await message.answer(POLL_TARGET_FORBIDDEN_TEXT)
-        return
+        logger.exception("Weekend plan posting failed because target chat rejected the bot")
+        await callback.answer()
+        await message.answer(POLL_TARGET_FORBIDDEN_TEXT)
+        return None, "main"
     except TelegramPollPostError:
-        logger.exception("Poll creation failed while sending Telegram poll")
-        if message := _accessible_message(callback):
-            await message.answer(POLL_POST_FAILED_TEXT)
+        logger.exception("Weekend plan posting failed while sending Telegram poll")
+        await callback.answer()
+        await message.answer(POLL_POST_FAILED_TEXT)
+        return None, "main"
+    except DuplicatePollError:
+        return ALREADY_POSTED_ALERT, "recreate"
+
+    if result.already_posted:
+        return ALREADY_POSTED_ALERT, "recreate"
+    poll_label = "poll" if result.created_count == 1 else "polls"
+    return f"Posted {result.created_count} {poll_label}.", "main"
+
+
+async def _recreate_weekend(
+    *,
+    callback: CallbackQuery,
+    message: Message,
+    planner: WeekendPlanner,
+) -> str | None:
+    try:
+        report_text, cleanup_failed_count = await planner.recreate(
+            admin_user_id=callback.from_user.id
+        )
+    except DuplicatePollError:
+        return "No active polls to recreate — use Post now."
+    except TelegramTargetForbiddenError:
+        logger.exception("Weekend recreate failed because target chat rejected the bot")
+        await callback.answer()
+        await message.answer(POLL_TARGET_FORBIDDEN_TEXT)
+        return None
+    except TelegramPollPostError:
+        logger.exception("Weekend recreate failed while sending Telegram poll")
+        await callback.answer()
+        await message.answer(POLL_POST_FAILED_TEXT)
+        return None
+
+    if _should_send_recreate_report(report_text):
+        await message.answer(report_text)
+    if cleanup_failed_count:
+        await message.answer(
+            "Replacement polls were created, but some old poll messages could not be "
+            "deleted. Check the chat and remove stale polls manually."
+        )
+    return "Polls recreated."
+
+
+@router.callback_query(F.data.startswith("sched:"))
+async def handle_poll_schedule_card(
+    callback: CallbackQuery,
+    settings: Settings,
+    auto_scheduler: PollAutoScheduler,
+    poll_service: PollPostingService,
+) -> None:
+    message = await _admin_private_message(callback, settings)
+    if message is None:
         return
 
-    await poll_service.record_schedule_selection(
-        service_dates=setup_state.selected_service_dates,
-        cancelled_lift_times=setup_state.cancelled_lift_times,
-        created_by_user_id=callback.from_user.id,
-    )
+    parts = (callback.data or "").split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    value = parts[2] if len(parts) > 2 else ""
 
-    setup_message_ids = tuple(int(item) for item in data.get("setup_message_ids", []))
-    await state.clear()
-    if message := _accessible_message(callback):
-        cleanup = await poll_service.cleanup_setup_messages(
+    if action == "close":
+        await callback.answer("Schedule closed.")
+        await poll_service.cleanup_setup_messages(
             chat_id=message.chat.id,
-            message_ids=setup_message_ids,
+            message_ids=(message.message_id,),
         )
-        completion_text = _completion_text(
-            message_ids=tuple(result.message_id for result in results),
-            pinned=any(result.pinned for result in results),
-            deleted_count=cleanup.deleted_count,
-            failed_count=cleanup.failed_count,
+        return
+    if action == "menu":
+        await _show_menu(message)
+        await callback.answer()
+        return
+
+    view: CardView = "main"
+    try:
+        if action == "view" and value in {"main", "day", "time"}:
+            view = cast(CardView, value)
+        elif action == "toggle":
+            await auto_scheduler.toggle_enabled(admin_user_id=callback.from_user.id)
+        elif action == "day":
+            await auto_scheduler.set_creation_weekday(
+                int(value), admin_user_id=callback.from_user.id
+            )
+        elif action == "time":
+            await auto_scheduler.set_creation_time(value, admin_user_id=callback.from_user.id)
+        elif action == "announce":
+            await auto_scheduler.cycle_announce_lead(admin_user_id=callback.from_user.id)
+        elif action == "skip":
+            await auto_scheduler.toggle_skip(admin_user_id=callback.from_user.id)
+        else:
+            await callback.answer()
+            return
+    except ValueError as error:
+        await callback.answer(str(error), show_alert=True)
+        return
+
+    card = await auto_scheduler.schedule_card(view=view)
+    await _edit_card(message, card.text, card.reply_markup)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("extra:"))
+async def handle_extra_day_card(
+    callback: CallbackQuery,
+    state: FSMContext,
+    settings: Settings,
+    poll_service: PollPostingService,
+) -> None:
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+
+    parts = (callback.data or "").split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    value = parts[2] if len(parts) > 2 else ""
+
+    if action == "close":
+        await state.clear()
+        await callback.answer("Extra day closed.")
+        await poll_service.cleanup_setup_messages(
+            chat_id=message.chat.id,
+            message_ids=(message.message_id,),
         )
-        logger.info(
-            "Poll setup completed",
-            extra={
-                "message_ids": _message_ids_text(results),
-                "pinned": any(result.pinned for result in results),
-                "deleted_count": cleanup.deleted_count,
-                "failed_count": cleanup.failed_count,
-            },
-        )
-        if _should_notify_completion(
-            pinned=any(result.pinned for result in results),
-            failed_count=cleanup.failed_count,
-        ):
-            await message.answer(completion_text)
-        if report_text and _should_send_recreate_report(report_text):
-            await message.answer(report_text)
-        if recreate_result:
-            recreate_cleanup = await poll_service.cleanup_recreated_polls(recreate_result)
-            if recreate_cleanup.failed_count:
-                await message.answer(
-                    "Replacement polls were created, but some old poll messages could not be "
-                    "deleted. Check the chat and remove stale polls manually."
-                )
+        return
+    if action == "menu":
+        await state.clear()
+        await _show_menu(message)
+        await callback.answer()
+        return
+
+    draft = await _extra_day_state(state, poll_service)
+    view: ExtraDayView = "main"
+    answer_text: str | None = None
+    try:
+        if action == "view" and value in EXTRA_VIEWS:
+            view = cast(ExtraDayView, value)
+        elif action == "date":
+            draft = ExtraDayDraftState(
+                selected_date=date.fromisoformat(value),
+                cancelled_lift_times=draft.cancelled_lift_times,
+            )
+        elif action in {"first", "last"}:
+            draft = ExtraDayDraftState(
+                selected_date=draft.selected_date,
+                cancelled_lift_times=select_lift_range_boundary(
+                    draft.cancelled_lift_times,
+                    boundary="first" if action == "first" else "last",
+                    selected_time=value,
+                ),
+            )
+        elif action == "post":
+            answer_text = await _post_extra_day(
+                callback=callback,
+                message=message,
+                state=state,
+                poll_service=poll_service,
+                draft=draft,
+            )
+            if answer_text is None:
+                return
+            if answer_text.startswith("Posted"):
+                return
+        else:
+            await callback.answer()
+            return
+    except ValueError as error:
+        await callback.answer(str(error), show_alert=True)
+        return
+
+    await state.set_state(ExtraDayStates.editing)
+    await state.update_data(
+        extra_date=draft.selected_date.isoformat() if draft.selected_date else None,
+        extra_cancelled=list(draft.cancelled_lift_times),
+    )
+    card = render_extra_day_card(draft, view=view, today=_today(settings))
+    await _edit_card(message, card.text, card.reply_markup)
+    await callback.answer(answer_text)
+
+
+async def _post_extra_day(
+    *,
+    callback: CallbackQuery,
+    message: Message,
+    state: FSMContext,
+    poll_service: PollPostingService,
+    draft: ExtraDayDraftState,
+) -> str | None:
+    if draft.selected_date is None:
+        return "Pick a date first."
+
+    setup = PollSetup(
+        service_date=draft.selected_date,
+        created_by_user_id=callback.from_user.id,
+        cancelled_lift_times=draft.cancelled_lift_times,
+    )
+    try:
+        await poll_service.create_poll(setup, include_notice=True, pin_after_send=False)
+    except DuplicatePollError:
+        return "Polls for this date already exist."
+    except TelegramTargetForbiddenError:
+        logger.exception("Extra day posting failed because target chat rejected the bot")
+        await callback.answer()
+        await message.answer(POLL_TARGET_FORBIDDEN_TEXT)
+        return None
+    except TelegramPollPostError:
+        logger.exception("Extra day posting failed while sending Telegram poll")
+        await callback.answer()
+        await message.answer(POLL_POST_FAILED_TEXT)
+        return None
+
+    await state.clear()
+    await callback.answer("Posted extra day polls.")
+    await _show_menu(message)
+    return "Posted"
+
+
+async def _extra_day_state(
+    state: FSMContext,
+    poll_service: PollPostingService,
+) -> ExtraDayDraftState:
+    data = await state.get_data()
+    raw_date = data.get("extra_date")
+    raw_cancelled = data.get("extra_cancelled")
+    if raw_cancelled is None:
+        cancelled = await poll_service.suggested_cancelled_lift_times()
+    else:
+        cancelled = normalize_cancelled_lift_times(_string_items(raw_cancelled))
+    return ExtraDayDraftState(
+        selected_date=date.fromisoformat(str(raw_date)) if raw_date else None,
+        cancelled_lift_times=cancelled,
+    )
 
 
 @router.poll_answer()
@@ -618,172 +577,59 @@ async def handle_stale_setup_callback(
     settings: Settings,
     poll_service: PollPostingService,
 ) -> None:
+    """Old poll-setup messages may still carry buttons from the retired flow."""
     if not is_admin(callback.from_user.id, settings):
         await callback.answer(ADMIN_ONLY_TEXT, show_alert=True)
         return
 
     message = _accessible_message(callback)
     if message is None:
-        await callback.answer(
-            STALE_SETUP_ALERT,
-            show_alert=True,
-        )
+        await callback.answer(STALE_SETUP_ALERT, show_alert=True)
         return
 
-    cleanup = await poll_service.cleanup_setup_messages(
+    await callback.answer(STALE_SETUP_ALERT, show_alert=True)
+    await poll_service.cleanup_setup_messages(
         chat_id=message.chat.id,
         message_ids=(message.message_id,),
     )
-
-    if callback.data == "poll:cancel":
-        await callback.answer("Expired setup removed.")
-    else:
-        await callback.answer(
-            STALE_SETUP_ALERT,
-            show_alert=True,
-        )
-
-    if cleanup.failed_count:
-        await message.edit_text(EXPIRED_SETUP_TEXT)
-
-    if callback.data == "poll:cancel":
-        return
-
     logger.info(
         "Removed stale poll setup message",
         extra={"message_id": message.message_id, "callback_data": callback.data},
     )
 
 
-async def _refresh_setup(
+async def _admin_private_message(
     callback: CallbackQuery,
-    state: FSMContext,
-    poll_service: PollPostingService,
-    *,
-    refresh_conflicts: bool = False,
-) -> None:
-    data = await state.get_data()
-    setup_state = _setup_state_data(data)
-    if refresh_conflicts:
-        allow_recreate = await _has_active_conflicts(
-            setup_state=setup_state,
-            created_by_user_id=callback.from_user.id,
-            poll_service=poll_service,
-        )
-        await state.update_data(allow_recreate=allow_recreate)
-    else:
-        allow_recreate = _cached_allow_recreate(data)
-    if message := _accessible_message(callback):
-        await _schedule_setup_message_edit(
-            message=message,
-            text=_setup_text_for_conflicts(
-                setup_state=setup_state,
-                allow_recreate=allow_recreate,
-            ),
-            setup_state=setup_state,
-            allow_recreate=allow_recreate,
-        )
-    await callback.answer()
+    settings: Settings,
+) -> Message | None:
+    if not is_admin(callback.from_user.id, settings):
+        await callback.answer(ADMIN_ONLY_TEXT, show_alert=True)
+        return None
+    message = _accessible_message(callback)
+    if message is None or message.chat.type != "private":
+        await callback.answer(PRIVATE_ONLY_TEXT, show_alert=True)
+        return None
+    return message
 
 
-async def _schedule_setup_message_edit(
-    *,
-    message: Message,
-    text: str,
-    setup_state: SetupStateData,
-    allow_recreate: bool,
-) -> None:
-    key = _setup_edit_key(message)
-    now = perf_counter()
-    blocked_until = _setup_edit_blocked_until.get(key, 0.0)
-    if now < blocked_until:
-        logger.debug(
-            "poll_setup_edit_skipped_flood_cooldown retry_after_ms=%s chat_id=%s message_id=%s",
-            int((blocked_until - now) * 1000),
-            message.chat.id,
-            message.message_id,
-            extra={
-                "retry_after_ms": int((blocked_until - now) * 1000),
-                "chat_id": message.chat.id,
-                "message_id": message.message_id,
-            },
-        )
-        return
-
-    _pending_setup_edits[key] = PendingSetupEdit(
-        message=message,
-        text=text,
-        setup_state=setup_state,
-        allow_recreate=allow_recreate,
+async def _show_menu(message: Message) -> None:
+    await _edit_card(
+        message,
+        f"{START_TEXT}\n\nChoose an action below.",
+        start_menu_keyboard(is_admin=True),
     )
-    task = _setup_edit_tasks.get(key)
-    if task is None or task.done():
-        task = create_task(_flush_setup_message_edit_after_debounce(key))
-        _setup_edit_tasks[key] = task
-    await task
 
 
-async def _flush_setup_message_edit_after_debounce(key: SetupEditKey) -> None:
-    try:
-        await sleep(SETUP_EDIT_DEBOUNCE_SECONDS)
-        pending = _pending_setup_edits.pop(key, None)
-        if pending is None:
-            return
-        await _edit_setup_message(
-            message=pending.message,
-            text=pending.text,
-            setup_state=pending.setup_state,
-            allow_recreate=pending.allow_recreate,
-        )
-    finally:
-        _setup_edit_tasks.pop(key, None)
-
-
-async def _edit_setup_message(
-    *,
+async def _edit_card(
     message: Message,
     text: str,
-    setup_state: SetupStateData,
-    allow_recreate: bool,
+    reply_markup: InlineKeyboardMarkup | None,
 ) -> None:
     try:
-        await message.edit_text(
-            text,
-            reply_markup=setup_keyboard(
-                service_dates=setup_state.service_dates,
-                selected_service_dates=setup_state.selected_service_dates,
-                cancelled_lift_times=setup_state.cancelled_lift_times,
-                allow_recreate=allow_recreate,
-                view=setup_state.setup_view,
-            ),
-        )
-    except TelegramRetryAfter as error:
-        _setup_edit_blocked_until[_setup_edit_key(message)] = perf_counter() + error.retry_after
-        logger.warning(
-            "poll_setup_edit_flood_control retry_after=%s chat_id=%s message_id=%s",
-            error.retry_after,
-            message.chat.id,
-            message.message_id,
-            extra={
-                "retry_after": error.retry_after,
-                "chat_id": message.chat.id,
-                "message_id": message.message_id,
-            },
-        )
+        await message.edit_text(text, reply_markup=reply_markup)
     except TelegramBadRequest as error:
-        if TELEGRAM_NOT_MODIFIED_TEXT in str(error).lower():
-            logger.debug(
-                "poll_setup_edit_not_modified chat_id=%s message_id=%s",
-                message.chat.id,
-                message.message_id,
-                extra={"chat_id": message.chat.id, "message_id": message.message_id},
-            )
-            return
-        raise
-
-
-def _setup_edit_key(message: Message) -> SetupEditKey:
-    return message.chat.id, message.message_id
+        if TELEGRAM_NOT_MODIFIED_TEXT not in str(error).lower():
+            raise
 
 
 def _should_cleanup_bot_pin_notice(
@@ -801,79 +647,8 @@ def _should_cleanup_bot_pin_notice(
     )
 
 
-async def _has_active_conflicts(
-    *,
-    setup_state: SetupStateData,
-    created_by_user_id: int,
-    poll_service: PollPostingService,
-) -> bool:
-    setups = _poll_setups_from_state(
-        setup_state=setup_state,
-        created_by_user_id=created_by_user_id,
-    )
-    started_at = perf_counter()
-    conflicts = await poll_service.find_active_conflicts(setups)
-    duration_ms = int((perf_counter() - started_at) * 1000)
-    logger.info(
-        "poll_setup_conflict_check_done duration_ms=%s service_dates=%s conflict_count=%s",
-        duration_ms,
-        ",".join(setup.service_date.isoformat() for setup in setups),
-        len(conflicts),
-        extra={
-            "duration_ms": duration_ms,
-            "service_dates": tuple(setup.service_date.isoformat() for setup in setups),
-            "conflict_count": len(conflicts),
-        },
-    )
-    return bool(conflicts)
-
-
-def _cached_allow_recreate(data: dict[str, object]) -> bool:
-    return data.get("allow_recreate") is True
-
-
-def _setup_text_for_conflicts(*, setup_state: SetupStateData, allow_recreate: bool) -> str:
-    text = _setup_text(
-        setup_state.service_dates,
-        setup_state.first_lift_location,
-        setup_state.cancelled_lift_times,
-        selected_service_dates=setup_state.selected_service_dates,
-    )
-    if setup_state.setup_view == "first":
-        text = f"{text}\n\n▶️ Choose the first lift time."
-    elif setup_state.setup_view == "last":
-        text = f"{text}\n\n⏹ Choose the last lift time."
-    if allow_recreate:
-        return f"{text}\n\n{DUPLICATE_POLL_TEXT}"
-    return text
-
-
-def _poll_setups_from_state(
-    *,
-    setup_state: SetupStateData,
-    created_by_user_id: int,
-) -> tuple[PollSetup, ...]:
-    return tuple(
-        PollSetup(
-            service_date=service_date,
-            created_by_user_id=created_by_user_id,
-            first_lift_location=setup_state.first_lift_location,
-            cancelled_lift_times=setup_state.cancelled_lift_times,
-        )
-        for service_date in setup_state.selected_service_dates
-    )
-
-
-def _should_recreate_existing(*, requested: bool, has_conflicts: bool) -> bool:
-    return requested and has_conflicts
-
-
-def _setup_message_ids_for_cleanup(
-    *,
-    command_message_id: int,
-    setup_message_id: int,
-) -> tuple[int, ...]:
-    return command_message_id, setup_message_id
+def _should_send_recreate_report(report_text: str) -> bool:
+    return "No tracked rider votes were found." not in report_text
 
 
 def _menu_message_ids_for_cleanup(
@@ -882,111 +657,6 @@ def _menu_message_ids_for_cleanup(
     menu_message_id: int,
 ) -> tuple[int, ...]:
     return command_message_id, menu_message_id
-
-
-def _setup_message_ids_from_menu_state(
-    *,
-    data: dict[str, object],
-    setup_message_id: int,
-) -> tuple[int, ...]:
-    menu_message_ids = tuple(int(item) for item in _string_items(data.get("menu_message_ids", [])))
-    if not menu_message_ids:
-        return (setup_message_id,)
-    return tuple(dict.fromkeys((*menu_message_ids, setup_message_id)))
-
-
-async def _clear_menu_message_ids(*, state: FSMContext) -> None:
-    await state.update_data(menu_message_ids=[])
-
-
-def _setup_state_data(data: dict[str, object]) -> SetupStateData:
-    setup_view = str(data.get("setup_view", "main"))
-    if setup_view not in {"main", "first", "last"}:
-        setup_view = "main"
-    return SetupStateData(
-        service_dates=tuple(
-            date.fromisoformat(item) for item in _string_items(data["service_dates"])
-        ),
-        selected_service_dates=_selected_service_dates(data),
-        first_lift_location=StartLocation(str(data["first_lift_location"])),
-        cancelled_lift_times=normalize_cancelled_lift_times(
-            _string_items(data.get("cancelled_lift_times", []))
-        ),
-        setup_view=setup_view,
-    )
-
-
-def _selected_service_dates(data: dict[str, object]) -> tuple[date, ...]:
-    raw_dates = data.get("selected_service_dates", data["service_dates"])
-    return tuple(date.fromisoformat(item) for item in _string_items(raw_dates))
-
-
-def _setup_text(
-    service_dates: tuple[date, ...],
-    first_lift_location: StartLocation,
-    cancelled_lift_times: tuple[str, ...],
-    *,
-    selected_service_dates: tuple[date, ...] | None = None,
-) -> str:
-    first_time, last_time = lift_range_from_cancelled(cancelled_lift_times)
-    lift_count = enabled_lift_count(cancelled_lift_times)
-    lift_label = "lift" if lift_count == 1 else "lifts"
-    selected_dates = selected_service_dates or service_dates
-    dates = " + ".join(
-        f"{_service_day_name(item).title()} {item:%d.%m.%Y}" for item in selected_dates
-    )
-    return (
-        f"🚐 Lift poll setup · {dates}\n"
-        f"📍 Route: {_route_setup_label(first_lift_location)}\n"
-        f"🕓 Schedule: {first_time} → {last_time} · {lift_count} {lift_label}"
-    )
-
-
-def _route_setup_label(location: StartLocation) -> str:
-    if location == StartLocation.VAKE:
-        return "all lifts: Vake Park"
-    return "first running lift: Justice Hall; later: Vake Park"
-
-
-def _upcoming_weekend_dates(today: date | None = None) -> tuple[date, date]:
-    saturday = _next_saturday(today)
-    return saturday, saturday + timedelta(days=1)
-
-
-def _next_saturday(today: date | None = None) -> date:
-    current = today or datetime.now(UTC).date()
-    days_until_saturday = (5 - current.weekday()) % 7
-    if days_until_saturday == 0:
-        return current
-    return current + timedelta(days=days_until_saturday)
-
-
-def _service_day_name(service_date: date) -> str:
-    return "sunday" if service_date.weekday() == 6 else "saturday"
-
-
-def _completion_text(
-    *,
-    message_ids: tuple[int, ...],
-    pinned: bool,
-    deleted_count: int,
-    failed_count: int,
-) -> str:
-    pin_text = "pinned" if pinned else "not pinned"
-    cleanup_text = f"cleaned {deleted_count} setup message(s)"
-    if failed_count:
-        cleanup_text += f", failed to clean {failed_count}"
-    return (
-        f"Polls created. Message IDs: {_message_ids_text(message_ids)}; {pin_text}; {cleanup_text}."
-    )
-
-
-def _should_notify_completion(*, pinned: bool, failed_count: int) -> bool:
-    return failed_count > 0 or not pinned
-
-
-def _should_send_recreate_report(report_text: str) -> bool:
-    return "No tracked rider votes were found." not in report_text
 
 
 def _accessible_message(callback: CallbackQuery) -> Message | None:
@@ -1001,11 +671,5 @@ def _string_items(value: object) -> tuple[str, ...]:
     return ()
 
 
-def _message_ids_text(results_or_ids: Sequence[int] | Sequence[PollCreationResult]) -> str:
-    if all(isinstance(item, int) for item in results_or_ids):
-        ids = cast(Sequence[int], results_or_ids)
-    else:
-        ids = tuple(
-            result.message_id for result in cast(Sequence[PollCreationResult], results_or_ids)
-        )
-    return ", ".join(str(item) for item in ids)
+def _today(settings: Settings) -> date:
+    return datetime.now(UTC).astimezone(ZoneInfo(settings.schedule_timezone)).date()

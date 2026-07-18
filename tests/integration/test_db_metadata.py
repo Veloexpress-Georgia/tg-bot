@@ -12,6 +12,7 @@ def test_poll_tables_are_registered() -> None:
         "poll_schedule_history",
         "manual_booking_count",
         "admin_booking_monitor",
+        "poll_auto_schedule",
     } <= set(Base.metadata.tables)
 
 
@@ -29,6 +30,12 @@ def test_booking_monitor_tables_have_scoped_unique_indexes() -> None:
 
     assert "uq_manual_booking_count_scope_date_time" in manual_indexes
     assert "uq_admin_booking_monitor_scope_admin" in monitor_indexes
+
+
+def test_poll_auto_schedule_has_one_row_per_target() -> None:
+    index_names = {index.name for index in Base.metadata.tables["poll_auto_schedule"].indexes}
+
+    assert "uq_poll_auto_schedule_scope" in index_names
 
 
 def test_poll_vote_unique_index_matches_migration() -> None:

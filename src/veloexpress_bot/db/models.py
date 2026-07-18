@@ -128,6 +128,45 @@ class PollScheduleHistory(Base):
     )
 
 
+class PollWeekendPlan(Base):
+    __tablename__ = "poll_weekend_plan"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_week_start: Mapped[date] = mapped_column(Date)
+    saturday_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    sunday_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    first_lift_time: Mapped[str] = mapped_column(String(16))
+    last_lift_time: Mapped[str] = mapped_column(String(16))
+    updated_by_user_id: Mapped[int] = mapped_column(BigInteger)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class PollAutoSchedule(Base):
+    __tablename__ = "poll_auto_schedule"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    creation_weekday: Mapped[int] = mapped_column(Integer, default=4)
+    creation_time: Mapped[str] = mapped_column(String(16), default="14:00")
+    announce_lead_minutes: Mapped[int] = mapped_column(Integer, default=120)
+    skip_week_start: Mapped[date | None] = mapped_column(Date)
+    last_announced_week_start: Mapped[date | None] = mapped_column(Date)
+    last_created_week_start: Mapped[date | None] = mapped_column(Date)
+    announce_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    updated_by_user_id: Mapped[int] = mapped_column(BigInteger)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
 class ManualBookingCount(Base):
     __tablename__ = "manual_booking_count"
 
@@ -178,6 +217,25 @@ Index(
     PollScheduleHistory.chat_id,
     func.coalesce(PollScheduleHistory.thread_id, 0),
     PollScheduleHistory.service_week_start,
+    unique=True,
+)
+
+
+Index(
+    "uq_poll_weekend_plan_scope_week",
+    PollWeekendPlan.environment,
+    PollWeekendPlan.chat_id,
+    func.coalesce(PollWeekendPlan.thread_id, 0),
+    PollWeekendPlan.service_week_start,
+    unique=True,
+)
+
+
+Index(
+    "uq_poll_auto_schedule_scope",
+    PollAutoSchedule.environment,
+    PollAutoSchedule.chat_id,
+    func.coalesce(PollAutoSchedule.thread_id, 0),
     unique=True,
 )
 
