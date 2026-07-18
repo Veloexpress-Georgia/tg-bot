@@ -2,7 +2,8 @@ from datetime import date
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from veloexpress_bot.polls.defaults import DEFAULT_LIFTS, EXTRA_LIFT_TIME
+from veloexpress_bot.polls.defaults import DEFAULT_LIFTS
+from veloexpress_bot.polls.schedule import lift_range_from_cancelled
 
 
 def start_menu_keyboard(*, is_admin: bool) -> InlineKeyboardMarkup | None:
@@ -15,8 +16,14 @@ def start_menu_keyboard(*, is_admin: bool) -> InlineKeyboardMarkup | None:
                     text="🚐 Create lift polls",
                     callback_data="menu:create_lift_poll",
                 ),
-                InlineKeyboardButton(text="✖️ Cancel", callback_data="menu:cancel"),
-            ]
+                InlineKeyboardButton(
+                    text="📊 Booking monitor",
+                    callback_data="menu:booking_monitor",
+                ),
+            ],
+            [
+                InlineKeyboardButton(text="✖️ Close", callback_data="menu:cancel"),
+            ],
         ]
     )
 
@@ -29,9 +36,11 @@ def setup_keyboard(
     allow_recreate: bool = False,
     view: str = "main",
 ) -> InlineKeyboardMarkup:
-    cancelled = set(cancelled_lift_times)
-    if view == "times":
-        return _times_keyboard(cancelled=cancelled)
+    if view in {"first", "last"}:
+        return _range_picker_keyboard(
+            boundary=view,
+            cancelled_lift_times=cancelled_lift_times,
+        )
 
     selected_dates = set(selected_service_dates)
     rows: list[list[InlineKeyboardButton]] = []
@@ -47,12 +56,17 @@ def setup_keyboard(
         )
     rows.append(day_row)
 
+    first_time, last_time = lift_range_from_cancelled(cancelled_lift_times)
     rows.append(
         [
             InlineKeyboardButton(
-                text=f"🕓 {_times_summary(cancelled)}",
-                callback_data="view:times",
-            )
+                text=f"▶️ First · {first_time}",
+                callback_data="view:first",
+            ),
+            InlineKeyboardButton(
+                text=f"⏹ Last · {last_time}",
+                callback_data="view:last",
+            ),
         ]
     )
 
@@ -62,45 +76,37 @@ def setup_keyboard(
                 text="♻️ Recreate polls" if allow_recreate else "🚀 Create polls",
                 callback_data="poll:recreate_confirm" if allow_recreate else "poll:confirm",
             ),
-            InlineKeyboardButton(text="✖️ Cancel", callback_data="poll:cancel"),
+            InlineKeyboardButton(text="✖️ Close setup", callback_data="poll:cancel"),
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _times_keyboard(
+def _range_picker_keyboard(
     *,
-    cancelled: set[str],
+    boundary: str,
+    cancelled_lift_times: tuple[str, ...],
 ) -> InlineKeyboardMarkup:
+    first_time, last_time = lift_range_from_cancelled(cancelled_lift_times)
+    selected_time = first_time if boundary == "first" else last_time
     lift_buttons: list[InlineKeyboardButton] = []
     for lift in DEFAULT_LIFTS:
-        active = lift.time not in cancelled
-        marker = "✅" if active else "🚫"
-        extra = " · extra" if lift.time == EXTRA_LIFT_TIME else ""
+        marker = "✅ " if lift.time == selected_time else ""
         lift_buttons.append(
             InlineKeyboardButton(
-                text=f"{marker} {lift.time}{extra}",
-                callback_data=f"lift:toggle:{lift.time}",
+                text=f"{marker}{lift.time}",
+                callback_data=f"range:{boundary}:{lift.time}",
             )
         )
 
-    rows = _chunked(lift_buttons, size=2)
+    rows = _chunked(lift_buttons, size=3)
     rows.append(
         [
             InlineKeyboardButton(text="⬅️ Back", callback_data="view:main"),
-            InlineKeyboardButton(text="✖️ Cancel", callback_data="poll:cancel"),
+            InlineKeyboardButton(text="✖️ Close setup", callback_data="poll:cancel"),
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def _times_summary(cancelled: set[str]) -> str:
-    active_count = len(DEFAULT_LIFTS) - len(cancelled)
-    if active_count == len(DEFAULT_LIFTS):
-        return f"All {active_count} times enabled"
-    if active_count == 1:
-        return "1 time enabled"
-    return f"{active_count} times enabled"
 
 
 def _short_day_label(service_date: date) -> str:

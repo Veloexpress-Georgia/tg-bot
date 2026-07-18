@@ -9,25 +9,7 @@ from veloexpress_bot.polls.defaults import (
     StartLocation,
 )
 
-DAY_LABELS: dict[int, tuple[str, str]] = {
-    5: ("Суббота", "Saturday"),
-    6: ("Воскресенье", "Sunday"),
-}
-
-RU_MONTHS: dict[int, str] = {
-    1: "января",
-    2: "февраля",
-    3: "марта",
-    4: "апреля",
-    5: "мая",
-    6: "июня",
-    7: "июля",
-    8: "августа",
-    9: "сентября",
-    10: "октября",
-    11: "ноября",
-    12: "декабря",
-}
+DAY_LABELS: dict[int, str] = {5: "Saturday", 6: "Sunday"}
 
 EN_MONTHS: dict[int, str] = {
     1: "January",
@@ -42,6 +24,23 @@ EN_MONTHS: dict[int, str] = {
     10: "October",
     11: "November",
     12: "December",
+}
+
+SHORT_DAY_LABELS: dict[int, str] = {5: "Sat", 6: "Sun"}
+
+EN_SHORT_MONTHS: dict[int, str] = {
+    1: "Jan",
+    2: "Feb",
+    3: "Mar",
+    4: "Apr",
+    5: "May",
+    6: "Jun",
+    7: "Jul",
+    8: "Aug",
+    9: "Sep",
+    10: "Oct",
+    11: "Nov",
+    12: "Dec",
 }
 
 
@@ -59,19 +58,22 @@ class PollDraft:
     allows_multiple_answers: bool = True
 
 
+@dataclass(frozen=True)
+class LiftAvailability:
+    time: str
+    voter_count: int
+    capacity: int = 10
+    manual_count: int = 0
+
+
 def render_poll(render_input: PollRenderInput) -> PollDraft:
     lifts = _active_lifts(render_input.cancelled_lift_times)
     if not lifts:
         msg = "At least one lift must remain in the poll."
         raise ValueError(msg)
 
-    ru_day, en_day = DAY_LABELS.get(
-        render_input.service_date.weekday(), ("День забросок", "Lift day")
-    )
-    question = (
-        f"🚐 {ru_day} · {_ru_date(render_input.service_date)}\n"
-        f"{en_day} · {_en_date(render_input.service_date)}"
-    )
+    day = DAY_LABELS.get(render_input.service_date.weekday(), "Lift day")
+    question = f"🚐 {day} · {_en_date(render_input.service_date)}"
 
     options = (*(_format_lift_option(lift) for lift in lifts), CHECK_ANSWERS_OPTION)
     return PollDraft(question=question, options=options)
@@ -79,17 +81,26 @@ def render_poll(render_input: PollRenderInput) -> PollDraft:
 
 def render_poll_notice(first_lift_location: StartLocation) -> str:
     if first_lift_location == StartLocation.VAKE:
-        route_notice = "📍 Все заброски — от Ваке-парка.\nAll lifts depart from Vake Park."
+        route_notice = "📍 All lifts: Vake Park."
     else:
         route_notice = (
-            "📍 Первая состоявшаяся заброска дня — от Дома Юстиции. Если заброска "
-            "на 8:30 не набралась, первой считается следующее набравшееся время. "
-            "Остальные — от Ваке-парка.\n"
-            "The first running lift of the day departs from Justice Hall. If the 8:30 "
-            "lift does not run, the next running time becomes the first lift. All later "
-            "lifts depart from Vake Park."
+            "📍 The day's first running lift departs from Justice Hall. "
+            "All later lifts depart from Vake Park."
         )
     return f"{route_notice}\n\n{PAYMENT_REMINDER}"
+
+
+def render_availability_status(
+    service_date: date,
+    lifts: tuple[LiftAvailability, ...],
+) -> str:
+    day = SHORT_DAY_LABELS.get(service_date.weekday(), "Lift day")
+    lines = [
+        f"🚐 Availability · {day}, {service_date.day} {EN_SHORT_MONTHS[service_date.month]}",
+        "",
+    ]
+    lines.extend(_availability_line(lift) for lift in lifts)
+    return "\n".join(lines)
 
 
 def _active_lifts(cancelled_lift_times: tuple[str, ...]) -> list[LiftTemplate]:
@@ -101,8 +112,20 @@ def _format_lift_option(lift: LiftTemplate) -> str:
     return f"🚲 {lift.time}"
 
 
-def _ru_date(service_date: date) -> str:
-    return f"{service_date.day} {RU_MONTHS[service_date.month]}"
+def _availability_line(lift: LiftAvailability) -> str:
+    remaining = lift.capacity - lift.voter_count
+    manual_suffix = f" · {lift.manual_count} manual" if lift.manual_count else ""
+    if remaining < 0:
+        waiting = abs(remaining)
+        return (
+            f"🔴 {lift.time} — {lift.voter_count}/{lift.capacity}"
+            f"{manual_suffix} · waitlist +{waiting}"
+        )
+    if remaining == 0:
+        return f"🔴 {lift.time} — {lift.voter_count}/{lift.capacity}{manual_suffix}"
+
+    marker = "🟡" if remaining <= 2 else "🟢"
+    return f"{marker} {lift.time} — {lift.voter_count}/{lift.capacity}{manual_suffix}"
 
 
 def _en_date(service_date: date) -> str:

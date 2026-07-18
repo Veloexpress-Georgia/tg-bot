@@ -1,31 +1,52 @@
 import logging
+from asyncio import Lock
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from time import perf_counter
 from typing import Protocol
 from uuid import uuid4
 
+from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from veloexpress_bot.bookings.render import (
+    BookingLiftStatus,
+    BookingMonitorDay,
+    render_booking_monitor,
+)
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.models import (
     ACTIVE_POLL_BATCH_STATUSES,
+    AdminBookingMonitor,
+    ManualBookingCount,
     PollBatch,
     PollMessage,
     PollOptionSnapshot,
+    PollScheduleHistory,
     PollVote,
     PollVoteEvent,
 )
-from veloexpress_bot.polls.defaults import StartLocation
+from veloexpress_bot.polls.defaults import (
+    DEFAULT_CANCELLED_LIFT_TIMES,
+    DEFAULT_LIFTS,
+    StartLocation,
+)
 from veloexpress_bot.polls.render import (
+    LiftAvailability,
     PollDraft,
     PollRenderInput,
+    render_availability_status,
     render_poll,
     render_poll_notice,
+)
+from veloexpress_bot.polls.schedule import (
+    lift_range_from_cancelled,
+    normalize_cancelled_lift_times,
+    suggested_cancelled_lift_times,
 )
 
 
@@ -57,6 +78,7 @@ class TelegramPollClient(Protocol):
         chat_id: int,
         message_thread_id: int | None,
         text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
     ) -> SentTextMessage: ...
 
     async def send_poll(
@@ -67,7 +89,18 @@ class TelegramPollClient(Protocol):
         draft: PollDraft,
     ) -> SentPollMessage: ...
 
+    async def edit_text(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> bool: ...
+
     async def pin_message(self, *, chat_id: int, message_id: int) -> bool: ...
+
+    async def unpin_message(self, *, chat_id: int, message_id: int) -> bool: ...
 
     async def delete_message(self, *, chat_id: int, message_id: int) -> bool: ...
 
@@ -94,6 +127,7 @@ class PollSetup:
 class PollCreationResult:
     batch_id: int
     message_id: int
+    availability_message_id: int
     poll_id: str | None
     pinned: bool
     notice_message_id: int | None = None
@@ -103,6 +137,13 @@ class PollCreationResult:
 class CleanupResult:
     deleted_count: int
     failed_count: int
+
+
+@dataclass(frozen=True)
+class ManualBookingAdjustmentResult:
+    service_date: date
+    lift_time: str
+    manual_count: int
 
 
 @dataclass(frozen=True)
@@ -135,6 +176,245 @@ class PollPostingService:
         self._settings = settings
         self._session_factory = session_factory
         self._telegram_client = telegram_client
+        self._availability_locks: dict[str, Lock] = {}
+
+    async def suggested_cancelled_lift_times(self) -> tuple[str, ...]:
+        if self._settings.telegram_target_chat_id is None:
+            return DEFAULT_CANCELLED_LIFT_TIMES
+        try:
+            async with self._session_factory() as session:
+                history = (
+                    await session.scalars(
+                        select(PollScheduleHistory)
+                        .where(PollScheduleHistory.environment == self._settings.app_env)
+                        .where(
+                            PollScheduleHistory.chat_id == self._settings.telegram_target_chat_id
+                        )
+                        .where(
+                            PollScheduleHistory.thread_id
+                            == self._settings.telegram_target_thread_id
+                        )
+                        .order_by(
+                            PollScheduleHistory.service_week_start,
+                            PollScheduleHistory.id,
+                        )
+                    )
+                ).all()
+        except Exception:
+            logger.exception("poll_schedule_suggestion_failed")
+            return DEFAULT_CANCELLED_LIFT_TIMES
+
+        return suggested_cancelled_lift_times(
+            ((row.first_lift_time, row.last_lift_time) for row in history),
+            default_cancelled_lift_times=DEFAULT_CANCELLED_LIFT_TIMES,
+        )
+
+    async def record_schedule_selection(
+        self,
+        *,
+        service_dates: tuple[date, ...],
+        cancelled_lift_times: tuple[str, ...],
+        created_by_user_id: int,
+    ) -> bool:
+        if self._settings.telegram_target_chat_id is None or not service_dates:
+            return False
+
+        normalized = normalize_cancelled_lift_times(cancelled_lift_times)
+        first_time, last_time = lift_range_from_cancelled(normalized)
+        service_week_start = _service_week_start(min(service_dates))
+        now = datetime.now(UTC)
+        try:
+            async with self._session_factory() as session:
+                row = await session.scalar(
+                    select(PollScheduleHistory)
+                    .where(PollScheduleHistory.environment == self._settings.app_env)
+                    .where(PollScheduleHistory.chat_id == self._settings.telegram_target_chat_id)
+                    .where(
+                        PollScheduleHistory.thread_id == self._settings.telegram_target_thread_id
+                    )
+                    .where(PollScheduleHistory.service_week_start == service_week_start)
+                )
+                if row is None:
+                    session.add(
+                        PollScheduleHistory(
+                            environment=self._settings.app_env,
+                            chat_id=self._settings.telegram_target_chat_id,
+                            thread_id=self._settings.telegram_target_thread_id,
+                            service_week_start=service_week_start,
+                            first_lift_time=first_time,
+                            last_lift_time=last_time,
+                            created_by_user_id=created_by_user_id,
+                            updated_at=now,
+                        )
+                    )
+                else:
+                    row.first_lift_time = first_time
+                    row.last_lift_time = last_time
+                    row.created_by_user_id = created_by_user_id
+                    row.updated_at = now
+                await session.commit()
+        except Exception:
+            logger.exception(
+                "poll_schedule_history_write_failed service_week_start=%s",
+                service_week_start,
+            )
+            return False
+        return True
+
+    async def open_booking_monitor(
+        self,
+        *,
+        admin_user_id: int,
+        private_chat_id: int,
+        selected_service_date: date | None = None,
+    ) -> int:
+        if self._settings.telegram_target_chat_id is None:
+            msg = "TELEGRAM_TARGET_CHAT_ID is required to open the booking monitor."
+            raise ValueError(msg)
+
+        async with self._session_factory() as session:
+            monitor = await self._booking_monitor_row(
+                session=session,
+                admin_user_id=admin_user_id,
+            )
+            existing_message_id = monitor.telegram_message_id if monitor is not None else None
+            stored_date = monitor.selected_service_date if monitor is not None else None
+
+        days = await self._booking_monitor_days()
+        selected_date = selected_service_date or stored_date
+        available_dates = {day.service_date for day in days}
+        if selected_date not in available_dates:
+            selected_date = days[0].service_date if days else None
+        draft = render_booking_monitor(days, selected_service_date=selected_date)
+
+        message_id = existing_message_id
+        if message_id is not None:
+            updated = await self._telegram_client.edit_text(
+                chat_id=private_chat_id,
+                message_id=message_id,
+                text=draft.text,
+                reply_markup=draft.reply_markup,
+            )
+            if not updated:
+                message_id = None
+        if message_id is None:
+            sent = await self._telegram_client.send_text(
+                chat_id=private_chat_id,
+                message_thread_id=None,
+                text=draft.text,
+                reply_markup=draft.reply_markup,
+            )
+            message_id = sent.message_id
+
+        await self._store_booking_monitor(
+            admin_user_id=admin_user_id,
+            private_chat_id=private_chat_id,
+            telegram_message_id=message_id,
+            selected_service_date=selected_date,
+        )
+        return message_id
+
+    async def adjust_manual_booking(
+        self,
+        *,
+        service_date: date,
+        lift_time: str,
+        delta: int,
+        admin_user_id: int,
+    ) -> ManualBookingAdjustmentResult:
+        if self._settings.telegram_target_chat_id is None:
+            msg = "TELEGRAM_TARGET_CHAT_ID is required to adjust bookings."
+            raise ValueError(msg)
+        if delta not in {-1, 1}:
+            msg = "Manual booking adjustments must be +1 or -1."
+            raise ValueError(msg)
+
+        now = datetime.now(UTC)
+        poll_id: str | None = None
+        async with self._session_factory() as session:
+            snapshot = await self._active_snapshot_for_lift(
+                session=session,
+                service_date=service_date,
+                lift_time=lift_time,
+            )
+            if snapshot is None:
+                msg = "This lift is not active."
+                raise ValueError(msg)
+            poll_id = snapshot.poll_id
+            booking = await session.scalar(
+                select(ManualBookingCount)
+                .where(ManualBookingCount.environment == self._settings.app_env)
+                .where(ManualBookingCount.chat_id == self._settings.telegram_target_chat_id)
+                .where(ManualBookingCount.thread_id == self._settings.telegram_target_thread_id)
+                .where(ManualBookingCount.service_date == service_date)
+                .where(ManualBookingCount.lift_time == lift_time)
+            )
+            current_count = booking.count if booking is not None else 0
+            new_count = current_count + delta
+            if new_count < 0:
+                msg = "No manual bookings to remove."
+                raise ValueError(msg)
+            if booking is None:
+                session.add(
+                    ManualBookingCount(
+                        environment=self._settings.app_env,
+                        chat_id=self._settings.telegram_target_chat_id,
+                        thread_id=self._settings.telegram_target_thread_id,
+                        service_date=service_date,
+                        lift_time=lift_time,
+                        count=new_count,
+                        updated_by_user_id=admin_user_id,
+                        updated_at=now,
+                    )
+                )
+            else:
+                booking.count = new_count
+                booking.updated_by_user_id = admin_user_id
+                booking.updated_at = now
+            await session.commit()
+
+        if poll_id is not None:
+            await self._refresh_availability(poll_id)
+        await self._refresh_booking_monitors()
+        return ManualBookingAdjustmentResult(
+            service_date=service_date,
+            lift_time=lift_time,
+            manual_count=new_count,
+        )
+
+    async def booking_lift_details(self, *, service_date: date, lift_time: str) -> str:
+        if self._settings.telegram_target_chat_id is None:
+            return "Booking monitor is not configured."
+        async with self._session_factory() as session:
+            snapshot = await self._active_snapshot_for_lift(
+                session=session,
+                service_date=service_date,
+                lift_time=lift_time,
+            )
+            if snapshot is None:
+                return "This lift is no longer active."
+            votes = (
+                await session.scalars(select(PollVote).where(PollVote.poll_id == snapshot.poll_id))
+            ).all()
+            riders = sorted(
+                _rider_label(vote)
+                for vote in votes
+                if snapshot.option_index in _decode_option_ids(vote.option_ids)
+            )
+            manual_count = await self._manual_booking_count(
+                session=session,
+                service_date=service_date,
+                lift_time=lift_time,
+            )
+
+        summary = (
+            f"{lift_time}: {len(riders)} Telegram, {manual_count} manual"
+            f"\nTotal: {len(riders) + manual_count}/10"
+        )
+        if not riders:
+            return summary
+        rider_text = ", ".join(riders)
+        return f"{summary}\n\n{rider_text}"[:200]
 
     async def has_existing_active_poll(self, setup: PollSetup) -> bool:
         return bool(await self.find_active_conflicts((setup,)))
@@ -204,6 +484,11 @@ class PollPostingService:
                 cancelled_lift_times=setup.cancelled_lift_times,
             )
         )
+        manual_counts = await self._manual_booking_counts_for_date(setup.service_date)
+        initial_availability = render_availability_status(
+            setup.service_date,
+            _initial_lift_availability(setup.cancelled_lift_times, manual_counts),
+        )
         base_idempotency_key = setup.idempotency_key(self._settings)
         idempotency_key = (
             f"{base_idempotency_key}:manual:{uuid4()}" if allow_duplicate else base_idempotency_key
@@ -262,6 +547,7 @@ class PollPostingService:
                 raise DuplicatePollError("Poll batch already exists for this setup.") from error
 
             notice_message: SentTextMessage | None = None
+            availability_message: SentTextMessage | None = None
             try:
                 if include_notice:
                     notice_message = await self._telegram_client.send_text(
@@ -269,6 +555,11 @@ class PollPostingService:
                         message_thread_id=self._settings.telegram_target_thread_id,
                         text=render_poll_notice(setup.first_lift_location),
                     )
+                availability_message = await self._telegram_client.send_text(
+                    chat_id=self._settings.telegram_target_chat_id,
+                    message_thread_id=self._settings.telegram_target_thread_id,
+                    text=initial_availability,
+                )
                 sent_message = await self._telegram_client.send_poll(
                     chat_id=self._settings.telegram_target_chat_id,
                     message_thread_id=self._settings.telegram_target_thread_id,
@@ -277,10 +568,12 @@ class PollPostingService:
             except Exception:
                 batch.status = "failed"
                 await session.commit()
-                if notice_message is not None:
+                for text_message in (availability_message, notice_message):
+                    if text_message is None:
+                        continue
                     await self._telegram_client.delete_message(
                         chat_id=self._settings.telegram_target_chat_id,
-                        message_id=notice_message.message_id,
+                        message_id=text_message.message_id,
                     )
                 raise
 
@@ -303,6 +596,16 @@ class PollPostingService:
                             cleanup_status="not_applicable",
                         )
                     )
+                session.add(
+                    PollMessage(
+                        batch_id=batch.id,
+                        telegram_message_id=availability_message.message_id,
+                        poll_id=None,
+                        message_kind="availability",
+                        pinned=False,
+                        cleanup_status="not_applicable",
+                    )
+                )
                 message = PollMessage(
                     batch_id=batch.id,
                     telegram_message_id=sent_message.message_id,
@@ -331,13 +634,18 @@ class PollPostingService:
                 )
                 raise
 
-            return PollCreationResult(
+            result = PollCreationResult(
                 batch_id=batch.id,
                 message_id=sent_message.message_id,
+                availability_message_id=availability_message.message_id,
                 poll_id=sent_message.poll_id,
                 pinned=pinned,
                 notice_message_id=notice_message.message_id if notice_message is not None else None,
             )
+            if pinned:
+                await self._unpin_older_poll_messages(excluded_batch_ids=(batch.id,))
+            await self._refresh_booking_monitors()
+            return result
 
     async def track_poll_answer(
         self,
@@ -399,6 +707,8 @@ class PollPostingService:
                     option_ids=encoded_option_ids,
                     updated_at=now,
                 )
+                await self._refresh_availability(poll_id)
+                await self._refresh_booking_monitors()
                 return
 
         if event is None:
@@ -410,6 +720,118 @@ class PollPostingService:
             )
         else:
             _log_vote_event(event)
+            await self._refresh_availability(poll_id)
+            await self._refresh_booking_monitors()
+
+    async def _refresh_availability(self, poll_id: str) -> None:
+        lock = self._availability_locks.setdefault(poll_id, Lock())
+        async with lock:
+            await self._refresh_availability_locked(poll_id)
+
+    async def _refresh_availability_locked(self, poll_id: str) -> None:
+        async with self._session_factory() as session:
+            snapshots = (
+                await session.scalars(
+                    select(PollOptionSnapshot)
+                    .where(PollOptionSnapshot.poll_id == poll_id)
+                    .order_by(PollOptionSnapshot.option_index)
+                )
+            ).all()
+            if not snapshots:
+                return
+
+            batch = await session.get(PollBatch, snapshots[0].batch_id)
+            availability_message = await session.scalar(
+                select(PollMessage)
+                .where(PollMessage.batch_id == snapshots[0].batch_id)
+                .where(PollMessage.message_kind == "availability")
+            )
+            if batch is None or availability_message is None:
+                return
+
+            votes = (
+                await session.scalars(select(PollVote).where(PollVote.poll_id == poll_id))
+            ).all()
+            manual_bookings = (
+                await session.scalars(
+                    select(ManualBookingCount)
+                    .where(ManualBookingCount.environment == self._settings.app_env)
+                    .where(ManualBookingCount.chat_id == batch.chat_id)
+                    .where(ManualBookingCount.thread_id == batch.thread_id)
+                    .where(ManualBookingCount.service_date == batch.service_date)
+                )
+            ).all()
+            manual_by_time = {booking.lift_time: booking.count for booking in manual_bookings}
+            counts: dict[int, int] = {}
+            for vote in votes:
+                for option_id in _decode_option_ids(vote.option_ids):
+                    counts[option_id] = counts.get(option_id, 0) + 1
+
+            capacity_by_time = {lift.time: lift.capacity for lift in DEFAULT_LIFTS}
+            availability = tuple(
+                LiftAvailability(
+                    time=snapshot.lift_time,
+                    voter_count=(
+                        counts.get(snapshot.option_index, 0)
+                        + manual_by_time.get(snapshot.lift_time, 0)
+                    ),
+                    capacity=capacity_by_time.get(snapshot.lift_time, 10),
+                    manual_count=manual_by_time.get(snapshot.lift_time, 0),
+                )
+                for snapshot in snapshots
+                if snapshot.lift_time is not None
+            )
+            text = render_availability_status(batch.service_date, availability)
+            chat_id = batch.chat_id
+            thread_id = batch.thread_id
+            batch_id = batch.id
+            availability_message_id = availability_message.telegram_message_id
+
+        updated = await self._telegram_client.edit_text(
+            chat_id=chat_id,
+            message_id=availability_message_id,
+            text=text,
+        )
+        if updated:
+            return
+
+        if await self._telegram_client.message_exists(
+            chat_id=chat_id,
+            message_id=availability_message_id,
+        ):
+            logger.warning(
+                "poll_availability_update_failed poll_id=%s message_id=%s",
+                poll_id,
+                availability_message_id,
+                extra={"poll_id": poll_id, "message_id": availability_message_id},
+            )
+            return
+
+        try:
+            replacement = await self._telegram_client.send_text(
+                chat_id=chat_id,
+                message_thread_id=thread_id,
+                text=text,
+            )
+        except Exception:
+            logger.exception(
+                "poll_availability_recovery_failed poll_id=%s old_message_id=%s",
+                poll_id,
+                availability_message_id,
+                extra={"poll_id": poll_id, "message_id": availability_message_id},
+            )
+            return
+        async with self._session_factory() as session:
+            await session.execute(
+                update(PollMessage)
+                .where(PollMessage.batch_id == batch_id)
+                .where(PollMessage.message_kind == "availability")
+                .values(
+                    telegram_message_id=replacement.message_id,
+                    cleanup_status="not_applicable",
+                )
+            )
+            await session.commit()
 
     async def recreate_polls(
         self,
@@ -555,6 +977,12 @@ class PollPostingService:
         return "\n".join(lines)
 
     async def pin_created_poll(self, result: PollCreationResult) -> PollCreationResult:
+        pinned_result = await self._pin_created_poll_only(result)
+        if pinned_result.pinned:
+            await self._unpin_older_poll_messages(excluded_batch_ids=(result.batch_id,))
+        return pinned_result
+
+    async def _pin_created_poll_only(self, result: PollCreationResult) -> PollCreationResult:
         if self._settings.telegram_target_chat_id is None or not self._settings.telegram_pin_poll:
             return result
 
@@ -574,6 +1002,7 @@ class PollPostingService:
         return PollCreationResult(
             batch_id=result.batch_id,
             message_id=result.message_id,
+            availability_message_id=result.availability_message_id,
             poll_id=result.poll_id,
             pinned=pinned,
             notice_message_id=result.notice_message_id,
@@ -582,7 +1011,275 @@ class PollPostingService:
     async def pin_created_results(
         self, results: tuple[PollCreationResult, ...]
     ) -> tuple[PollCreationResult, ...]:
-        return tuple([await self.pin_created_poll(result) for result in results])
+        pinned_results = tuple([await self._pin_created_poll_only(result) for result in results])
+        if any(result.pinned for result in pinned_results):
+            await self._unpin_older_poll_messages(
+                excluded_batch_ids=tuple(result.batch_id for result in results)
+            )
+        return pinned_results
+
+    async def _unpin_older_poll_messages(self, *, excluded_batch_ids: tuple[int, ...]) -> None:
+        if self._settings.telegram_target_chat_id is None:
+            return
+
+        async with self._session_factory() as session:
+            query = (
+                select(PollMessage)
+                .join(PollBatch, PollBatch.id == PollMessage.batch_id)
+                .where(PollBatch.environment == self._settings.app_env)
+                .where(PollBatch.chat_id == self._settings.telegram_target_chat_id)
+                .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
+                .where(PollMessage.message_kind == "poll")
+                .where(PollMessage.pinned.is_(True))
+            )
+            if excluded_batch_ids:
+                query = query.where(PollMessage.batch_id.not_in(excluded_batch_ids))
+            messages = (await session.scalars(query)).all()
+
+            for message in messages:
+                unpinned = await self._telegram_client.unpin_message(
+                    chat_id=self._settings.telegram_target_chat_id,
+                    message_id=message.telegram_message_id,
+                )
+                if unpinned:
+                    message.pinned = False
+                else:
+                    logger.warning(
+                        "poll_old_pin_retirement_failed batch_id=%s message_id=%s",
+                        message.batch_id,
+                        message.telegram_message_id,
+                    )
+            await session.commit()
+
+    async def _booking_monitor_row(
+        self,
+        *,
+        session: AsyncSession,
+        admin_user_id: int,
+    ) -> AdminBookingMonitor | None:
+        return await session.scalar(
+            select(AdminBookingMonitor)
+            .where(AdminBookingMonitor.environment == self._settings.app_env)
+            .where(AdminBookingMonitor.chat_id == self._settings.telegram_target_chat_id)
+            .where(AdminBookingMonitor.thread_id == self._settings.telegram_target_thread_id)
+            .where(AdminBookingMonitor.admin_user_id == admin_user_id)
+        )
+
+    async def _store_booking_monitor(
+        self,
+        *,
+        admin_user_id: int,
+        private_chat_id: int,
+        telegram_message_id: int,
+        selected_service_date: date | None,
+    ) -> None:
+        now = datetime.now(UTC)
+        async with self._session_factory() as session:
+            monitor = await self._booking_monitor_row(
+                session=session,
+                admin_user_id=admin_user_id,
+            )
+            if monitor is None:
+                session.add(
+                    AdminBookingMonitor(
+                        environment=self._settings.app_env,
+                        chat_id=self._settings.telegram_target_chat_id,
+                        thread_id=self._settings.telegram_target_thread_id,
+                        admin_user_id=admin_user_id,
+                        private_chat_id=private_chat_id,
+                        telegram_message_id=telegram_message_id,
+                        selected_service_date=selected_service_date,
+                        updated_at=now,
+                    )
+                )
+            else:
+                monitor.private_chat_id = private_chat_id
+                monitor.telegram_message_id = telegram_message_id
+                monitor.selected_service_date = selected_service_date
+                monitor.updated_at = now
+            await session.commit()
+
+    async def _refresh_booking_monitors(self) -> None:
+        if self._settings.telegram_target_chat_id is None:
+            return
+        async with self._session_factory() as session:
+            monitors = (
+                await session.scalars(
+                    select(AdminBookingMonitor)
+                    .where(AdminBookingMonitor.environment == self._settings.app_env)
+                    .where(AdminBookingMonitor.chat_id == self._settings.telegram_target_chat_id)
+                    .where(
+                        AdminBookingMonitor.thread_id == self._settings.telegram_target_thread_id
+                    )
+                )
+            ).all()
+        if not monitors:
+            return
+
+        days = await self._booking_monitor_days()
+        available_dates = {day.service_date for day in days}
+        for monitor in monitors:
+            selected_date = monitor.selected_service_date
+            if selected_date not in available_dates:
+                selected_date = days[0].service_date if days else None
+            draft = render_booking_monitor(days, selected_service_date=selected_date)
+            try:
+                updated = await self._telegram_client.edit_text(
+                    chat_id=monitor.private_chat_id,
+                    message_id=monitor.telegram_message_id,
+                    text=draft.text,
+                    reply_markup=draft.reply_markup,
+                )
+                message_id = monitor.telegram_message_id
+                if not updated:
+                    sent = await self._telegram_client.send_text(
+                        chat_id=monitor.private_chat_id,
+                        message_thread_id=None,
+                        text=draft.text,
+                        reply_markup=draft.reply_markup,
+                    )
+                    message_id = sent.message_id
+                await self._store_booking_monitor(
+                    admin_user_id=monitor.admin_user_id,
+                    private_chat_id=monitor.private_chat_id,
+                    telegram_message_id=message_id,
+                    selected_service_date=selected_date,
+                )
+            except Exception:
+                logger.exception(
+                    "booking_monitor_refresh_failed admin_user_id=%s",
+                    monitor.admin_user_id,
+                )
+
+    async def _booking_monitor_days(self) -> tuple[BookingMonitorDay, ...]:
+        if self._settings.telegram_target_chat_id is None:
+            return ()
+        async with self._session_factory() as session:
+            batches = (
+                await session.scalars(
+                    select(PollBatch)
+                    .where(PollBatch.environment == self._settings.app_env)
+                    .where(PollBatch.chat_id == self._settings.telegram_target_chat_id)
+                    .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
+                    .where(PollBatch.status == "posted")
+                    .order_by(PollBatch.service_date, PollBatch.id)
+                )
+            ).all()
+            latest_by_date = {batch.service_date: batch for batch in batches}
+            all_dates = sorted(latest_by_date)
+            cutoff = datetime.now(UTC).date() - timedelta(days=1)
+            active_dates = [service_date for service_date in all_dates if service_date >= cutoff]
+            selected_dates = tuple((active_dates or all_dates[-2:])[:2])
+            selected_batches = tuple(
+                latest_by_date[service_date] for service_date in selected_dates
+            )
+            if not selected_batches:
+                return ()
+
+            batch_ids = tuple(batch.id for batch in selected_batches)
+            snapshots = (
+                await session.scalars(
+                    select(PollOptionSnapshot)
+                    .where(PollOptionSnapshot.batch_id.in_(batch_ids))
+                    .where(PollOptionSnapshot.lift_time.is_not(None))
+                    .order_by(PollOptionSnapshot.option_index)
+                )
+            ).all()
+            poll_ids = tuple({snapshot.poll_id for snapshot in snapshots})
+            votes = (
+                await session.scalars(select(PollVote).where(PollVote.poll_id.in_(poll_ids)))
+            ).all()
+            manual_bookings = (
+                await session.scalars(
+                    select(ManualBookingCount)
+                    .where(ManualBookingCount.environment == self._settings.app_env)
+                    .where(ManualBookingCount.chat_id == self._settings.telegram_target_chat_id)
+                    .where(ManualBookingCount.thread_id == self._settings.telegram_target_thread_id)
+                    .where(ManualBookingCount.service_date.in_(selected_dates))
+                )
+            ).all()
+
+        votes_by_poll: dict[str, list[PollVote]] = {}
+        for vote in votes:
+            votes_by_poll.setdefault(vote.poll_id, []).append(vote)
+        manual_by_date_time = {
+            (booking.service_date, booking.lift_time): booking.count for booking in manual_bookings
+        }
+        capacity_by_time = {lift.time: lift.capacity for lift in DEFAULT_LIFTS}
+        days: list[BookingMonitorDay] = []
+        for batch in selected_batches:
+            batch_snapshots = [snapshot for snapshot in snapshots if snapshot.batch_id == batch.id]
+            lifts: list[BookingLiftStatus] = []
+            for snapshot in batch_snapshots:
+                if snapshot.lift_time is None:
+                    continue
+                vote_count = sum(
+                    snapshot.option_index in _decode_option_ids(vote.option_ids)
+                    for vote in votes_by_poll.get(snapshot.poll_id, [])
+                )
+                lifts.append(
+                    BookingLiftStatus(
+                        time=snapshot.lift_time,
+                        vote_count=vote_count,
+                        manual_count=manual_by_date_time.get(
+                            (batch.service_date, snapshot.lift_time), 0
+                        ),
+                        capacity=capacity_by_time.get(snapshot.lift_time, 10),
+                    )
+                )
+            days.append(BookingMonitorDay(service_date=batch.service_date, lifts=tuple(lifts)))
+        return tuple(days)
+
+    async def _active_snapshot_for_lift(
+        self,
+        *,
+        session: AsyncSession,
+        service_date: date,
+        lift_time: str,
+    ) -> PollOptionSnapshot | None:
+        return await session.scalar(
+            select(PollOptionSnapshot)
+            .join(PollBatch, PollBatch.id == PollOptionSnapshot.batch_id)
+            .where(PollBatch.environment == self._settings.app_env)
+            .where(PollBatch.chat_id == self._settings.telegram_target_chat_id)
+            .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
+            .where(PollBatch.service_date == service_date)
+            .where(PollBatch.status == "posted")
+            .where(PollOptionSnapshot.lift_time == lift_time)
+            .order_by(PollBatch.id.desc())
+        )
+
+    async def _manual_booking_count(
+        self,
+        *,
+        session: AsyncSession,
+        service_date: date,
+        lift_time: str,
+    ) -> int:
+        count = await session.scalar(
+            select(ManualBookingCount.count)
+            .where(ManualBookingCount.environment == self._settings.app_env)
+            .where(ManualBookingCount.chat_id == self._settings.telegram_target_chat_id)
+            .where(ManualBookingCount.thread_id == self._settings.telegram_target_thread_id)
+            .where(ManualBookingCount.service_date == service_date)
+            .where(ManualBookingCount.lift_time == lift_time)
+        )
+        return count or 0
+
+    async def _manual_booking_counts_for_date(self, service_date: date) -> dict[str, int]:
+        if self._settings.telegram_target_chat_id is None:
+            return {}
+        async with self._session_factory() as session:
+            bookings = (
+                await session.scalars(
+                    select(ManualBookingCount)
+                    .where(ManualBookingCount.environment == self._settings.app_env)
+                    .where(ManualBookingCount.chat_id == self._settings.telegram_target_chat_id)
+                    .where(ManualBookingCount.thread_id == self._settings.telegram_target_thread_id)
+                    .where(ManualBookingCount.service_date == service_date)
+                )
+            ).all()
+        return {booking.lift_time: booking.count for booking in bookings}
 
     async def cleanup_setup_messages(
         self,
@@ -657,9 +1354,24 @@ class PollPostingService:
                     },
                 )
 
+        availability_messages = (
+            await session.scalars(
+                select(PollMessage)
+                .where(PollMessage.batch_id == batch.id)
+                .where(PollMessage.message_kind == "availability")
+            )
+        ).all()
+        for availability_message in availability_messages:
+            deleted = await self._telegram_client.delete_message(
+                chat_id=self._settings.telegram_target_chat_id,
+                message_id=availability_message.telegram_message_id,
+            )
+            availability_message.cleanup_status = "deleted" if deleted else "delete_failed"
+
         await session.execute(
             update(PollMessage)
             .where(PollMessage.batch_id == batch.id)
+            .where(PollMessage.message_kind == "poll")
             .values(cleanup_status="telegram_deleted")
         )
         batch.status = "deleted"
@@ -763,7 +1475,11 @@ class PollPostingService:
         for result in created:
             message_ids = tuple(
                 message_id
-                for message_id in (result.notice_message_id, result.message_id)
+                for message_id in (
+                    result.notice_message_id,
+                    result.availability_message_id,
+                    result.message_id,
+                )
                 if message_id is not None
             )
             for message_id in message_ids:
@@ -790,14 +1506,22 @@ class PollPostingService:
                         result.batch_id,
                         ",".join(
                             str(message_id)
-                            for message_id in (result.notice_message_id, result.message_id)
+                            for message_id in (
+                                result.notice_message_id,
+                                result.availability_message_id,
+                                result.message_id,
+                            )
                             if message_id is not None
                         ),
                         extra={
                             "batch_id": result.batch_id,
                             "message_ids": tuple(
                                 message_id
-                                for message_id in (result.notice_message_id, result.message_id)
+                                for message_id in (
+                                    result.notice_message_id,
+                                    result.availability_message_id,
+                                    result.message_id,
+                                )
                                 if message_id is not None
                             ),
                         },
@@ -837,6 +1561,16 @@ class PollPostingService:
                 if message.message_kind == "notice" and not delete_notice:
                     message.cleanup_status = "preserved"
                     continue
+                if message.pinned:
+                    unpinned = await self._telegram_client.unpin_message(
+                        chat_id=self._settings.telegram_target_chat_id,
+                        message_id=message.telegram_message_id,
+                    )
+                    if not unpinned:
+                        failed_count += 1
+                        message.cleanup_status = "unpin_failed"
+                        continue
+                    message.pinned = False
                 deleted = await self._telegram_client.delete_message(
                     chat_id=self._settings.telegram_target_chat_id,
                     message_id=message.telegram_message_id,
@@ -852,7 +1586,8 @@ class PollPostingService:
                 batch_failed_count = sum(
                     1
                     for message in messages
-                    if message.batch_id == batch.id and message.cleanup_status == "delete_failed"
+                    if message.batch_id == batch.id
+                    and message.cleanup_status in {"delete_failed", "unpin_failed"}
                 )
                 batch.status = "cleanup_failed" if batch_failed_count else "recreated"
                 batch.superseded_by_batch_id = replacement_by_date.get(batch.service_date)
@@ -889,6 +1624,29 @@ def _option_snapshots(
         )
         for index, option in enumerate(draft.options)
     ]
+
+
+def _initial_lift_availability(
+    cancelled_lift_times: tuple[str, ...],
+    manual_counts: dict[str, int] | None = None,
+) -> tuple[LiftAvailability, ...]:
+    cancelled = set(cancelled_lift_times)
+    manual_by_time = manual_counts or {}
+    return tuple(
+        LiftAvailability(
+            time=lift.time,
+            voter_count=manual_by_time.get(lift.time, 0),
+            capacity=lift.capacity,
+            manual_count=manual_by_time.get(lift.time, 0),
+        )
+        for lift in DEFAULT_LIFTS
+        if lift.time not in cancelled
+    )
+
+
+def _service_week_start(service_date: date) -> date:
+    days_since_saturday = (service_date.weekday() - 5) % 7
+    return service_date - timedelta(days=days_since_saturday)
 
 
 async def _poll_snapshot(

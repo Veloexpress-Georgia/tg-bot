@@ -112,6 +112,54 @@ class PollVoteEvent(Base):
     )
 
 
+class PollScheduleHistory(Base):
+    __tablename__ = "poll_schedule_history"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_week_start: Mapped[date] = mapped_column(Date)
+    first_lift_time: Mapped[str] = mapped_column(String(16))
+    last_lift_time: Mapped[str] = mapped_column(String(16))
+    created_by_user_id: Mapped[int] = mapped_column(BigInteger)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class ManualBookingCount(Base):
+    __tablename__ = "manual_booking_count"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    lift_time: Mapped[str] = mapped_column(String(16))
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_by_user_id: Mapped[int] = mapped_column(BigInteger)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class AdminBookingMonitor(Base):
+    __tablename__ = "admin_booking_monitor"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    admin_user_id: Mapped[int] = mapped_column(BigInteger)
+    private_chat_id: Mapped[int] = mapped_column(BigInteger)
+    telegram_message_id: Mapped[int] = mapped_column(BigInteger)
+    selected_service_date: Mapped[date | None] = mapped_column(Date)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
 Index("ix_poll_vote_event_batch_id", PollVoteEvent.batch_id)
 Index("ix_poll_vote_event_user", PollVoteEvent.telegram_user_id)
 
@@ -120,6 +168,37 @@ Index(
     "uq_poll_vote_poll_user",
     PollVote.poll_id,
     PollVote.telegram_user_id,
+    unique=True,
+)
+
+
+Index(
+    "uq_poll_schedule_history_scope_week",
+    PollScheduleHistory.environment,
+    PollScheduleHistory.chat_id,
+    func.coalesce(PollScheduleHistory.thread_id, 0),
+    PollScheduleHistory.service_week_start,
+    unique=True,
+)
+
+
+Index(
+    "uq_manual_booking_count_scope_date_time",
+    ManualBookingCount.environment,
+    ManualBookingCount.chat_id,
+    func.coalesce(ManualBookingCount.thread_id, 0),
+    ManualBookingCount.service_date,
+    ManualBookingCount.lift_time,
+    unique=True,
+)
+
+
+Index(
+    "uq_admin_booking_monitor_scope_admin",
+    AdminBookingMonitor.environment,
+    AdminBookingMonitor.chat_id,
+    func.coalesce(AdminBookingMonitor.thread_id, 0),
+    AdminBookingMonitor.admin_user_id,
     unique=True,
 )
 

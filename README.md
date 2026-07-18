@@ -2,9 +2,9 @@
 
 Telegram admin bot for Veloexpress lift polls.
 
-The first MVP is intentionally narrow: an admin command creates weekend Telegram polls from a predefined RU/EN template. Admins can enable or disable Saturday/Sunday, cancel default lifts, and toggle the first lift location between Justice Hall and Vake before posting.
+The first MVP is intentionally narrow: an admin command creates weekend Telegram polls from a predefined English template. Admins can enable or disable Saturday/Sunday and choose the first and last lift times before posting; every time between those boundaries is included automatically.
 
-Out of scope for the first MVP: payment tracking, balances, overbooking, scheduling, miniapp, website, and template editing.
+Out of scope for the first MVP: payment tracking, balances, automatic waitlist management, scheduling, miniapp, website, and template editing.
 
 ## Product Principle
 
@@ -88,11 +88,12 @@ and, when configured, `TELEGRAM_TARGET_THREAD_ID`.
 The bot should show setup buttons for:
 
 - enabling/disabling Saturday and Sunday
-- first lift location
-- enabling/disabling default lift times
-- creating or cancelling the weekend polls
+- choosing the first and last lift times as a continuous range
+- creating the weekend polls or closing the setup without changes
 
-The test bot needs permission to send polls. To fully test MVP behavior, also allow it to delete its setup messages and pin messages.
+Admins can also open `📊 Booking monitor` from `/start` in a private chat. The bot keeps one reusable live monitor message per admin, with Saturday/Sunday tabs and `➖`/`➕` controls for people booked outside Telegram. Public availability uses Telegram votes plus manual bookings; a manual contribution is shown only when it is non-zero. All admin monitors refresh when votes or manual counts change. An admin must open the private bot chat before Telegram will allow the monitor to be delivered.
+
+The test bot needs permission to send polls. To fully test MVP behavior, also allow it to delete its setup messages and pin/unpin messages. Before deleting an old bot-managed poll, the bot unpins it; when a new weekend batch is pinned, older tracked poll pins are retired while both current service-day polls remain pinned. The bot also removes its own Telegram “pinned …” service notices from the configured lift topic so they do not later become “pinned Deleted message”; pin notices created manually by admins are preserved.
 
 The bot currently uses Telegram long polling. If the same bot token previously had a webhook registered, polling will not receive updates until the webhook is deleted. Run this once if updates are not arriving:
 
@@ -135,7 +136,7 @@ lefthook run pre-commit
 /create_lift_poll
 ```
 
-The bot registers these commands on startup. Only Telegram user IDs listed in `TELEGRAM_ADMIN_IDS` can use `/create_lift_poll`. The setup flow starts with upcoming Saturday and Sunday enabled, and supports disabling either day, first-location toggling, plus canceling default lift times.
+The bot registers these commands on startup. Only Telegram user IDs listed in `TELEGRAM_ADMIN_IDS` can use `/create_lift_poll`. The setup flow starts with upcoming Saturday and Sunday enabled and supports disabling either day. Lift times are configured as a continuous first-to-last range. Confirmed weekend schedules are remembered; a changed start or end time must be used for two consecutive weekends before it becomes the suggested default.
 
 The bot also registers its suggested default group admin rights on startup. Telegram will preselect pin/delete permissions when adding the bot as an admin, but the person adding it can still change the permissions before confirming.
 

@@ -11,11 +11,13 @@ from veloexpress_bot.bot.handlers import (
     _setup_message_ids_from_menu_state,
     _setup_text,
     _setup_text_for_conflicts,
+    _should_cleanup_bot_pin_notice,
     _should_notify_completion,
     _should_recreate_existing,
     _should_send_recreate_report,
     _store_setup_state,
 )
+from veloexpress_bot.config import Settings
 from veloexpress_bot.polls.defaults import StartLocation
 
 
@@ -106,9 +108,8 @@ def test_setup_text_shows_fixed_dynamic_route() -> None:
         ("15:30",),
     )
 
-    assert "📍 Route: first running lift: Дом Юстиции / Justice Hall; later: Vake Park" in text
-    assert "🕓 Enabled times: 8:30, 10:00, 11:45, 13:30" in text
-    assert "🚫 Cancelled lifts: 15:30" in text
+    assert "📍 Route: first running lift: Justice Hall; later: Vake Park" in text
+    assert "🕓 Schedule: 8:30 → 13:30 · 4 lifts" in text
     assert "justice_hall" not in text
 
 
@@ -153,6 +154,35 @@ def test_cached_allow_recreate_requires_explicit_true() -> None:
     assert _cached_allow_recreate({}) is False
 
 
+def test_only_bot_created_pin_notices_in_target_topic_are_cleaned() -> None:
+    settings = Settings.model_construct(
+        telegram_target_chat_id=-100123,
+        telegram_target_thread_id=7,
+    )
+
+    assert _should_cleanup_bot_pin_notice(
+        actor_user_id=42,
+        bot_user_id=42,
+        chat_id=-100123,
+        thread_id=7,
+        settings=settings,
+    )
+    assert not _should_cleanup_bot_pin_notice(
+        actor_user_id=10,
+        bot_user_id=42,
+        chat_id=-100123,
+        thread_id=7,
+        settings=settings,
+    )
+    assert not _should_cleanup_bot_pin_notice(
+        actor_user_id=42,
+        bot_user_id=42,
+        chat_id=-100123,
+        thread_id=8,
+        settings=settings,
+    )
+
+
 class FakeState:
     def __init__(self) -> None:
         self.state: object | None = None
@@ -171,7 +201,7 @@ async def test_store_setup_state_uses_serializable_menu_data() -> None:
         selected_service_dates=(date(2026, 5, 16),),
         first_lift_location=StartLocation.JUSTICE_HALL,
         cancelled_lift_times=("15:30",),
-        setup_view="times",
+        setup_view="first",
     )
     state = FakeState()
 
@@ -181,6 +211,6 @@ async def test_store_setup_state_uses_serializable_menu_data() -> None:
     assert state.data["selected_service_dates"] == ["2026-05-16"]
     assert state.data["first_lift_location"] == "justice_hall"
     assert state.data["cancelled_lift_times"] == ["15:30"]
-    assert state.data["setup_view"] == "times"
+    assert state.data["setup_view"] == "first"
     assert state.data["setup_message_ids"] == []
     assert state.data["allow_recreate"] is False

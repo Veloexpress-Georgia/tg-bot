@@ -2,6 +2,7 @@ import logging
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
+from aiogram.types import InlineKeyboardMarkup
 
 from veloexpress_bot.polls.render import PollDraft
 from veloexpress_bot.polls.service import SentPollMessage, SentTextMessage
@@ -20,12 +21,14 @@ class AiogramTelegramClient:
         chat_id: int,
         message_thread_id: int | None,
         text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
     ) -> SentTextMessage:
         try:
             message = await self._bot.send_message(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
                 text=text,
+                reply_markup=reply_markup,
             )
         except TelegramForbiddenError as error:
             logger.warning(
@@ -86,6 +89,31 @@ class AiogramTelegramClient:
             poll_id=message.poll.id if message.poll else None,
         )
 
+    async def edit_text(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> bool:
+        try:
+            await self._bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=reply_markup,
+            )
+        except TelegramBadRequest as error:
+            if "message is not modified" in error.message.lower():
+                return True
+            logger.exception("Failed to edit text message", extra={"message_id": message_id})
+            return False
+        except TelegramAPIError:
+            logger.exception("Failed to edit text message", extra={"message_id": message_id})
+            return False
+        return True
+
     async def pin_message(self, *, chat_id: int, message_id: int) -> bool:
         try:
             await self._bot.pin_chat_message(
@@ -95,6 +123,23 @@ class AiogramTelegramClient:
             )
         except TelegramAPIError:
             logger.exception("Failed to pin poll message", extra={"message_id": message_id})
+            return False
+        return True
+
+    async def unpin_message(self, *, chat_id: int, message_id: int) -> bool:
+        try:
+            await self._bot.unpin_chat_message(
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+        except TelegramBadRequest as error:
+            error_text = error.message.lower()
+            if "not pinned" in error_text or "message to unpin not found" in error_text:
+                return True
+            logger.exception("Failed to unpin poll message", extra={"message_id": message_id})
+            return False
+        except TelegramAPIError:
+            logger.exception("Failed to unpin poll message", extra={"message_id": message_id})
             return False
         return True
 

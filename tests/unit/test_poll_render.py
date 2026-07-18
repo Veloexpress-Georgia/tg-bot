@@ -3,40 +3,61 @@ from datetime import date
 import pytest
 
 from veloexpress_bot.polls.defaults import CHECK_ANSWERS_OPTION, StartLocation
-from veloexpress_bot.polls.render import PollRenderInput, render_poll, render_poll_notice
+from veloexpress_bot.polls.render import (
+    LiftAvailability,
+    PollRenderInput,
+    render_availability_status,
+    render_poll,
+    render_poll_notice,
+)
 
 
 def test_render_poll_uses_ru_en_weekend_template() -> None:
     draft = render_poll(PollRenderInput(service_date=date(2026, 5, 16)))
 
-    assert draft.question == "🚐 Суббота · 16 мая\nSaturday · May 16"
+    assert draft.question == "🚐 Saturday · May 16"
     assert draft.options[-1] == CHECK_ANSWERS_OPTION
     assert draft.options[0] == "🚲 8:30"
     assert draft.options[1] == "🚲 10:00"
+    assert draft.options[-1] == "👀 Check answers"
     assert draft.is_anonymous is False
     assert draft.allows_multiple_answers is True
 
 
 def test_render_poll_notice_explains_dynamic_first_lift_location() -> None:
     assert render_poll_notice(StartLocation.JUSTICE_HALL) == (
-        "📍 Первая состоявшаяся заброска дня — от Дома Юстиции. Если заброска "
-        "на 8:30 не набралась, первой считается следующее набравшееся время. "
-        "Остальные — от Ваке-парка.\n"
-        "The first running lift of the day departs from Justice Hall. If the 8:30 "
-        "lift does not run, the next running time becomes the first lift. All later "
-        "lifts depart from Vake Park.\n\n"
-        "💳 После голосования внесите предоплату.\n"
-        "Please send the prepayment after voting."
+        "📍 The day's first running lift departs from Justice Hall. "
+        "All later lifts depart from Vake Park.\n\n"
+        "💳 Please prepay after voting."
     )
 
 
 def test_render_poll_notice_supports_future_vake_only_override() -> None:
     assert render_poll_notice(StartLocation.VAKE) == (
-        "📍 Все заброски — от Ваке-парка.\n"
-        "All lifts depart from Vake Park.\n\n"
-        "💳 После голосования внесите предоплату.\n"
-        "Please send the prepayment after voting."
+        "📍 All lifts: Vake Park.\n\n💳 Please prepay after voting."
     )
+
+
+def test_render_availability_status_shows_free_full_and_waitlisted_lifts() -> None:
+    status = render_availability_status(
+        date(2026, 5, 16),
+        (
+            LiftAvailability(time="8:30", voter_count=0),
+            LiftAvailability(time="10:00", voter_count=8, manual_count=2),
+            LiftAvailability(time="11:45", voter_count=9),
+            LiftAvailability(time="13:30", voter_count=10),
+            LiftAvailability(time="15:30", voter_count=12),
+        ),
+    )
+
+    assert "🚐 Availability · Sat, 16 May" in status
+    assert "🟢 8:30 — 0/10" in status
+    assert "🟡 10:00 — 8/10 · 2 manual" in status
+    assert "🟡 11:45 — 9/10" in status
+    assert "🔴 13:30 — 10/10" in status
+    assert "🔴 15:30 — 12/10 · waitlist +2" in status
+    assert "Available ·" not in status
+    assert status.endswith("🔴 15:30 — 12/10 · waitlist +2")
 
 
 def test_render_poll_can_cancel_lifts() -> None:

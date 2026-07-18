@@ -25,7 +25,5 @@ DEFAULT_LIFTS: tuple[LiftTemplate, ...] = (
 EXTRA_LIFT_TIME = "15:30"
 DEFAULT_CANCELLED_LIFT_TIMES: tuple[str, ...] = (EXTRA_LIFT_TIME,)
 
-CHECK_ANSWERS_OPTION = "👀 Посмотреть ответы / Check answers"
-PAYMENT_REMINDER = (
-    "💳 После голосования внесите предоплату.\nPlease send the prepayment after voting."
-)
+CHECK_ANSWERS_OPTION = "👀 Check answers"
+PAYMENT_REMINDER = "💳 Please prepay after voting."

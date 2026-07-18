@@ -9,7 +9,26 @@ def test_poll_tables_are_registered() -> None:
         "poll_option_snapshot",
         "poll_vote",
         "poll_vote_event",
+        "poll_schedule_history",
+        "manual_booking_count",
+        "admin_booking_monitor",
     } <= set(Base.metadata.tables)
+
+
+def test_poll_schedule_history_has_one_row_per_week_and_target() -> None:
+    index_names = {index.name for index in Base.metadata.tables["poll_schedule_history"].indexes}
+
+    assert "uq_poll_schedule_history_scope_week" in index_names
+
+
+def test_booking_monitor_tables_have_scoped_unique_indexes() -> None:
+    manual_indexes = {index.name for index in Base.metadata.tables["manual_booking_count"].indexes}
+    monitor_indexes = {
+        index.name for index in Base.metadata.tables["admin_booking_monitor"].indexes
+    }
+
+    assert "uq_manual_booking_count_scope_date_time" in manual_indexes
+    assert "uq_admin_booking_monitor_scope_admin" in monitor_indexes
 
 
 def test_poll_vote_unique_index_matches_migration() -> None:
