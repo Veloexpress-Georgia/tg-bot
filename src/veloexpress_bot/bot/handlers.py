@@ -219,9 +219,7 @@ async def handle_weekend_plan_card(
     if message is None:
         return
 
-    parts = (callback.data or "").split(":")
-    action = parts[1] if len(parts) > 1 else ""
-    value = parts[2] if len(parts) > 2 else ""
+    action, value = _split_callback(callback.data)
 
     if action == "close":
         await callback.answer("Plan closed.")
@@ -355,9 +353,7 @@ async def handle_poll_schedule_card(
     if message is None:
         return
 
-    parts = (callback.data or "").split(":")
-    action = parts[1] if len(parts) > 1 else ""
-    value = parts[2] if len(parts) > 2 else ""
+    action, value = _split_callback(callback.data)
 
     if action == "close":
         await callback.answer("Schedule closed.")
@@ -410,9 +406,7 @@ async def handle_extra_day_card(
     if message is None:
         return
 
-    parts = (callback.data or "").split(":")
-    action = parts[1] if len(parts) > 1 else ""
-    value = parts[2] if len(parts) > 2 else ""
+    action, value = _split_callback(callback.data)
 
     if action == "close":
         await state.clear()
@@ -669,6 +663,14 @@ def _string_items(value: object) -> tuple[str, ...]:
     if isinstance(value, Iterable):
         return tuple(str(item) for item in value)
     return ()
+
+
+def _split_callback(data: str | None) -> tuple[str, str]:
+    """Return (action, value); value keeps colons so lift times like 15:30 survive."""
+    parts = (data or "").split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    value = ":".join(parts[2:])
+    return action, value
 
 
 def _today(settings: Settings) -> date:
