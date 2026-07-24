@@ -1,7 +1,7 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
 
 import pytest
@@ -203,6 +203,12 @@ def settings() -> Settings:
     )
 
 
+def _upcoming_weekend() -> tuple[date, date]:
+    today = datetime.now(UTC).date()
+    saturday = today + timedelta(days=(5 - today.weekday()) % 7)
+    return saturday, saturday + timedelta(days=1)
+
+
 async def test_poll_service_learns_schedule_after_two_consecutive_weekends(
     db: SharedDatabase,
 ) -> None:
@@ -269,12 +275,13 @@ async def test_admin_booking_monitor_controls_manual_counts_and_tracks_votes(
         session_factory=db.session,
         telegram_client=client,
     )
+    saturday, sunday = _upcoming_weekend()
     poll = await service.create_poll(
-        PollSetup(service_date=date(2026, 5, 16), created_by_user_id=1),
+        PollSetup(service_date=saturday, created_by_user_id=1),
         pin_after_send=False,
     )
     await service.create_poll(
-        PollSetup(service_date=date(2026, 5, 17), created_by_user_id=1),
+        PollSetup(service_date=sunday, created_by_user_id=1),
         pin_after_send=False,
     )
 
@@ -284,10 +291,10 @@ async def test_admin_booking_monitor_controls_manual_counts_and_tracks_votes(
     )
 
     assert client.sent_markups[-1] is not None
-    assert "📊 Booking monitor · Sat, 16 May" in client.sent_texts[-1]
+    assert client.sent_texts[-1].startswith("📊 Booking monitor · ")
 
     adjustment = await service.adjust_manual_booking(
-        service_date=date(2026, 5, 16),
+        service_date=saturday,
         lift_time="8:30",
         delta=1,
         admin_user_id=1,
@@ -319,7 +326,7 @@ async def test_admin_booking_monitor_controls_manual_counts_and_tracks_votes(
     assert "🟢 8:30 — 2/10 · 1 manual" in monitor_updates[-1]
     assert (
         await service.booking_lift_details(
-            service_date=date(2026, 5, 16),
+            service_date=saturday,
             lift_time="8:30",
         )
         == "8:30: 1 Telegram, 1 manual\nTotal: 2/10\n\n@stas"

@@ -287,24 +287,20 @@ class PollPostingService:
             selected_date = days[0].service_date if days else None
         draft = render_booking_monitor(days, selected_service_date=selected_date)
 
-        message_id = existing_message_id
-        if message_id is not None:
-            updated = await self._telegram_client.edit_text(
+        # Opening is an explicit action, so retire any prior monitor message and
+        # post a fresh one at the bottom instead of editing one buried up the chat.
+        if existing_message_id is not None:
+            await self._telegram_client.delete_message(
                 chat_id=private_chat_id,
-                message_id=message_id,
-                text=draft.text,
-                reply_markup=draft.reply_markup,
+                message_id=existing_message_id,
             )
-            if not updated:
-                message_id = None
-        if message_id is None:
-            sent = await self._telegram_client.send_text(
-                chat_id=private_chat_id,
-                message_thread_id=None,
-                text=draft.text,
-                reply_markup=draft.reply_markup,
-            )
-            message_id = sent.message_id
+        sent = await self._telegram_client.send_text(
+            chat_id=private_chat_id,
+            message_thread_id=None,
+            text=draft.text,
+            reply_markup=draft.reply_markup,
+        )
+        message_id = sent.message_id
 
         await self._store_booking_monitor(
             admin_user_id=admin_user_id,
@@ -1169,7 +1165,8 @@ class PollPostingService:
             all_dates = sorted(latest_by_date)
             cutoff = datetime.now(UTC).date() - timedelta(days=1)
             active_dates = [service_date for service_date in all_dates if service_date >= cutoff]
-            selected_dates = tuple((active_dates or all_dates[-2:])[:2])
+            # Only current/upcoming lifts; never fall back to past weekends.
+            selected_dates = tuple(active_dates[:2])
             selected_batches = tuple(
                 latest_by_date[service_date] for service_date in selected_dates
             )
