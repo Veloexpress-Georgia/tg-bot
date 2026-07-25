@@ -13,6 +13,8 @@ def test_poll_tables_are_registered() -> None:
         "manual_booking_count",
         "admin_booking_monitor",
         "poll_auto_schedule",
+        "poll_weekend_plan",
+        "cancelled_lift",
     } <= set(Base.metadata.tables)
 
 

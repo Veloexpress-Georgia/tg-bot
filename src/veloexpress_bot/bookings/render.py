@@ -3,6 +3,8 @@ from datetime import date, datetime
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from veloexpress_bot.polls.defaults import MINIMUM_RIDERS
+
 EN_SHORT_MONTHS = {
     1: "Jan",
     2: "Feb",
@@ -25,6 +27,7 @@ class BookingLiftStatus:
     vote_count: int
     manual_count: int
     capacity: int = 10
+    cancelled: bool = False
 
     @property
     def total_count(self) -> int:
@@ -79,6 +82,16 @@ def render_booking_monitor(
     compact_date = _compact_date(selected_day.service_date)
     for lift in selected_day.lifts:
         compact_time = _compact_time(lift.time)
+        if lift.cancelled:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"❌ {lift.time} · cancelled",
+                        callback_data=f"mon:info:{compact_date}:{compact_time}",
+                    )
+                ]
+            )
+            continue
         rows.append(
             [
                 InlineKeyboardButton(
@@ -96,6 +109,55 @@ def render_booking_monitor(
             ]
         )
 
+    if any(not lift.cancelled for lift in selected_day.lifts):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"🚫 Cancel all · {_short_day_label(selected_day.service_date)}",
+                    callback_data=f"mon:cancelday:{compact_date}",
+                )
+            ]
+        )
+
+    return BookingMonitorDraft(
+        text="\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+def render_lift_detail(
+    *,
+    service_date: date,
+    lift: BookingLiftStatus,
+    riders: tuple[str, ...],
+) -> BookingMonitorDraft:
+    compact_date = _compact_date(service_date)
+    compact_time = _compact_time(lift.time)
+    lines = [f"🚲 {lift.time} · {_long_day_label(service_date)}", ""]
+    if lift.cancelled:
+        lines.append("❌ Cancelled.")
+        lines.append("")
+    lines.append(f"Telegram: {lift.vote_count}")
+    lines.append(f"Manual: {lift.manual_count}")
+    lines.append(f"Total: {lift.total_count}/{lift.capacity}")
+    if riders:
+        lines.append("")
+        lines.append(", ".join(riders))
+
+    if lift.cancelled:
+        action = InlineKeyboardButton(
+            text="♻️ Restore lift",
+            callback_data=f"mon:restore:{compact_date}:{compact_time}",
+        )
+    else:
+        action = InlineKeyboardButton(
+            text="🚫 Cancel lift",
+            callback_data=f"mon:cancel:{compact_date}:{compact_time}",
+        )
+    rows = [
+        [action],
+        [InlineKeyboardButton(text="⬅️ Back", callback_data=f"mon:back:{compact_date}")],
+    ]
     return BookingMonitorDraft(
         text="\n".join(lines),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
@@ -114,20 +176,21 @@ def decode_monitor_time(value: str) -> str:
 
 
 def _lift_line(lift: BookingLiftStatus) -> str:
-    marker = _availability_marker(lift.total_count, lift.capacity)
+    if lift.cancelled:
+        return f"{lift.time} — ❌ cancelled"
     suffix = f" · {lift.manual_count} manual" if lift.manual_count else ""
-    if lift.total_count > lift.capacity:
-        suffix += f" · waitlist +{lift.total_count - lift.capacity}"
-    return f"{marker} {lift.time} — {lift.total_count}/{lift.capacity}{suffix}"
+    return f"{lift.time} — {lift.total_count}/{lift.capacity} · {_lift_state(lift)}{suffix}"
 
 
-def _availability_marker(total_count: int, capacity: int) -> str:
-    remaining = capacity - total_count
-    if remaining <= 0:
-        return "🔴"
-    if remaining <= 2:
-        return "🟡"
-    return "🟢"
+def _lift_state(lift: BookingLiftStatus) -> str:
+    over = lift.total_count - lift.capacity
+    if over > 0:
+        return f"waitlist +{over}"
+    if lift.total_count >= lift.capacity:
+        return "full"
+    if lift.total_count < MINIMUM_RIDERS:
+        return f"needs {MINIMUM_RIDERS - lift.total_count} more"
+    return f"{lift.capacity - lift.total_count} left"
 
 
 EN_SHORT_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")

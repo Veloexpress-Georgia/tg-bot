@@ -4,10 +4,15 @@ from datetime import date
 from veloexpress_bot.polls.defaults import (
     CHECK_ANSWERS_OPTION,
     DEFAULT_LIFTS,
+    MINIMUM_RIDERS,
     PAYMENT_REMINDER,
     LiftTemplate,
     StartLocation,
 )
+
+# Availability uses plain proportional lines (no code block): monospace bars
+# render as an ugly "copy code" box on mobile and column alignment is unreliable.
+AVAILABILITY_PARSE_MODE = "HTML"
 
 DAY_LABELS: dict[int, str] = {
     0: "Monday",
@@ -80,6 +85,7 @@ class LiftAvailability:
     voter_count: int
     capacity: int = 10
     manual_count: int = 0
+    cancelled: bool = False
 
 
 def render_poll(render_input: PollRenderInput) -> PollDraft:
@@ -111,12 +117,30 @@ def render_availability_status(
     lifts: tuple[LiftAvailability, ...],
 ) -> str:
     day = SHORT_DAY_LABELS.get(service_date.weekday(), "Lift day")
-    lines = [
-        f"🚐 Availability · {day}, {service_date.day} {EN_SHORT_MONTHS[service_date.month]}",
-        "",
-    ]
+    header = f"🚐 Availability · {day}, {service_date.day} {EN_SHORT_MONTHS[service_date.month]}"
+    if not lifts:
+        return header
+
+    lines = [header, ""]
     lines.extend(_availability_line(lift) for lift in lifts)
     return "\n".join(lines)
+
+
+def _availability_line(lift: LiftAvailability) -> str:
+    if lift.cancelled:
+        return f"{lift.time} — ❌ cancelled"
+    return f"{lift.time} — <b>{lift.voter_count}/{lift.capacity}</b> · {_availability_tag(lift)}"
+
+
+def _availability_tag(lift: LiftAvailability) -> str:
+    over = lift.voter_count - lift.capacity
+    if over > 0:
+        return f"waitlist +{over}"
+    if lift.voter_count >= lift.capacity:
+        return "full"
+    if lift.voter_count < MINIMUM_RIDERS:
+        return f"needs {MINIMUM_RIDERS - lift.voter_count} more"
+    return f"{lift.capacity - lift.voter_count} left"
 
 
 def _active_lifts(cancelled_lift_times: tuple[str, ...]) -> list[LiftTemplate]:
@@ -126,22 +150,6 @@ def _active_lifts(cancelled_lift_times: tuple[str, ...]) -> list[LiftTemplate]:
 
 def _format_lift_option(lift: LiftTemplate) -> str:
     return f"🚲 {lift.time}"
-
-
-def _availability_line(lift: LiftAvailability) -> str:
-    remaining = lift.capacity - lift.voter_count
-    manual_suffix = f" · {lift.manual_count} manual" if lift.manual_count else ""
-    if remaining < 0:
-        waiting = abs(remaining)
-        return (
-            f"🔴 {lift.time} — {lift.voter_count}/{lift.capacity}"
-            f"{manual_suffix} · waitlist +{waiting}"
-        )
-    if remaining == 0:
-        return f"🔴 {lift.time} — {lift.voter_count}/{lift.capacity}{manual_suffix}"
-
-    marker = "🟡" if remaining <= 2 else "🟢"
-    return f"{marker} {lift.time} — {lift.voter_count}/{lift.capacity}{manual_suffix}"
 
 
 def _en_date(service_date: date) -> str:

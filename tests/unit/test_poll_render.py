@@ -38,26 +38,25 @@ def test_render_poll_notice_supports_future_vake_only_override() -> None:
     )
 
 
-def test_render_availability_status_shows_free_full_and_waitlisted_lifts() -> None:
+def test_render_availability_status_shows_counts_and_state_tags() -> None:
     status = render_availability_status(
         date(2026, 5, 16),
         (
-            LiftAvailability(time="8:30", voter_count=0),
-            LiftAvailability(time="10:00", voter_count=8, manual_count=2),
-            LiftAvailability(time="11:45", voter_count=9),
-            LiftAvailability(time="13:30", voter_count=10),
+            LiftAvailability(time="8:30", voter_count=3),
+            LiftAvailability(time="10:00", voter_count=6),
+            LiftAvailability(time="11:45", voter_count=10),
             LiftAvailability(time="15:30", voter_count=12),
         ),
     )
 
     assert "🚐 Availability · Sat, 16 May" in status
-    assert "🟢 8:30 — 0/10" in status
-    assert "🟡 10:00 — 8/10 · 2 manual" in status
-    assert "🟡 11:45 — 9/10" in status
-    assert "🔴 13:30 — 10/10" in status
-    assert "🔴 15:30 — 12/10 · waitlist +2" in status
-    assert "Available ·" not in status
-    assert status.endswith("🔴 15:30 — 12/10 · waitlist +2")
+    # Below the minimum reads "needs N more"; at/above, remaining seats.
+    assert "8:30 — <b>3/10</b> · needs 2 more" in status
+    assert "10:00 — <b>6/10</b> · 4 left" in status
+    assert "11:45 — <b>10/10</b> · full" in status
+    assert "15:30 — <b>12/10</b> · waitlist +2" in status
+    assert "🟢" not in status and "🔴" not in status
+    assert "<pre>" not in status
 
 
 def test_render_poll_can_cancel_lifts() -> None:

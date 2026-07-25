@@ -183,6 +183,21 @@ class ManualBookingCount(Base):
     )
 
 
+class CancelledLift(Base):
+    __tablename__ = "cancelled_lift"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    lift_time: Mapped[str] = mapped_column(String(16))
+    cancelled_by_user_id: Mapped[int] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
 class AdminBookingMonitor(Base):
     __tablename__ = "admin_booking_monitor"
 
@@ -247,6 +262,17 @@ Index(
     func.coalesce(ManualBookingCount.thread_id, 0),
     ManualBookingCount.service_date,
     ManualBookingCount.lift_time,
+    unique=True,
+)
+
+
+Index(
+    "uq_cancelled_lift_scope_date_time",
+    CancelledLift.environment,
+    CancelledLift.chat_id,
+    func.coalesce(CancelledLift.thread_id, 0),
+    CancelledLift.service_date,
+    CancelledLift.lift_time,
     unique=True,
 )
 

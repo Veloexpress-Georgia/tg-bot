@@ -7,6 +7,11 @@ class StartLocation(StrEnum):
     VAKE = "vake"
 
 
+# A lift only runs once this many riders have booked; below it the slot is
+# still "at risk" and shown as needing more people.
+MINIMUM_RIDERS = 5
+
+
 @dataclass(frozen=True)
 class LiftTemplate:
     time: str

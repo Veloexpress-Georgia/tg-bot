@@ -78,6 +78,7 @@ async def test_edit_text_updates_existing_telegram_message() -> None:
         "message_id": 42,
         "text": "Updated availability",
         "reply_markup": None,
+        "parse_mode": None,
     }
 
 

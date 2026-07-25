@@ -22,6 +22,7 @@ class AiogramTelegramClient:
         message_thread_id: int | None,
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
+        parse_mode: str | None = None,
     ) -> SentTextMessage:
         try:
             message = await self._bot.send_message(
@@ -29,6 +30,7 @@ class AiogramTelegramClient:
                 message_thread_id=message_thread_id,
                 text=text,
                 reply_markup=reply_markup,
+                parse_mode=parse_mode,
             )
         except TelegramForbiddenError as error:
             logger.warning(
@@ -96,6 +98,7 @@ class AiogramTelegramClient:
         message_id: int,
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
+        parse_mode: str | None = None,
     ) -> bool:
         try:
             await self._bot.edit_message_text(
@@ -103,6 +106,7 @@ class AiogramTelegramClient:
                 message_id=message_id,
                 text=text,
                 reply_markup=reply_markup,
+                parse_mode=parse_mode,
             )
         except TelegramBadRequest as error:
             if "message is not modified" in error.message.lower():

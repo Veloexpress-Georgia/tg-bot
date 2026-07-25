@@ -39,6 +39,7 @@ class RecordingTelegramClient:
         message_thread_id: int | None,
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
+        parse_mode: str | None = None,
     ) -> SentTextMessage:
         self.sent_texts.append(text)
         self.next_message_id += 1
@@ -65,6 +66,7 @@ class RecordingTelegramClient:
         message_id: int,
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
+        parse_mode: str | None = None,
     ) -> bool:
         return True
 

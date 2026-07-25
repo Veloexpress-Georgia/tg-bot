@@ -71,6 +71,7 @@ class FakeTelegramClient:
         message_thread_id: int | None,
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
+        parse_mode: str | None = None,
     ) -> SentTextMessage:
         if chat_id == -100123:
             assert message_thread_id == 7
@@ -119,6 +120,7 @@ class FakeTelegramClient:
         message_id: int,
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
+        parse_mode: str | None = None,
     ) -> bool:
         if self.existing_message_ids is not None and message_id not in self.existing_message_ids:
             return False
@@ -309,8 +311,8 @@ async def test_admin_booking_monitor_controls_manual_counts_and_tracks_votes(
     monitor_updates = [
         text for message_id, text in client.edited_texts if message_id == monitor_message_id
     ]
-    assert "🟢 8:30 — 1/10 · 1 manual" in availability_updates[-1]
-    assert "🟢 8:30 — 1/10 · 1 manual" in monitor_updates[-1]
+    assert "8:30 — <b>1/10</b> · needs 4 more" in availability_updates[-1]
+    assert "8:30 — 1/10 · needs 4 more · 1 manual" in monitor_updates[-1]
 
     await service.track_poll_answer(
         poll_id=poll.poll_id or "",
@@ -323,14 +325,13 @@ async def test_admin_booking_monitor_controls_manual_counts_and_tracks_votes(
     monitor_updates = [
         text for message_id, text in client.edited_texts if message_id == monitor_message_id
     ]
-    assert "🟢 8:30 — 2/10 · 1 manual" in monitor_updates[-1]
-    assert (
-        await service.booking_lift_details(
-            service_date=saturday,
-            lift_time="8:30",
-        )
-        == "8:30: 1 Telegram, 1 manual\nTotal: 2/10\n\n@stas"
-    )
+    assert "8:30 — 2/10 · needs 3 more · 1 manual" in monitor_updates[-1]
+
+    detail = await service.lift_detail(service_date=saturday, lift_time="8:30")
+    assert detail is not None
+    status, riders = detail
+    assert (status.vote_count, status.manual_count, status.total_count) == (1, 1, 2)
+    assert riders == ("@stas",)
 
     async with db.session() as session:
         booking = await session.scalar(select(ManualBookingCount))
@@ -339,6 +340,151 @@ async def test_admin_booking_monitor_controls_manual_counts_and_tracks_votes(
     assert booking.count == 1
     assert monitor is not None
     assert monitor.telegram_message_id == monitor_message_id
+
+
+async def test_cancel_lift_marks_board_and_tags_voters(db: SharedDatabase) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    poll = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
+        pin_after_send=False,
+    )
+    await service.track_poll_answer(
+        poll_id=poll.poll_id or "",
+        telegram_user_id=10,
+        username="stas",
+        full_name="Stas",
+        option_ids=(0,),
+    )
+
+    await service.cancel_lift(service_date=saturday, lift_time="8:30", admin_user_id=1)
+
+    notice = client.sent_texts[-1]
+    assert "❌ 8:30" in notice
+    assert "tg://user?id=10" in notice
+    availability_updates = [
+        text
+        for message_id, text in client.edited_texts
+        if message_id == poll.availability_message_id
+    ]
+    assert "8:30 — ❌ cancelled" in availability_updates[-1]
+
+    detail = await service.lift_detail(service_date=saturday, lift_time="8:30")
+    assert detail is not None
+    status, _ = detail
+    assert status.cancelled is True
+
+    await service.restore_lift(service_date=saturday, lift_time="8:30", admin_user_id=1)
+    restored = await service.lift_detail(service_date=saturday, lift_time="8:30")
+    assert restored is not None
+    assert restored[0].cancelled is False
+
+
+async def test_cancel_day_retires_batch_and_clears_monitor(db: SharedDatabase) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    poll = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
+        pin_after_send=False,
+    )
+    await service.track_poll_answer(
+        poll_id=poll.poll_id or "",
+        telegram_user_id=10,
+        username="stas",
+        full_name="Stas",
+        option_ids=(0,),
+    )
+
+    await service.cancel_day(service_date=saturday, admin_user_id=1)
+
+    notice = client.sent_texts[-1]
+    assert "❌ All lifts on" in notice
+    assert "tg://user?id=10" in notice
+
+    async with db.session() as session:
+        batch = await session.scalar(select(PollBatch))
+    assert batch is not None
+    assert batch.status == "cancelled"
+
+    # Day leaves the monitor; nothing active to manage.
+    view = await service.booking_monitor_view(admin_user_id=1, selected_service_date=saturday)
+    assert "No active lift polls." in view.text
+
+    # A fresh poll for the same date is allowed and starts clean.
+    await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
+        pin_after_send=False,
+    )
+    detail = await service.lift_detail(service_date=saturday, lift_time="8:30")
+    assert detail is not None
+    assert detail[0].cancelled is False
+
+
+async def test_cancelled_day_board_survives_a_late_vote(db: SharedDatabase) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    poll = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
+        pin_after_send=False,
+    )
+
+    await service.cancel_day(service_date=saturday, admin_user_id=1)
+
+    # The Telegram poll stays votable, so a late vote must not rebuild the live board.
+    await service.track_poll_answer(
+        poll_id=poll.poll_id or "",
+        telegram_user_id=10,
+        username="stas",
+        full_name="Stas",
+        option_ids=(0,),
+    )
+
+    board_updates = [
+        text
+        for message_id, text in client.edited_texts
+        if message_id == poll.availability_message_id
+    ]
+    assert "❌ All lifts cancelled." in board_updates[-1]
+    assert "needs" not in board_updates[-1]
+
+
+async def test_cancel_day_releases_the_pin(db: SharedDatabase) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    poll = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
+    )
+    assert poll.pinned is True
+
+    await service.cancel_day(service_date=saturday, admin_user_id=1)
+
+    assert poll.message_id in client.unpinned
+    async with db.session() as session:
+        message = await session.scalar(
+            select(PollMessage).where(PollMessage.telegram_message_id == poll.message_id)
+        )
+    assert message is not None
+    assert message.pinned is False
 
 
 async def test_manual_booking_count_cannot_go_below_zero(db: SharedDatabase) -> None:
@@ -456,11 +602,7 @@ async def test_poll_service_can_send_notice_before_poll_and_pin_poll(
     assert result.notice_message_id == 42
     assert result.availability_message_id == 43
     assert result.message_id == 44
-    assert client.sent_texts[0] == (
-        "📍 The day's first running lift departs from Justice Hall. "
-        "All later lifts depart from Vake Park.\n\n"
-        "💳 Please prepay after voting."
-    )
+    assert client.sent_texts[0] == ("📍 All lifts: Vake Park.\n\n💳 Please prepay after voting.")
     assert "🚐 Availability · Sat, 16 May" in client.sent_texts[1]
     assert client.sent[0].question == "🚐 Saturday · May 16"
 
@@ -844,8 +986,8 @@ async def test_poll_service_updates_daily_availability_after_vote_changes(
 
     assert client.edited_texts[-1][0] == result.availability_message_id
     status = client.edited_texts[-1][1]
-    assert "🟢 8:30 — 2/10" in status
-    assert "🟢 10:00 — 1/10" in status
+    assert "8:30 — <b>2/10</b> · needs 3 more" in status
+    assert "10:00 — <b>1/10</b> · needs 4 more" in status
     assert "15:30" not in status
     assert "Check answers" not in status
 
@@ -881,7 +1023,7 @@ async def test_poll_service_recovers_manually_deleted_availability_on_next_vote(
 
     assert availability_message is not None
     assert availability_message.telegram_message_id == 44
-    assert "🟢 8:30 — 1/10" in client.sent_texts[-1]
+    assert "8:30 — <b>1/10</b> · needs 4 more" in client.sent_texts[-1]
 
 
 @pytest.mark.asyncio
@@ -996,8 +1138,7 @@ async def test_poll_service_clears_vote_selection_with_empty_answer(
 
     assert "@stas" not in report
     assert "No tracked rider votes were found." in report
-    assert "🟢 8:30 — 0/10" in client.edited_texts[-1][1]
-    assert "🟢 10:00 — 0/10" in client.edited_texts[-1][1]
+    assert "8:30 — <b>0/10</b> · needs 5 more" in client.edited_texts[-1][1]
     assert any(
         "poll_vote_event action=retracted" in record.getMessage()
         and record.__dict__["telegram_user_id"] == 10

@@ -10,6 +10,11 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, PollAnswer
 
+from veloexpress_bot.bookings.render import (
+    decode_monitor_date,
+    decode_monitor_time,
+    render_lift_detail,
+)
 from veloexpress_bot.bot.keyboards import start_menu_keyboard
 from veloexpress_bot.bot.permissions import is_admin
 from veloexpress_bot.bot.states import ExtraDayStates
@@ -191,6 +196,120 @@ async def open_booking_monitor(
         admin_user_id=callback.from_user.id,
         private_chat_id=message.chat.id,
     )
+
+
+@router.callback_query(F.data.startswith("mon:day:"))
+async def select_booking_monitor_day(
+    callback: CallbackQuery,
+    settings: Settings,
+    poll_service: PollPostingService,
+) -> None:
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+
+    selected_date = decode_monitor_date((callback.data or "").removeprefix("mon:day:"))
+    await callback.answer()
+    await _show_monitor(message, poll_service, callback.from_user.id, selected_date)
+
+
+@router.callback_query(F.data.startswith("mon:add:") | F.data.startswith("mon:sub:"))
+async def adjust_manual_booking(
+    callback: CallbackQuery,
+    settings: Settings,
+    poll_service: PollPostingService,
+) -> None:
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+
+    action, compact_date, compact_time = (callback.data or "").split(":")[1:]
+    delta = 1 if action == "add" else -1
+    await callback.answer("Updating…")
+    try:
+        await poll_service.adjust_manual_booking(
+            service_date=decode_monitor_date(compact_date),
+            lift_time=decode_monitor_time(compact_time),
+            delta=delta,
+            admin_user_id=callback.from_user.id,
+        )
+    except ValueError as error:
+        await message.answer(str(error))
+
+
+@router.callback_query(F.data.startswith("mon:info:"))
+async def open_lift_detail(
+    callback: CallbackQuery,
+    settings: Settings,
+    poll_service: PollPostingService,
+) -> None:
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+    _, _, compact_date, compact_time = (callback.data or "").split(":")
+    service_date = decode_monitor_date(compact_date)
+    detail = await poll_service.lift_detail(
+        service_date=service_date,
+        lift_time=decode_monitor_time(compact_time),
+    )
+    if detail is None:
+        await callback.answer("This lift is no longer active.", show_alert=True)
+        await _show_monitor(message, poll_service, callback.from_user.id, service_date)
+        return
+    status, riders = detail
+    draft = render_lift_detail(service_date=service_date, lift=status, riders=riders)
+    await _edit_card(message, draft.text, draft.reply_markup)
+    await callback.answer()
+
+
+@router.callback_query(
+    F.data.startswith("mon:cancel:")
+    | F.data.startswith("mon:restore:")
+    | F.data.startswith("mon:cancelday:")
+    | F.data.startswith("mon:back:")
+)
+async def handle_lift_cancellation(
+    callback: CallbackQuery,
+    settings: Settings,
+    poll_service: PollPostingService,
+) -> None:
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+    parts = (callback.data or "").split(":")
+    action = parts[1]
+    service_date = decode_monitor_date(parts[2])
+    admin_user_id = callback.from_user.id
+
+    if action == "cancelday":
+        await poll_service.cancel_day(service_date=service_date, admin_user_id=admin_user_id)
+        await callback.answer("Day cancelled.")
+        await _show_monitor(message, poll_service, admin_user_id, service_date)
+        return
+    if action == "back":
+        await callback.answer()
+        await _show_monitor(message, poll_service, admin_user_id, service_date)
+        return
+
+    lift_time = decode_monitor_time(parts[3])
+    if action == "cancel":
+        await poll_service.cancel_lift(
+            service_date=service_date, lift_time=lift_time, admin_user_id=admin_user_id
+        )
+        await callback.answer("Lift cancelled.")
+    else:
+        await poll_service.restore_lift(
+            service_date=service_date, lift_time=lift_time, admin_user_id=admin_user_id
+        )
+        await callback.answer("Lift restored.")
+
+    detail = await poll_service.lift_detail(service_date=service_date, lift_time=lift_time)
+    if detail is None:
+        await _show_monitor(message, poll_service, admin_user_id, service_date)
+        return
+    status, riders = detail
+    draft = render_lift_detail(service_date=service_date, lift=status, riders=riders)
+    await _edit_card(message, draft.text, draft.reply_markup)
 
 
 @router.callback_query(F.data == "menu:poll_schedule")
@@ -604,6 +723,19 @@ async def _admin_private_message(
         await callback.answer(PRIVATE_ONLY_TEXT, show_alert=True)
         return None
     return message
+
+
+async def _show_monitor(
+    message: Message,
+    poll_service: PollPostingService,
+    admin_user_id: int,
+    service_date: date,
+) -> None:
+    draft = await poll_service.booking_monitor_view(
+        admin_user_id=admin_user_id,
+        selected_service_date=service_date,
+    )
+    await _edit_card(message, draft.text, draft.reply_markup)
 
 
 async def _show_menu(message: Message) -> None:

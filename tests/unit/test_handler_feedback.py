@@ -3,8 +3,27 @@ from veloexpress_bot.bot.handlers import (
     _should_cleanup_bot_pin_notice,
     _should_send_recreate_report,
     _split_callback,
+    router,
 )
 from veloexpress_bot.config import Settings
+
+
+def test_core_callback_handlers_are_registered() -> None:
+    names = {handler.callback.__name__ for handler in router.callback_query.handlers}
+
+    assert {
+        "open_booking_monitor",
+        "select_booking_monitor_day",
+        "adjust_manual_booking",
+        "open_lift_detail",
+        "handle_lift_cancellation",
+        "open_weekend_plan",
+        "handle_weekend_plan_card",
+        "open_extra_day",
+        "handle_extra_day_card",
+        "open_poll_schedule",
+        "handle_poll_schedule_card",
+    } <= names
 
 
 def test_split_callback_keeps_colons_in_lift_time_value() -> None:
