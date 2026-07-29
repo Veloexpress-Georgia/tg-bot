@@ -88,11 +88,18 @@ class PollAutoScheduler:
     async def tick(self, now: datetime | None = None) -> str | None:
         if self._settings.telegram_target_chat_id is None:
             return None
+        now_local = (now or datetime.now(UTC)).astimezone(self._zone)
+        # Threshold and departure notices are independent of the posting
+        # schedule: they must run even when auto-posting was never configured.
+        try:
+            await self._poll_service.evaluate_lift_signals(now=now_local)
+        except Exception:
+            logger.exception("lift_signal_evaluation_failed")
+
         row_data = await self._load_row_data()
         if row_data is None:
             return None
 
-        now_local = (now or datetime.now(UTC)).astimezone(self._zone)
         action = decide_tick(row_data.state, now_local)
         if action is None:
             return None

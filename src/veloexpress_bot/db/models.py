@@ -198,6 +198,27 @@ class CancelledLift(Base):
     )
 
 
+class LiftSignalState(Base):
+    """One row per lift: which threshold notices the bot has already sent."""
+
+    __tablename__ = "lift_signal_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    lift_time: Mapped[str] = mapped_column(String(16))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    threshold_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    undershoot_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    undershoot_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    departure_ping_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
 class AdminBookingMonitor(Base):
     __tablename__ = "admin_booking_monitor"
 
@@ -273,6 +294,17 @@ Index(
     func.coalesce(CancelledLift.thread_id, 0),
     CancelledLift.service_date,
     CancelledLift.lift_time,
+    unique=True,
+)
+
+
+Index(
+    "uq_lift_signal_state_scope_date_time",
+    LiftSignalState.environment,
+    LiftSignalState.chat_id,
+    func.coalesce(LiftSignalState.thread_id, 0),
+    LiftSignalState.service_date,
+    LiftSignalState.lift_time,
     unique=True,
 )
 

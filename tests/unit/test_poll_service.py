@@ -3,6 +3,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
+from zoneinfo import ZoneInfo
 
 import pytest
 from aiogram.types import InlineKeyboardMarkup
@@ -22,6 +23,7 @@ from veloexpress_bot.db.models import (
     PollVoteEvent,
 )
 from veloexpress_bot.polls.defaults import StartLocation
+from veloexpress_bot.polls.liftsignals import lift_departure_at
 from veloexpress_bot.polls.render import PollDraft
 from veloexpress_bot.polls.service import (
     DuplicatePollError,
@@ -485,6 +487,120 @@ async def test_cancel_day_releases_the_pin(db: SharedDatabase) -> None:
         )
     assert message is not None
     assert message.pinned is False
+
+
+async def _fill_lift(service: PollPostingService, poll_id: str, *, riders: int) -> None:
+    for index in range(riders):
+        await service.track_poll_answer(
+            poll_id=poll_id,
+            telegram_user_id=100 + index,
+            username=f"rider{index}",
+            full_name=f"Rider {index}",
+            option_ids=(0,),
+        )
+
+
+async def test_lift_signals_announce_the_threshold_once_and_tag_the_riders(
+    db: SharedDatabase,
+) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    poll = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
+        pin_after_send=False,
+    )
+    poll_id = poll.poll_id or ""
+
+    await _fill_lift(service, poll_id, riders=4)
+    assert await service.evaluate_lift_signals() == ()
+
+    await _fill_lift(service, poll_id, riders=5)
+    events = await service.evaluate_lift_signals()
+    assert [event.kind for event in events] == ["confirmed"]
+
+    notice = client.sent_texts[-1]
+    assert "8:30" in notice
+    assert "is running — 5 riders booked." in notice
+    assert "tg://user?id=104" in notice
+
+    # A second tick must not repeat the announcement.
+    before = len(client.sent_texts)
+    assert await service.evaluate_lift_signals() == ()
+    assert len(client.sent_texts) == before
+
+
+async def test_lift_signals_report_a_settled_undershoot(db: SharedDatabase) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    poll = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
+        pin_after_send=False,
+    )
+    poll_id = poll.poll_id or ""
+    await _fill_lift(service, poll_id, riders=5)
+
+    start = datetime.now(UTC)
+    await service.evaluate_lift_signals(now=start)
+
+    await service.track_poll_answer(
+        poll_id=poll_id,
+        telegram_user_id=104,
+        username="rider4",
+        full_name="Rider 4",
+        option_ids=(),
+    )
+
+    assert await service.evaluate_lift_signals(now=start + timedelta(minutes=1)) == ()
+    events = await service.evaluate_lift_signals(now=start + timedelta(minutes=12))
+    assert [event.kind for event in events] == ["undershoot"]
+    assert "is short — 4/5 riders" in client.sent_texts[-1]
+
+
+async def test_lift_signals_ping_only_the_first_lift_before_departure(
+    db: SharedDatabase,
+) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    poll = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
+        pin_after_send=False,
+    )
+    poll_id = poll.poll_id or ""
+    await _fill_lift(service, poll_id, riders=5)
+
+    # Fill 10:00 too, so the test proves only the opener is pinged.
+    for index in range(5):
+        await service.track_poll_answer(
+            poll_id=poll_id,
+            telegram_user_id=200 + index,
+            username=f"late{index}",
+            full_name=f"Late {index}",
+            option_ids=(1,),
+        )
+
+    await service.evaluate_lift_signals()
+
+    departure = lift_departure_at(saturday, "8:30", zone=ZoneInfo("Asia/Tbilisi"))
+    events = await service.evaluate_lift_signals(now=departure - timedelta(minutes=20))
+    assert [(event.kind, event.lift_time) for event in events] == [("departure", "8:30")]
+    assert client.sent_texts[-1].startswith("🚐 First lift of the day")
+
+    assert await service.evaluate_lift_signals(now=departure - timedelta(minutes=10)) == ()
 
 
 async def test_manual_booking_count_cannot_go_below_zero(db: SharedDatabase) -> None:

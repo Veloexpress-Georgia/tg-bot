@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 from time import perf_counter
 from typing import Protocol
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy import delete, select, update
@@ -25,6 +26,7 @@ from veloexpress_bot.db.models import (
     ACTIVE_POLL_BATCH_STATUSES,
     AdminBookingMonitor,
     CancelledLift,
+    LiftSignalState,
     ManualBookingCount,
     PollBatch,
     PollMessage,
@@ -37,6 +39,16 @@ from veloexpress_bot.polls.defaults import (
     DEFAULT_CANCELLED_LIFT_TIMES,
     DEFAULT_LIFTS,
     StartLocation,
+)
+from veloexpress_bot.polls.liftsignals import (
+    LiftEvent,
+    LiftEventKind,
+    LiftMemory,
+    LiftSignal,
+    day_opener_time,
+    decide_lift_signal,
+    lift_departure_at,
+    render_lift_signal_notice,
 )
 from veloexpress_bot.polls.render import (
     AVAILABILITY_PARSE_MODE,
@@ -62,6 +74,10 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_BATCH_STATUSES = (*ACTIVE_POLL_BATCH_STATUSES, "cleanup_pending", "cleanup_failed")
 REUSABLE_BATCH_STATUSES = {"deleted", "failed", "recreated", "cancelled"}
+
+# Good news before bad news, and the departure ping last so it reads as the
+# closing word when a tick happens to produce all three.
+LIFT_SIGNAL_KIND_ORDER: tuple[LiftEventKind, ...] = ("confirmed", "undershoot", "departure")
 
 
 @dataclass(frozen=True)
@@ -184,6 +200,7 @@ class PollPostingService:
         self._session_factory = session_factory
         self._telegram_client = telegram_client
         self._availability_locks: dict[str, Lock] = {}
+        self._zone = ZoneInfo(settings.schedule_timezone)
 
     async def suggested_cancelled_lift_times(self) -> tuple[str, ...]:
         if self._settings.telegram_target_chat_id is None:
@@ -529,9 +546,10 @@ class PollPostingService:
             )
             await session.commit()
 
-        await self._send_cancel_notice(
+        await self._send_tagged_notice(
             f"❌ All lifts on {_service_day_label(service_date)} are cancelled.",
             mentions,
+            log_label="lift_cancel_notice_failed",
         )
         board_text = _cancelled_day_board(service_date)
         for message_id in availability_message_ids:
@@ -641,9 +659,20 @@ class PollPostingService:
                 lift_time=lift_time,
             ):
                 mentions.setdefault(user_id, label)
-        await self._send_cancel_notice(notice, mentions)
+        await self._send_tagged_notice(notice, mentions, log_label="lift_cancel_notice_failed")
 
-    async def _send_cancel_notice(self, notice: str, mentions: dict[int, str]) -> None:
+    async def _send_tagged_notice(
+        self,
+        notice: str,
+        mentions: dict[int, str],
+        *,
+        log_label: str,
+    ) -> None:
+        """Post one group message and tag the riders it concerns.
+
+        Tagging beats a DM: most riders never pressed /start, so Telegram will
+        not let the bot message them at all.
+        """
         if self._settings.telegram_target_chat_id is None:
             return
         text = notice
@@ -661,7 +690,120 @@ class PollPostingService:
                 parse_mode="HTML",
             )
         except Exception:
-            logger.exception("lift_cancel_notice_failed")
+            logger.exception(log_label)
+
+    async def evaluate_lift_signals(self, *, now: datetime | None = None) -> tuple[LiftEvent, ...]:
+        """Announce lifts crossing the rider minimum and ping the day's opener.
+
+        Driven by the background tick rather than the vote handler: the debounced
+        undershoot notice needs a clock anyway, and sending from inside the
+        availability refresh would hold its lock across Telegram calls.
+        """
+        if self._settings.telegram_target_chat_id is None:
+            return ()
+        moment = (now or datetime.now(UTC)).astimezone(self._zone)
+        events: list[LiftEvent] = []
+        for day in await self._booking_monitor_days():
+            if day.service_date < moment.date():
+                continue
+            events.extend(await self._evaluate_day_signals(day, now=moment))
+        if events:
+            await self._send_lift_signal_notices(tuple(events))
+        return tuple(events)
+
+    async def _evaluate_day_signals(
+        self,
+        day: BookingMonitorDay,
+        *,
+        now: datetime,
+    ) -> list[LiftEvent]:
+        signals = tuple(
+            LiftSignal(
+                service_date=day.service_date,
+                lift_time=lift.time,
+                seats=lift.total_count,
+                cancelled=lift.cancelled,
+            )
+            for lift in day.lifts
+        )
+        opener = day_opener_time(signals)
+        events: list[LiftEvent] = []
+        async with self._session_factory() as session:
+            rows = await self._lift_signal_rows(session=session, service_date=day.service_date)
+            for signal in signals:
+                row = rows.get(signal.lift_time)
+                decision = decide_lift_signal(
+                    signal,
+                    _lift_memory(row),
+                    now=now,
+                    departure_at=lift_departure_at(
+                        signal.service_date,
+                        signal.lift_time,
+                        zone=self._zone,
+                    ),
+                    is_day_opener=signal.lift_time == opener,
+                )
+                if row is None:
+                    if decision.memory == LiftMemory():
+                        # Nothing to remember yet; do not store an empty row.
+                        continue
+                    row = LiftSignalState(
+                        environment=self._settings.app_env,
+                        chat_id=self._settings.telegram_target_chat_id,
+                        thread_id=self._settings.telegram_target_thread_id,
+                        service_date=signal.service_date,
+                        lift_time=signal.lift_time,
+                    )
+                    session.add(row)
+                _apply_lift_memory(row, decision.memory, now=now)
+                if decision.event is not None:
+                    events.append(decision.event)
+            await session.commit()
+        return events
+
+    async def _lift_signal_rows(
+        self,
+        *,
+        session: AsyncSession,
+        service_date: date,
+    ) -> dict[str, LiftSignalState]:
+        rows = (
+            await session.scalars(
+                select(LiftSignalState)
+                .where(LiftSignalState.environment == self._settings.app_env)
+                .where(LiftSignalState.chat_id == self._settings.telegram_target_chat_id)
+                .where(LiftSignalState.thread_id == self._settings.telegram_target_thread_id)
+                .where(LiftSignalState.service_date == service_date)
+            )
+        ).all()
+        return {row.lift_time: row for row in rows}
+
+    async def _send_lift_signal_notices(self, events: tuple[LiftEvent, ...]) -> None:
+        by_kind: dict[LiftEventKind, list[LiftEvent]] = {}
+        for event in events:
+            by_kind.setdefault(event.kind, []).append(event)
+        for kind in LIFT_SIGNAL_KIND_ORDER:
+            kind_events = by_kind.get(kind)
+            if not kind_events:
+                continue
+            mentions: dict[int, str] = {}
+            for event in kind_events:
+                for user_id, label in await self._lift_voters(
+                    service_date=event.service_date,
+                    lift_time=event.lift_time,
+                ):
+                    mentions.setdefault(user_id, label)
+            await self._send_tagged_notice(
+                render_lift_signal_notice(kind, tuple(kind_events)),
+                mentions,
+                log_label="lift_signal_notice_failed",
+            )
+            logger.info(
+                "lift_signal_notified kind=%s lift_count=%s",
+                kind,
+                len(kind_events),
+                extra={"kind": kind, "lift_count": len(kind_events)},
+            )
 
     async def _lift_voters(
         self,
@@ -1987,6 +2129,39 @@ def _service_week_start(service_date: date) -> date:
 
 def _service_day_label(service_date: date) -> str:
     return f"{service_date:%a}, {service_date.day} {service_date:%b}"
+
+
+def _lift_memory(row: LiftSignalState | None) -> LiftMemory:
+    if row is None:
+        return LiftMemory()
+    return LiftMemory(
+        confirmed_at=_as_utc(row.confirmed_at),
+        threshold_notified_at=_as_utc(row.threshold_notified_at),
+        undershoot_since=_as_utc(row.undershoot_since),
+        undershoot_notified_at=_as_utc(row.undershoot_notified_at),
+        departure_ping_at=_as_utc(row.departure_ping_at),
+    )
+
+
+def _apply_lift_memory(row: LiftSignalState, memory: LiftMemory, *, now: datetime) -> None:
+    row.confirmed_at = _to_utc(memory.confirmed_at)
+    row.threshold_notified_at = _to_utc(memory.threshold_notified_at)
+    row.undershoot_since = _to_utc(memory.undershoot_since)
+    row.undershoot_notified_at = _to_utc(memory.undershoot_notified_at)
+    row.departure_ping_at = _to_utc(memory.departure_ping_at)
+    row.updated_at = now.astimezone(UTC)
+
+
+def _to_utc(value: datetime | None) -> datetime | None:
+    """Always persist UTC: SQLite stores the wall clock and drops the offset."""
+    return value.astimezone(UTC) if value is not None else None
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Reading back a stored instant; a missing offset means it was written as UTC."""
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def _cancelled_day_board(service_date: date) -> str:

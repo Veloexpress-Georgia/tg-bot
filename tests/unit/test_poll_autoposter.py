@@ -1,6 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -185,6 +185,36 @@ async def test_tick_does_nothing_without_configured_schedule(db: SharedDatabase)
     scheduler, _ = build_scheduler(db, RecordingTelegramClient())
 
     assert await scheduler.tick(at(24, 14)) is None
+
+
+async def test_tick_runs_lift_signals_even_without_a_configured_schedule(
+    db: SharedDatabase,
+) -> None:
+    client = RecordingTelegramClient()
+    scheduler, poll_service = build_scheduler(db, client)
+    service_date = datetime.now(UTC).date() + timedelta(days=2)
+    poll = await poll_service.create_poll(
+        PollSetup(
+            service_date=service_date,
+            created_by_user_id=1,
+            cancelled_lift_times=("15:30",),
+        ),
+        include_notice=False,
+        pin_after_send=False,
+    )
+    for index in range(5):
+        await poll_service.track_poll_answer(
+            poll_id=poll.poll_id or "",
+            telegram_user_id=300 + index,
+            username=f"rider{index}",
+            full_name=f"Rider {index}",
+            option_ids=(0,),
+        )
+
+    # Threshold notices are not part of auto-posting, so an admin who never set
+    # up a schedule must still get them.
+    assert await scheduler.tick(datetime.now(UTC)) is None
+    assert any("is running" in text for text in client.sent_texts)
 
 
 async def test_tick_announces_once_then_creates_weekend_polls(db: SharedDatabase) -> None:
