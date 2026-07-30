@@ -45,6 +45,17 @@ class LiftRider:
 class BookingMonitorDay:
     service_date: date
     lifts: tuple[BookingLiftStatus, ...]
+    paid_rider_count: int = 0
+    booked_rider_count: int = 0
+    expected_gel: int = 0
+
+    @property
+    def running_count(self) -> int:
+        return sum(not lift.cancelled and lift.total_count >= MINIMUM_RIDERS for lift in self.lifts)
+
+    @property
+    def seat_count(self) -> int:
+        return sum(lift.total_count for lift in self.lifts if not lift.cancelled)
 
 
 @dataclass(frozen=True)
@@ -70,6 +81,8 @@ def render_booking_monitor(
     )
     lines = [
         f"📊 Booking monitor · {_long_day_label(selected_day.service_date)}",
+        "",
+        _summary_line(selected_day),
         "",
     ]
     lines.extend(_lift_line(lift) for lift in selected_day.lifts)
@@ -193,6 +206,20 @@ def decode_monitor_time(value: str) -> str:
     hour = int(normalized[:2])
     minute = normalized[2:]
     return f"{hour}:{minute}"
+
+
+def _summary_line(day: BookingMonitorDay) -> str:
+    """The day at a glance: what runs, how many seats, and how much money is in."""
+    active = sum(not lift.cancelled for lift in day.lifts)
+    parts = [
+        f"Running {day.running_count} of {active}",
+        f"{day.seat_count} seats",
+    ]
+    if day.booked_rider_count:
+        parts.append(f"paid {day.paid_rider_count}/{day.booked_rider_count}")
+    if day.expected_gel:
+        parts.append(f"{day.expected_gel} GEL in")
+    return " · ".join(parts)
 
 
 def _lift_line(lift: BookingLiftStatus) -> str:

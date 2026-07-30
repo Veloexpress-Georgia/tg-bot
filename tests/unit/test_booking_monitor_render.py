@@ -24,6 +24,9 @@ def test_booking_monitor_renders_day_tabs_counts_and_controls() -> None:
                     BookingLiftStatus(time="8:30", vote_count=6, manual_count=1),
                     BookingLiftStatus(time="10:00", vote_count=9, manual_count=0),
                 ),
+                paid_rider_count=3,
+                booked_rider_count=9,
+                expected_gel=60,
             ),
             BookingMonitorDay(
                 service_date=date(2026, 7, 19),
@@ -34,6 +37,7 @@ def test_booking_monitor_renders_day_tabs_counts_and_controls() -> None:
     )
 
     assert "📊 Booking monitor · Sat, 18 Jul" in draft.text
+    assert "Running 2 of 2 · 16 seats · paid 3/9 · 60 GEL in" in draft.text
     assert "8:30 — 7/10 · 3 left · 1 manual" in draft.text
     assert "10:00 — 9/10 · 1 left" in draft.text
     assert draft.reply_markup is not None

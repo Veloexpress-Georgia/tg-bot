@@ -1,6 +1,7 @@
 from datetime import date
 
 from veloexpress_bot.payments.render import (
+    OutstandingRider,
     PaymentsBoardView,
     RiderPayment,
     decode_board_date,
@@ -18,9 +19,15 @@ def _view(**overrides) -> PaymentsBoardView:  # type: ignore[no-untyped-def]
         "running_lift_times": ("8:30", "10:00"),
         "price_gel": 15,
         "payments": (),
-        "booked_rider_count": 0,
+        "outstanding": (),
     }
     return PaymentsBoardView(**{**defaults, **overrides})
+
+
+def _owing(count: int) -> tuple[OutstandingRider, ...]:
+    return tuple(
+        OutstandingRider(telegram_user_id=index, label=f"@rider{index}") for index in range(count)
+    )
 
 
 def _buttons(markup) -> dict[str, str]:  # type: ignore[no-untyped-def]
@@ -28,13 +35,13 @@ def _buttons(markup) -> dict[str, str]:  # type: ignore[no-untyped-def]
 
 
 def test_board_lists_running_lifts_price_and_the_four_taps() -> None:
-    draft = render_payments_board(_view(booked_rider_count=6))
+    draft = render_payments_board(_view(outstanding=_owing(6)))
 
     assert "💸 Payments · Sat, 18 Jul" in draft.text
     assert "Running: 8:30, 10:00" in draft.text
     assert "15 GEL per seat · pay by 20:00" in draft.text
     assert "➕/➖ for a guest or fewer laps than you booked." in draft.text
-    assert "Waiting on 6 more." in draft.text
+    assert "Waiting on:" in draft.text
     assert draft.reply_markup is not None
     assert _buttons(draft.reply_markup) == {
         "pay:paid:20260718": "💸 I paid",
@@ -47,7 +54,7 @@ def test_board_lists_running_lifts_price_and_the_four_taps() -> None:
 def test_board_lists_payments_and_counts_the_rest() -> None:
     draft = render_payments_board(
         _view(
-            booked_rider_count=4,
+            outstanding=_owing(2),
             payments=(
                 RiderPayment(label="@stas", seats=2, amount_gel=30),
                 RiderPayment(label="Anna", seats=1, amount_gel=15),
@@ -57,20 +64,25 @@ def test_board_lists_payments_and_counts_the_rest() -> None:
 
     assert "✓ @stas — 30 GEL · 2 seats" in draft.text
     assert "✓ Anna — 15 GEL" in draft.text
-    assert "Waiting on 2 more." in draft.text
+    assert "Waiting on:" in draft.text
 
 
-def test_board_never_names_who_has_not_paid() -> None:
+def test_board_tags_who_still_owes() -> None:
     draft = render_payments_board(
         _view(
-            booked_rider_count=5,
+            outstanding=(
+                OutstandingRider(telegram_user_id=11, label="@anna"),
+                OutstandingRider(telegram_user_id=12, label="Ivan"),
+            ),
             payments=(RiderPayment(label="@stas", seats=1, amount_gel=15),),
         )
     )
 
-    # A nudge, not a public shaming: only the count of the remaining riders.
-    assert "Waiting on 4 more." in draft.text
-    assert draft.text.count("@") == 1
+    # Tags, not a count. The board is edited in place and a Telegram edit sends no
+    # notification, so naming names here shows the gap without nagging anyone.
+    assert "Waiting on:" in draft.text
+    assert 'tg://user?id=11">@anna</a>' in draft.text
+    assert 'tg://user?id=12">Ivan</a>' in draft.text
 
 
 def test_board_has_no_taps_before_a_lift_reaches_the_minimum() -> None:

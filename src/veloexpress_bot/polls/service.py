@@ -38,6 +38,7 @@ from veloexpress_bot.db.models import (
     PollVoteEvent,
     ServiceDayNotice,
 )
+from veloexpress_bot.deeplinks import topic_link
 from veloexpress_bot.polls.defaults import (
     DEFAULT_CANCELLED_LIFT_TIMES,
     DEFAULT_LIFTS,
@@ -213,7 +214,11 @@ class PollPostingService:
         return PaymentTerms(
             price_gel=self._settings.payment_price_gel,
             deadline_time=self._settings.booking_deadline_time,
-            link=self._settings.payment_link,
+            link=topic_link(
+                chat_id=self._settings.telegram_target_chat_id or 0,
+                thread_id=self._settings.telegram_payments_thread_id,
+            )
+            or "",
         )
 
     def _require_target_chat_id(self) -> int:
@@ -1596,7 +1601,51 @@ class PollPostingService:
             await self._unpin_older_poll_messages(
                 excluded_batch_ids=tuple(result.batch_id for result in results)
             )
+        if results:
+            await self.reopen_booking_monitors()
         return pinned_results
+
+    async def reopen_booking_monitors(self) -> None:
+        """Re-post every admin's monitor so a new weekend arrives at the bottom.
+
+        Editing in place would leave the monitor buried wherever it was last
+        opened, which is how admins missed it before. Only admins who have opened
+        it at least once can be reached: Telegram refuses a private message to
+        anyone who never started a chat with the bot.
+        """
+        rows = await self._booking_monitor_rows()
+        if not rows:
+            return
+        days = await self._booking_monitor_days()
+        for row in rows:
+            draft = render_booking_monitor(
+                days,
+                selected_service_date=days[0].service_date if days else None,
+            )
+            await self._telegram_client.delete_message(
+                chat_id=row.private_chat_id,
+                message_id=row.telegram_message_id,
+            )
+            try:
+                sent = await self._telegram_client.send_text(
+                    chat_id=row.private_chat_id,
+                    message_thread_id=None,
+                    text=draft.text,
+                    reply_markup=draft.reply_markup,
+                )
+            except Exception:
+                logger.exception(
+                    "booking_monitor_reopen_failed admin_user_id=%s",
+                    row.admin_user_id,
+                    extra={"admin_user_id": row.admin_user_id},
+                )
+                continue
+            await self._store_booking_monitor(
+                admin_user_id=row.admin_user_id,
+                private_chat_id=row.private_chat_id,
+                telegram_message_id=sent.message_id,
+                selected_service_date=days[0].service_date if days else None,
+            )
 
     async def _unpin_older_poll_messages(self, *, excluded_batch_ids: tuple[int, ...]) -> None:
         if self._settings.telegram_target_chat_id is None:
@@ -1644,6 +1693,22 @@ class PollPostingService:
             .where(AdminBookingMonitor.thread_id == self._settings.telegram_target_thread_id)
             .where(AdminBookingMonitor.admin_user_id == admin_user_id)
         )
+
+    async def _booking_monitor_rows(self) -> tuple[AdminBookingMonitor, ...]:
+        if self._settings.telegram_target_chat_id is None:
+            return ()
+        async with self._session_factory() as session:
+            rows = (
+                await session.scalars(
+                    select(AdminBookingMonitor)
+                    .where(AdminBookingMonitor.environment == self._settings.app_env)
+                    .where(AdminBookingMonitor.chat_id == self._settings.telegram_target_chat_id)
+                    .where(
+                        AdminBookingMonitor.thread_id == self._settings.telegram_target_thread_id
+                    )
+                )
+            ).all()
+        return tuple(rows)
 
     async def _store_booking_monitor(
         self,
@@ -1788,6 +1853,14 @@ class PollPostingService:
                     .where(CancelledLift.service_date.in_(selected_dates))
                 )
             ).all()
+            claims = (
+                await session.scalars(
+                    select(PaymentClaim)
+                    .where(PaymentClaim.environment == self._settings.app_env)
+                    .where(PaymentClaim.chat_id == self._settings.telegram_target_chat_id)
+                    .where(PaymentClaim.service_date.in_(selected_dates))
+                )
+            ).all()
 
         votes_by_poll: dict[str, list[PollVote]] = {}
         for vote in votes:
@@ -1819,7 +1892,23 @@ class PollPostingService:
                         cancelled=(batch.service_date, snapshot.lift_time) in cancelled_date_time,
                     )
                 )
-            days.append(BookingMonitorDay(service_date=batch.service_date, lifts=tuple(lifts)))
+            day_claims = [claim for claim in claims if claim.service_date == batch.service_date]
+            booked_user_ids = {
+                vote.telegram_user_id
+                for snapshot in batch_snapshots
+                for vote in votes_by_poll.get(snapshot.poll_id, [])
+                if decode_option_ids(vote.option_ids)
+            }
+            days.append(
+                BookingMonitorDay(
+                    service_date=batch.service_date,
+                    lifts=tuple(lifts),
+                    paid_rider_count=len(day_claims),
+                    booked_rider_count=len(booked_user_ids),
+                    expected_gel=sum(claim.seats for claim in day_claims)
+                    * self._settings.payment_price_gel,
+                )
+            )
         return tuple(days)
 
     async def _active_snapshot_for_lift(

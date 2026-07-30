@@ -21,6 +21,7 @@ from veloexpress_bot.db.models import (
 )
 from veloexpress_bot.payments.render import (
     PAYMENTS_PARSE_MODE,
+    OutstandingRider,
     PaymentsBoardView,
     RiderPayment,
     render_payment_post,
@@ -250,7 +251,13 @@ class PaymentsService:
         return notice
 
     async def record_topic_post(self, *, telegram_user_id: int, posted_at: datetime) -> None:
-        """Remember that a rider spoke in the payments topic. Content is ignored."""
+        """Treat a rider writing in the payments topic as their payment report.
+
+        The bot never reads what they wrote — the group convention is that you
+        post there when you have paid, so presence is the whole signal. The
+        trade-off is deliberate: a question posted in the topic also counts, and
+        an admin can clear it from the monitor.
+        """
         if not self.enabled:
             return
         async with self._session_factory() as session:
@@ -272,6 +279,48 @@ class PaymentsService:
             else:
                 row.last_posted_at = posted_at
             await session.commit()
+
+        await self._claim_from_topic_post(telegram_user_id=telegram_user_id, posted_at=posted_at)
+
+    async def _claim_from_topic_post(self, *, telegram_user_id: int, posted_at: datetime) -> None:
+        """Mark the rider paid for the soonest running day they are booked on.
+
+        Only one day, and only the nearest: a single message cannot be read as
+        paying for a whole weekend, and guessing wide would overstate what Misho
+        has received.
+        """
+        for day in await self._active_days(today=posted_at.astimezone(self._zone).date()):
+            if day.cancelled or telegram_user_id not in day.lift_times_by_user:
+                continue
+            if posted_at < day.polls_created_at:
+                # Written before this day's poll existed, so it cannot be about it.
+                continue
+            async with self._session_factory() as session:
+                if (
+                    await self._claim_row(
+                        session=session,
+                        service_date=day.service_date,
+                        telegram_user_id=telegram_user_id,
+                    )
+                    is not None
+                ):
+                    return
+                username, full_name = day.labels_by_user.get(telegram_user_id, (None, "Rider"))
+                session.add(
+                    PaymentClaim(
+                        environment=self._settings.app_env,
+                        chat_id=self._require_chat_id(),
+                        thread_id=self._settings.telegram_target_thread_id,
+                        service_date=day.service_date,
+                        telegram_user_id=telegram_user_id,
+                        username=username,
+                        full_name=full_name,
+                        seats=len(day.lift_times_by_user[telegram_user_id]),
+                    )
+                )
+                await session.commit()
+            await self._refresh_board(day)
+            return
 
     async def _announce_claim(self, day: DayBookings, telegram_user_id: int) -> None:
         """Post the rider's payment line, unless they already wrote it themselves."""
@@ -388,6 +437,7 @@ class PaymentsService:
                     .order_by(PaymentClaim.claimed_at, PaymentClaim.id)
                 )
             ).all()
+        paid_user_ids = {claim.telegram_user_id for claim in claims}
         return PaymentsBoardView(
             service_date=day.service_date,
             running_lift_times=day.running_lift_times,
@@ -400,9 +450,15 @@ class PaymentsService:
                 )
                 for claim in claims
             ),
-            booked_rider_count=day.booked_rider_count,
+            outstanding=tuple(
+                OutstandingRider(
+                    telegram_user_id=user_id,
+                    label=_rider_label(*day.labels_by_user.get(user_id, (None, "Rider"))),
+                )
+                for user_id in day.lift_times_by_user
+                if user_id not in paid_user_ids
+            ),
             deadline_time=self._settings.booking_deadline_time,
-            link=self._settings.payment_link,
             cancelled=day.cancelled,
         )
 

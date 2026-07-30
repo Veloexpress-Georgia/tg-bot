@@ -29,14 +29,19 @@ class RiderPayment:
 
 
 @dataclass(frozen=True)
+class OutstandingRider:
+    telegram_user_id: int
+    label: str
+
+
+@dataclass(frozen=True)
 class PaymentsBoardView:
     service_date: date
     running_lift_times: tuple[str, ...]
     price_gel: int
     payments: tuple[RiderPayment, ...]
-    booked_rider_count: int
+    outstanding: tuple[OutstandingRider, ...] = ()
     deadline_time: str = "20:00"
-    link: str = ""
     cancelled: bool = False
 
 
@@ -62,17 +67,15 @@ def render_payments_board(view: PaymentsBoardView) -> PaymentsBoardDraft:
         f"Running: {', '.join(view.running_lift_times)}",
         f"{view.price_gel} GEL per seat · pay by {view.deadline_time}",
     ]
-    if view.link:
-        lines.append(f"🔗 {view.link}")
     lines.append("")
     lines.append("➕/➖ for a guest or fewer laps than you booked.")
     if view.payments:
         lines.extend(("", "Paid:"))
         lines.extend(_payment_line(payment) for payment in view.payments)
-    outstanding = view.booked_rider_count - len(view.payments)
-    if outstanding > 0:
-        # A count, never a name list: this is a nudge, not a public shaming.
-        lines.extend(("", f"Waiting on {outstanding} more."))
+    if view.outstanding:
+        # Tags rather than a bare count. The board is edited in place, and a Telegram
+        # edit sends no notification, so this shows who still owes without nagging.
+        lines.extend(("", "Waiting on:", " ".join(_mention(rider) for rider in view.outstanding)))
 
     return PaymentsBoardDraft(
         text="\n".join(lines),
@@ -122,6 +125,10 @@ def _keyboard(service_date: date) -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def _mention(rider: OutstandingRider) -> str:
+    return f'<a href="tg://user?id={rider.telegram_user_id}">{html.escape(rider.label)}</a>'
 
 
 def _payment_line(payment: RiderPayment) -> str:

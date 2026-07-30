@@ -5,10 +5,10 @@ from aiogram.types import (
     BotCommandScopeDefault,
 )
 
-BOT_COMMANDS = (
-    BotCommand(command="start", description="🚐 Open menu"),
-    BotCommand(command="create_lift_poll", description="📋 Plan weekend polls"),
-)
+# /start only. Everything else is a menu button, so the command list stays a
+# single door in rather than a second, drifting copy of the menu. The
+# /create_lift_poll handler survives as an unlisted shortcut for muscle memory.
+BOT_COMMANDS = (BotCommand(command="start", description="🚐 Open menu"),)
 
 
 async def register_bot_commands(bot: Bot) -> None:

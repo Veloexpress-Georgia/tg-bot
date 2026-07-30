@@ -150,7 +150,8 @@ class FakeTelegramClient:
         return True
 
     async def delete_message(self, *, chat_id: int, message_id: int) -> bool:
-        assert chat_id == -100123
+        # Group messages and an admin's private monitor are both deletable.
+        assert chat_id == -100123 or chat_id > 0
         if self.fail_delete_once:
             self.fail_delete_once = False
             return False
@@ -657,6 +658,33 @@ async def test_no_deadline_reminder_when_every_lift_is_already_running(
     await service.evaluate_lift_signals(now=deadline - timedelta(hours=1))
 
     assert not any("⏳ Tomorrow" in text for text in client.sent_texts)
+
+
+async def test_new_polls_reopen_the_monitor_at_the_bottom_of_the_admin_chat(
+    db: SharedDatabase,
+) -> None:
+    """Editing in place would leave the monitor buried where it was last opened."""
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    monitor_message_id = await service.open_booking_monitor(admin_user_id=1, private_chat_id=555)
+    assert monitor_message_id is not None
+
+    result = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
+        pin_after_send=False,
+    )
+    await service.pin_created_results((result,))
+
+    assert monitor_message_id in client.deleted
+    async with db.session() as session:
+        monitor = await session.scalar(select(AdminBookingMonitor))
+    assert monitor is not None
+    assert monitor.telegram_message_id != monitor_message_id
 
 
 async def test_a_reposted_day_announces_itself_again(db: SharedDatabase) -> None:
