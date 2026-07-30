@@ -303,6 +303,7 @@ async def handle_lift_cancellation(
     callback: CallbackQuery,
     settings: Settings,
     poll_service: PollPostingService,
+    payments_service: PaymentsService,
 ) -> None:
     message = await _admin_private_message(callback, settings)
     if message is None:
@@ -316,6 +317,7 @@ async def handle_lift_cancellation(
         await poll_service.cancel_day(service_date=service_date, admin_user_id=admin_user_id)
         await callback.answer("Day cancelled.")
         await _show_monitor(message, poll_service, admin_user_id, service_date)
+        await _report_refunds(message, payments_service, service_date=service_date)
         return
     if action == "back":
         await callback.answer()
@@ -328,11 +330,19 @@ async def handle_lift_cancellation(
             service_date=service_date, lift_time=lift_time, admin_user_id=admin_user_id
         )
         await callback.answer("Lift cancelled.")
-    else:
-        await poll_service.restore_lift(
-            service_date=service_date, lift_time=lift_time, admin_user_id=admin_user_id
+        await _show_monitor(message, poll_service, admin_user_id, service_date)
+        await _report_refunds(
+            message,
+            payments_service,
+            service_date=service_date,
+            cancelled_lift_time=lift_time,
         )
-        await callback.answer("Lift restored.")
+        return
+
+    await poll_service.restore_lift(
+        service_date=service_date, lift_time=lift_time, admin_user_id=admin_user_id
+    )
+    await callback.answer("Lift restored.")
 
     detail = await poll_service.lift_detail(service_date=service_date, lift_time=lift_time)
     if detail is None:
@@ -861,6 +871,22 @@ async def _show_monitor(
         selected_service_date=service_date,
     )
     await _edit_card(message, draft.text, draft.reply_markup)
+
+
+async def _report_refunds(
+    message: Message,
+    payments_service: PaymentsService,
+    *,
+    service_date: date,
+    cancelled_lift_time: str | None = None,
+) -> None:
+    """A cancellation with money already in needs a refund list, not a toast."""
+    report = await payments_service.cancellation_report(
+        service_date=service_date,
+        cancelled_lift_time=cancelled_lift_time,
+    )
+    if report is not None:
+        await message.answer(report, parse_mode="HTML")
 
 
 async def _show_menu(message: Message) -> None:

@@ -46,6 +46,53 @@ class PaymentsBoardView:
 
 
 @dataclass(frozen=True)
+class RefundRow:
+    label: str
+    telegram_user_id: int
+    seats: int
+    amount_gel: int
+    remaining_lift_times: tuple[str, ...]
+
+
+def render_cancellation_report(
+    *,
+    service_date: date,
+    cancelled_lift_time: str | None,
+    rows: tuple[RefundRow, ...],
+) -> str | None:
+    """Tell the admin who paid for something that just stopped running.
+
+    Returns None when nobody paid, so a quiet cancellation stays quiet.
+    """
+    if not rows:
+        return None
+    what = f"{cancelled_lift_time} · " if cancelled_lift_time else ""
+    lines = [f"💸 {what}{_long_day_label(service_date)} cancelled — who paid:", ""]
+    refund_due = 0
+    for row in rows:
+        seats = f" · {row.seats} seats" if row.seats > 1 else ""
+        mention = f'<a href="tg://user?id={row.telegram_user_id}">{html.escape(row.label)}</a>'
+        if row.remaining_lift_times:
+            # Payment covers the day, so another lift still earns what they paid.
+            still = ", ".join(row.remaining_lift_times)
+            lines.append(f"{mention} — {row.amount_gel} GEL{seats} · still on {still}")
+            continue
+        refund_due += row.amount_gel
+        if cancelled_lift_time is None:
+            # The header already said the whole day is gone; every row is a refund.
+            lines.append(f"{mention} — {row.amount_gel} GEL{seats}")
+        else:
+            lines.append(f"{mention} — {row.amount_gel} GEL{seats} · nothing left, refund")
+    total = sum(row.amount_gel for row in rows)
+    lines.append("")
+    if refund_due and refund_due != total:
+        lines.append(f"Refund {refund_due} GEL of {total} GEL paid.")
+    else:
+        lines.append(f"Refund {total} GEL.")
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True)
 class PaymentsBoardDraft:
     text: str
     reply_markup: InlineKeyboardMarkup | None

@@ -105,6 +105,8 @@ Riders act on the board with inline buttons rather than a command, because a but
 
 When a rider claims, the bot posts their payment line to the payments topic on their behalf, tagged with amount and lifts, so Misho reads one format instead of a mix of screenshots and free text. If that rider already wrote in the payments topic since this weekend's polls were created, the bot stays silent and only records the claim: it checks that a message exists, never what it says. A later seat change edits the line the bot already posted instead of adding another. Payments are tracked per rider per day, not per lift, because a rider who booked two lifts may only ride one.
 
+Cancelling something people already paid for sends the admin a refund list in their private chat: who paid, how much, and the total to return. Because payment covers the day rather than a single lift, cancelling one lift is not automatically a refund — riders still booked on another lift that day are listed as staying, and only riders left with nothing appear as refunds. Cancelling the whole day makes every payment a refund. Nobody paid means no message.
+
 A message in the payments topic counts as a payment report on its own: the group convention is that you post there once you have paid, so the bot marks the rider for the soonest running day they are booked on and adds no line of its own. It never reads the text — presence is the whole signal — which does mean a question asked in the topic counts too, and an admin clears that from the monitor. A post written before that day's poll existed is ignored.
 
 The board tags whoever still owes rather than printing a count. Editing a message sends no Telegram notification, so the names show the gap without nagging anybody.

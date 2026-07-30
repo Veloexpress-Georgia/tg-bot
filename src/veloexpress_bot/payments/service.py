@@ -23,7 +23,9 @@ from veloexpress_bot.payments.render import (
     PAYMENTS_PARSE_MODE,
     OutstandingRider,
     PaymentsBoardView,
+    RefundRow,
     RiderPayment,
+    render_cancellation_report,
     render_payment_post,
     render_payments_board,
 )
@@ -48,6 +50,9 @@ class DayBookings:
     cancelled: bool
     polls_created_at: datetime
     lift_times_by_user: dict[int, tuple[str, ...]] = field(default_factory=dict)
+    # Every non-cancelled lift a rider booked, including ones still short of the
+    # minimum: a refund question must not treat "not full yet" as "gone".
+    booked_lift_times_by_user: dict[int, tuple[str, ...]] = field(default_factory=dict)
     labels_by_user: dict[int, tuple[str | None, str]] = field(default_factory=dict)
 
     @property
@@ -249,6 +254,53 @@ class PaymentsService:
             )
         await self._refresh_board(day)
         return notice
+
+    async def cancellation_report(
+        self,
+        *,
+        service_date: date,
+        cancelled_lift_time: str | None = None,
+    ) -> str | None:
+        """What the admin owes back after cancelling. None when nobody had paid.
+
+        Call this after the cancellation is recorded, so a rider's remaining lifts
+        already exclude what was just cancelled.
+        """
+        if not self.enabled:
+            return None
+        day = await self._day(service_date)
+        async with self._session_factory() as session:
+            claims = (
+                await session.scalars(
+                    select(PaymentClaim)
+                    .where(PaymentClaim.environment == self._settings.app_env)
+                    .where(PaymentClaim.chat_id == self._require_chat_id())
+                    .where(PaymentClaim.service_date == service_date)
+                    .order_by(PaymentClaim.claimed_at, PaymentClaim.id)
+                )
+            ).all()
+        if not claims:
+            return None
+
+        rows = tuple(
+            RefundRow(
+                label=_rider_label(claim.username, claim.full_name),
+                telegram_user_id=claim.telegram_user_id,
+                seats=claim.seats,
+                amount_gel=self._amount(claim.seats),
+                remaining_lift_times=(
+                    ()
+                    if day is None or cancelled_lift_time is None
+                    else day.booked_lift_times_by_user.get(claim.telegram_user_id, ())
+                ),
+            )
+            for claim in claims
+        )
+        return render_cancellation_report(
+            service_date=service_date,
+            cancelled_lift_time=cancelled_lift_time,
+            rows=rows,
+        )
 
     async def record_topic_post(self, *, telegram_user_id: int, posted_at: datetime) -> None:
         """Treat a rider writing in the payments topic as their payment report.
@@ -542,6 +594,12 @@ class PaymentsService:
                     if snapshot.option_index in decode_option_ids(vote.option_ids)
                 ]
                 seats = len(voters) + manual_by_date_time.get((service_date, lift_time), 0)
+                for vote in voters:
+                    day.booked_lift_times_by_user[vote.telegram_user_id] = (
+                        *day.booked_lift_times_by_user.get(vote.telegram_user_id, ()),
+                        lift_time,
+                    )
+                    day.labels_by_user[vote.telegram_user_id] = (vote.username, vote.full_name)
                 if seats < MINIMUM_RIDERS:
                     continue
                 running.append(lift_time)

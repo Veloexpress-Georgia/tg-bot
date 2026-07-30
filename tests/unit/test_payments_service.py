@@ -530,6 +530,73 @@ async def test_nothing_is_posted_when_the_payments_topic_is_unset(db: SharedData
         assert await session.scalar(select(PaymentClaim)) is None
 
 
+async def test_cancelling_a_day_reports_every_payment_as_a_refund(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
+    await payments.adjust_seats(service_date=saturday, telegram_user_id=100, delta=1)
+    await payments.claim(
+        service_date=saturday, telegram_user_id=101, username="anna", full_name="Anna"
+    )
+
+    await poll_service.cancel_day(service_date=saturday, admin_user_id=1)
+    report = await payments.cancellation_report(service_date=saturday)
+
+    assert report is not None
+    assert "cancelled — who paid" in report
+    assert "@stas</a> — 30 GEL · 2 seats" in report
+    assert "@anna</a> — 15 GEL" in report
+    assert "Refund 45 GEL." in report
+    # A whole day leaves nothing to ride, and the header already said so, so rows
+    # carry neither "still on" nor a per-rider refund note.
+    assert "still on" not in report
+    assert "nothing left" not in report
+
+
+async def test_cancelling_one_lift_separates_refunds_from_riders_who_stay(
+    db: SharedDatabase,
+) -> None:
+    """Payment covers the day, so losing one lift is not automatically a refund."""
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    # @rider100 booked both 8:30 and 10:00; the others only 8:30.
+    await _vote(poll_service, poll_id, 100, 0, 1)
+    for user_id in range(101, 105):
+        await _vote(poll_service, poll_id, user_id, 0)
+    await payments.sync_boards()
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="rider100", full_name="R100"
+    )
+    await payments.claim(
+        service_date=saturday, telegram_user_id=101, username="rider101", full_name="R101"
+    )
+
+    await poll_service.cancel_lift(service_date=saturday, lift_time="8:30", admin_user_id=1)
+    report = await payments.cancellation_report(
+        service_date=saturday,
+        cancelled_lift_time="8:30",
+    )
+
+    assert report is not None
+    # A seat is priced per running lift, so @rider100 paid for 8:30 only — 10:00
+    # was still short of the minimum when they claimed.
+    assert "@rider100</a> — 15 GEL · still on 10:00" in report
+    assert "@rider101</a> — 15 GEL · nothing left, refund" in report
+    assert "Refund 15 GEL of 30 GEL paid." in report
+
+
+async def test_no_refund_report_when_nobody_had_paid(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+
+    await poll_service.cancel_day(service_date=saturday, admin_user_id=1)
+
+    assert await payments.cancellation_report(service_date=saturday) is None
+
+
 async def test_a_cancelled_day_closes_the_board(db: SharedDatabase) -> None:
     poll_service, payments, client, poll_id, saturday = await _setup(db)
     await _fill(poll_service, poll_id, 0, riders=5)
