@@ -101,6 +101,20 @@ def test_plan_card_auto_off_hint() -> None:
     assert "Auto-posting is off" in card.text
 
 
+def test_a_paused_schedule_offers_no_skip_and_takes_the_blame_itself() -> None:
+    """Skipping suppresses one automatic run; paused means there is no run to suppress.
+
+    A leftover skip flag must not be reported as the reason nothing will open.
+    """
+    card = render_weekend_plan_card(
+        plan_view(opens_at=None, auto_enabled=False, skipped=True),
+    )
+
+    assert "Auto-posting is off" in card.text
+    assert "skipped" not in card.text
+    assert "plan:skip" not in button_map(card.reply_markup)
+
+
 def test_plan_card_recreate_view_requires_confirmation() -> None:
     card = render_weekend_plan_card(plan_view(), view="recreate")
 

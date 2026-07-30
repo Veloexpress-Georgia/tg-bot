@@ -138,6 +138,10 @@ def next_pending_creation(
 
 
 def skip_target_week(state: AutoScheduleState, now: datetime, *, zone: tzinfo) -> date | None:
+    if not state.enabled:
+        # Skipping suppresses one automatic run, so with auto-posting paused there
+        # is nothing to suppress and the button would be a lie.
+        return None
     week = upcoming_service_week_start(now.date())
     for _ in range(PENDING_WEEK_LOOKAHEAD):
         creation_at = creation_moment(

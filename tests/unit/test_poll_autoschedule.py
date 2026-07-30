@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -127,6 +128,12 @@ def test_skip_target_week_moves_forward_once_creation_passed() -> None:
     assert skip_target_week(created, at(24, 15), zone=TBILISI) == date(2026, 8, 1)
 
 
+def test_a_paused_schedule_has_nothing_to_skip() -> None:
+    paused = replace(enabled_state(), enabled=False)
+
+    assert skip_target_week(paused, at(24, 13), zone=TBILISI) is None
+
+
 def test_next_announce_lead_cycles_choices() -> None:
     assert next_announce_lead(0) == 60
     assert next_announce_lead(60) == 120
@@ -189,6 +196,8 @@ def test_render_schedule_card_paused_hides_next_run() -> None:
     assert "🚀 Next:" not in card.text
     button_texts = [button.text for row in card.reply_markup.inline_keyboard for button in row]
     assert "▶️ Enable" in button_texts
+    # Skip suppresses one automatic run, so a paused card must not offer it.
+    assert not any("Skip" in text for text in button_texts)
 
 
 def test_render_schedule_card_pickers_mark_selection() -> None:

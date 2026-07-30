@@ -102,12 +102,14 @@ def _card_text(view_state: WeekendPlanView) -> str:
 def _opens_line(view_state: WeekendPlanView) -> str:
     if view_state.all_enabled_posted:
         return "✅ Polls are posted."
+    if not view_state.auto_enabled:
+        # Say this before "skipped": a paused schedule is the real reason nothing
+        # will open, and a leftover skip flag would otherwise take the blame.
+        return "🕓 Auto-posting is off — use Post now, or ⏰ Opens to switch it on."
     if view_state.skipped:
         return "⏭ This weekend is skipped — polls will not open automatically."
     if view_state.opens_at is not None:
         return f"🕓 Opens: {_moment_label(view_state.opens_at)} (auto)"
-    if not view_state.auto_enabled:
-        return "🕓 Auto-posting is off — use Post now, or ⏰ Opens to switch it on."
     return "🕓 Auto-posting already ran for this weekend — use Post now if needed."
 
 
@@ -150,11 +152,10 @@ def _main_keyboard(view_state: WeekendPlanView) -> InlineKeyboardMarkup:
         action_row.append(
             InlineKeyboardButton(text="♻️ Recreate polls", callback_data="plan:view:recreate")
         )
-    if view_state.opens_at is not None and not view_state.any_posted:
+    # Skip only makes sense against a run that is actually coming.
+    if view_state.auto_enabled and view_state.opens_at is not None and not view_state.any_posted:
         skip_text = "↩️ Unskip weekend" if view_state.skipped else "⏭ Skip weekend"
         action_row.append(InlineKeyboardButton(text=skip_text, callback_data="plan:skip"))
-    if view_state.skipped and view_state.opens_at is None and not view_state.any_posted:
-        action_row.append(InlineKeyboardButton(text="↩️ Unskip weekend", callback_data="plan:skip"))
     if action_row:
         rows.append(action_row)
 
