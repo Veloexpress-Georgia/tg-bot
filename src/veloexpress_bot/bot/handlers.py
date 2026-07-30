@@ -5,10 +5,11 @@ from typing import cast
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, F, Router
+from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command
+from aiogram.filters import Command, ExceptionTypeFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, PollAnswer
+from aiogram.types import CallbackQuery, ErrorEvent, InlineKeyboardMarkup, Message, PollAnswer
 
 from veloexpress_bot.bookings.render import (
     decode_monitor_date,
@@ -47,6 +48,12 @@ ADMIN_ONLY_TEXT = "Admins only."
 PRIVATE_ONLY_TEXT = "Open the bot in a private chat via /start."
 STALE_SETUP_ALERT = "This menu is outdated. Run /start again."
 TELEGRAM_NOT_MODIFIED_TEXT = "message is not modified"
+
+# Telegram invalidates a callback query a few seconds after the tap. Handlers ack
+# last on purpose — the spinner is honest feedback while the work runs — so on a
+# slow link the ack can arrive after the query died. The work itself already
+# succeeded by then, so this deserves one log line, not a stack trace.
+EXPIRED_CALLBACK_QUERY_TEXT = "query is too old"
 POLL_POST_FAILED_TEXT = "Could not post polls. Check logs and try again."
 POLL_TARGET_FORBIDDEN_TEXT = (
     "Could not post polls: Telegram rejected the target chat. The bot was likely removed "
@@ -756,6 +763,28 @@ async def _edit_card(
     except TelegramBadRequest as error:
         if TELEGRAM_NOT_MODIFIED_TEXT not in str(error).lower():
             raise
+
+
+def _is_expired_callback_query(error: BaseException) -> bool:
+    return EXPIRED_CALLBACK_QUERY_TEXT in str(error).lower()
+
+
+@router.errors(ExceptionTypeFilter(TelegramBadRequest))
+async def report_expired_callback_query(event: ErrorEvent) -> object:
+    """Log a dead callback ack quietly; let every other Telegram error surface."""
+    if not _is_expired_callback_query(event.exception):
+        return UNHANDLED
+    callback = event.update.callback_query
+    logger.info(
+        "callback_query_expired update_id=%s data=%s",
+        event.update.update_id,
+        callback.data if callback is not None else None,
+        extra={
+            "update_id": event.update.update_id,
+            "callback_data": callback.data if callback is not None else None,
+        },
+    )
+    return True
 
 
 def _should_cleanup_bot_pin_notice(

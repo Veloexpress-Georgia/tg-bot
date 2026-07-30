@@ -1,11 +1,83 @@
+from aiogram import Dispatcher
+from aiogram.dispatcher.event.bases import UNHANDLED
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.methods import AnswerCallbackQuery
+from aiogram.types import CallbackQuery, ErrorEvent, Update
+
 from veloexpress_bot.bot.handlers import (
     _menu_message_ids_for_cleanup,
     _should_cleanup_bot_pin_notice,
     _should_send_recreate_report,
     _split_callback,
+    report_expired_callback_query,
     router,
 )
 from veloexpress_bot.config import Settings
+
+
+def _error_event(message: str, *, data: str | None = "menu:weekend_plan") -> ErrorEvent:
+    callback = CallbackQuery.model_construct(data=data) if data is not None else None
+    return ErrorEvent.model_construct(
+        update=Update.model_construct(update_id=7, callback_query=callback),
+        exception=TelegramBadRequest(
+            method=AnswerCallbackQuery(callback_query_id="stale"),
+            message=message,
+        ),
+    )
+
+
+def test_error_handler_is_registered() -> None:
+    assert [handler.callback.__name__ for handler in router.errors.handlers] == [
+        "report_expired_callback_query"
+    ]
+
+
+async def test_a_dead_callback_ack_is_logged_instead_of_raised() -> None:
+    # The handler already finished its work; only the acknowledgement was late.
+    event = _error_event(
+        "Bad Request: query is too old and response timeout expired or query ID is invalid"
+    )
+
+    assert await report_expired_callback_query(event) is True
+
+
+async def test_other_telegram_bad_requests_still_surface() -> None:
+    assert await report_expired_callback_query(_error_event("Bad Request: chat not found")) is (
+        UNHANDLED
+    )
+
+
+async def test_a_dead_ack_without_a_callback_query_does_not_crash_the_logging() -> None:
+    event = _error_event("Bad Request: query is too old", data=None)
+
+    assert await report_expired_callback_query(event) is True
+
+
+async def test_the_dispatcher_actually_reaches_the_error_handler() -> None:
+    """The suppression only works if aiogram routes the error into this router.
+
+    aiogram re-raises whenever an errors observer answers UNHANDLED, so a wiring
+    mistake here would put the stack trace straight back in the log.
+    """
+    dispatcher = Dispatcher()
+    dispatcher.include_router(router)
+    try:
+        stale = await dispatcher.propagate_event(
+            update_type="error",
+            event=_error_event("Bad Request: query is too old"),
+        )
+        other = await dispatcher.propagate_event(
+            update_type="error",
+            event=_error_event("Bad Request: chat not found", data=None),
+        )
+    finally:
+        # The router is a module-level singleton; leave it unparented so the app
+        # builder can still include it in another test.
+        dispatcher.sub_routers.remove(router)
+        router._parent_router = None
+
+    assert stale is True
+    assert other is UNHANDLED
 
 
 def test_core_callback_handlers_are_registered() -> None:
