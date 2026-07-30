@@ -3,6 +3,7 @@ from datetime import date
 from veloexpress_bot.bookings.render import (
     BookingLiftStatus,
     BookingMonitorDay,
+    LiftRider,
     decode_monitor_date,
     decode_monitor_time,
     render_booking_monitor,
@@ -88,19 +89,26 @@ def test_render_lift_detail_toggles_cancel_and_restore() -> None:
     active = render_lift_detail(
         service_date=date(2026, 7, 18),
         lift=BookingLiftStatus(time="8:30", vote_count=2, manual_count=1),
-        riders=("@stas", "Anna"),
+        riders=(
+            LiftRider(telegram_user_id=10, label="@stas", paid=True),
+            LiftRider(telegram_user_id=11, label="Anna"),
+        ),
     )
     assert "🚲 8:30 · Sat, 18 Jul" in active.text
     assert "Total: 3/10" in active.text
+    assert "Paid: 1/2" in active.text
     assert "@stas, Anna" in active.text
     active_buttons = _button_map(active.reply_markup)
     assert active_buttons["mon:cancel:20260718:0830"] == "🚫 Cancel lift"
     assert active_buttons["mon:back:20260718"] == "⬅️ Back"
+    # Tapping a rider records a payment taken outside Telegram.
+    assert active_buttons["mon:paid:20260718:10"] == "✓ @stas"
+    assert active_buttons["mon:paid:20260718:11"] == "Anna"
 
     cancelled = render_lift_detail(
         service_date=date(2026, 7, 18),
         lift=BookingLiftStatus(time="8:30", vote_count=2, manual_count=1, cancelled=True),
-        riders=("@stas",),
+        riders=(LiftRider(telegram_user_id=10, label="@stas"),),
     )
     assert "❌ Cancelled." in cancelled.text
     cancelled_buttons = _button_map(cancelled.reply_markup)

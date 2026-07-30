@@ -272,6 +272,27 @@ async def open_lift_detail(
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("mon:paid:"))
+async def toggle_rider_payment(
+    callback: CallbackQuery,
+    settings: Settings,
+    poll_service: PollPostingService,
+    payments_service: PaymentsService,
+) -> None:
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+    parts = (callback.data or "").split(":")
+    service_date = decode_monitor_date(parts[2])
+    notice = await payments_service.toggle_admin_payment(
+        service_date=service_date,
+        telegram_user_id=int(parts[3]),
+        admin_user_id=callback.from_user.id,
+    )
+    await callback.answer(notice)
+    await _show_monitor(message, poll_service, callback.from_user.id, service_date)
+
+
 @router.callback_query(
     F.data.startswith("mon:cancel:")
     | F.data.startswith("mon:restore:")

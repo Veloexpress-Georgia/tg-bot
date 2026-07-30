@@ -96,6 +96,7 @@ def test_core_callback_handlers_are_registered() -> None:
         "open_poll_schedule",
         "handle_poll_schedule_card",
         "handle_payment_button",
+        "toggle_rider_payment",
     } <= names
 
 

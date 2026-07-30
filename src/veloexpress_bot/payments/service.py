@@ -182,6 +182,62 @@ class PaymentsService:
             await self._refresh_board(day)
         return "Removed."
 
+    async def toggle_admin_payment(
+        self,
+        *,
+        service_date: date,
+        telegram_user_id: int,
+        admin_user_id: int,
+    ) -> str:
+        """Record a payment made outside Telegram — cash, or a direct message to Misho.
+
+        Nothing is posted to the payments topic: whoever took the cash already
+        knows, and the board is where the group reads the result.
+        """
+        day = await self._day(service_date)
+        if day is None:
+            return BOARD_GONE_TEXT
+        username, full_name = day.labels_by_user.get(telegram_user_id, (None, "Rider"))
+        seats = max(len(day.lift_times_by_user.get(telegram_user_id, ())), 1)
+
+        async with self._session_factory() as session:
+            claim = await self._claim_row(
+                session=session,
+                service_date=service_date,
+                telegram_user_id=telegram_user_id,
+            )
+            if claim is not None:
+                posted_message_id = claim.posted_message_id
+                await session.delete(claim)
+                await session.commit()
+                notice = f"{_rider_label(username, full_name)}: not paid."
+            else:
+                posted_message_id = None
+                session.add(
+                    PaymentClaim(
+                        environment=self._settings.app_env,
+                        chat_id=self._require_chat_id(),
+                        thread_id=self._settings.telegram_target_thread_id,
+                        service_date=service_date,
+                        telegram_user_id=telegram_user_id,
+                        username=username,
+                        full_name=full_name,
+                        seats=seats,
+                        verified_by_user_id=admin_user_id,
+                        verified_at=datetime.now(UTC),
+                    )
+                )
+                await session.commit()
+                notice = f"{_rider_label(username, full_name)}: paid {self._amount(seats)} GEL."
+
+        if posted_message_id is not None:
+            await self._telegram_client.delete_message(
+                chat_id=self._require_chat_id(),
+                message_id=posted_message_id,
+            )
+        await self._refresh_board(day)
+        return notice
+
     async def record_topic_post(self, *, telegram_user_id: int, posted_at: datetime) -> None:
         """Remember that a rider spoke in the payments topic. Content is ignored."""
         if not self.enabled:
@@ -330,7 +386,6 @@ class PaymentsService:
                     label=_rider_label(claim.username, claim.full_name),
                     seats=claim.seats,
                     amount_gel=self._amount(claim.seats),
-                    verified=claim.verified_at is not None,
                 )
                 for claim in claims
             ),

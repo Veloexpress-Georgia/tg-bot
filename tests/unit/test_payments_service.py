@@ -401,6 +401,68 @@ async def test_undo_removes_the_claim_and_the_posted_line(db: SharedDatabase) ->
         assert await session.scalar(select(PaymentClaim)) is None
 
 
+async def test_an_admin_can_record_a_cash_payment_without_posting_to_the_topic(
+    db: SharedDatabase,
+) -> None:
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+    board = client.payments_sends()[-1]
+    sends_before = len(client.payments_sends())
+
+    notice = await payments.toggle_admin_payment(
+        service_date=saturday,
+        telegram_user_id=100,
+        admin_user_id=1,
+    )
+
+    assert notice == "@rider100: paid 15 GEL."
+    # Whoever took the cash already knows; only the board changes.
+    assert len(client.payments_sends()) == sends_before
+    board_edits = [text for message_id, text in client.edits if message_id == board.message_id]
+    assert "✓ @rider100 — 15 GEL" in board_edits[-1]
+
+    async with db.session() as session:
+        claim = await session.scalar(select(PaymentClaim))
+    assert claim is not None
+    assert claim.verified_by_user_id == 1
+
+
+async def test_the_admin_mark_toggles_back_off(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+
+    await payments.toggle_admin_payment(
+        service_date=saturday, telegram_user_id=100, admin_user_id=1
+    )
+    notice = await payments.toggle_admin_payment(
+        service_date=saturday, telegram_user_id=100, admin_user_id=1
+    )
+
+    assert notice == "@rider100: not paid."
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentClaim)) is None
+
+
+async def test_unmarking_a_rider_claim_also_removes_the_line_the_bot_posted(
+    db: SharedDatabase,
+) -> None:
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
+    posted = client.payments_sends()[-1]
+
+    await payments.toggle_admin_payment(
+        service_date=saturday, telegram_user_id=100, admin_user_id=1
+    )
+
+    assert posted.message_id in client.deleted
+
+
 async def test_a_cancelled_day_closes_the_board(db: SharedDatabase) -> None:
     poll_service, payments, client, poll_id, saturday = await _setup(db)
     await _fill(poll_service, poll_id, 0, riders=5)

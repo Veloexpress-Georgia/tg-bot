@@ -23,7 +23,6 @@ class RiderPayment:
     label: str
     seats: int
     amount_gel: int
-    verified: bool = False
 
 
 @dataclass(frozen=True)
@@ -117,9 +116,10 @@ def _keyboard(service_date: date) -> InlineKeyboardMarkup:
 
 
 def _payment_line(payment: RiderPayment) -> str:
-    mark = "✓" if payment.verified else "•"
+    # One state only. Whether the rider claimed it or an admin recorded a cash
+    # payment is bookkeeping, not something the group needs to read.
     seats = f" · {payment.seats} seats" if payment.seats > 1 else ""
-    return f"{mark} {payment.label} — {payment.amount_gel} GEL{seats}"
+    return f"✓ {payment.label} — {payment.amount_gel} GEL{seats}"
 
 
 def _long_day_label(service_date: date) -> str:

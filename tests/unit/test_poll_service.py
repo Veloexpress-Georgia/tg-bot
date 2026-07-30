@@ -333,7 +333,7 @@ async def test_admin_booking_monitor_controls_manual_counts_and_tracks_votes(
     assert detail is not None
     status, riders = detail
     assert (status.vote_count, status.manual_count, status.total_count) == (1, 1, 2)
-    assert riders == ("@stas",)
+    assert [(rider.label, rider.paid) for rider in riders] == [("@stas", False)]
 
     async with db.session() as session:
         booking = await session.scalar(select(ManualBookingCount))

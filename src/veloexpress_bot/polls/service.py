@@ -19,6 +19,7 @@ from veloexpress_bot.bookings.render import (
     BookingLiftStatus,
     BookingMonitorDay,
     BookingMonitorDraft,
+    LiftRider,
     render_booking_monitor,
 )
 from veloexpress_bot.config import Settings
@@ -28,6 +29,7 @@ from veloexpress_bot.db.models import (
     CancelledLift,
     LiftSignalState,
     ManualBookingCount,
+    PaymentClaim,
     PollBatch,
     PollMessage,
     PollOptionSnapshot,
@@ -441,7 +443,7 @@ class PollPostingService:
         *,
         service_date: date,
         lift_time: str,
-    ) -> tuple[BookingLiftStatus, tuple[str, ...]] | None:
+    ) -> tuple[BookingLiftStatus, tuple[LiftRider, ...]] | None:
         if self._settings.telegram_target_chat_id is None:
             return None
         capacity_by_time = {lift.time: lift.capacity for lift in DEFAULT_LIFTS}
@@ -456,11 +458,30 @@ class PollPostingService:
             votes = (
                 await session.scalars(select(PollVote).where(PollVote.poll_id == snapshot.poll_id))
             ).all()
+            # Payments are per rider per day, so the same claim covers every lift
+            # that rider booked on this date.
+            paid_user_ids = set(
+                (
+                    await session.scalars(
+                        select(PaymentClaim.telegram_user_id)
+                        .where(PaymentClaim.environment == self._settings.app_env)
+                        .where(PaymentClaim.chat_id == self._settings.telegram_target_chat_id)
+                        .where(PaymentClaim.service_date == service_date)
+                    )
+                ).all()
+            )
             riders = tuple(
                 sorted(
-                    _rider_label(vote)
-                    for vote in votes
-                    if snapshot.option_index in decode_option_ids(vote.option_ids)
+                    (
+                        LiftRider(
+                            telegram_user_id=vote.telegram_user_id,
+                            label=_rider_label(vote),
+                            paid=vote.telegram_user_id in paid_user_ids,
+                        )
+                        for vote in votes
+                        if snapshot.option_index in decode_option_ids(vote.option_ids)
+                    ),
+                    key=lambda rider: rider.label,
                 )
             )
             manual_count = await self._manual_booking_count(

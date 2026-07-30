@@ -35,6 +35,13 @@ class BookingLiftStatus:
 
 
 @dataclass(frozen=True)
+class LiftRider:
+    telegram_user_id: int
+    label: str
+    paid: bool = False
+
+
+@dataclass(frozen=True)
 class BookingMonitorDay:
     service_date: date
     lifts: tuple[BookingLiftStatus, ...]
@@ -129,7 +136,7 @@ def render_lift_detail(
     *,
     service_date: date,
     lift: BookingLiftStatus,
-    riders: tuple[str, ...],
+    riders: tuple[LiftRider, ...],
 ) -> BookingMonitorDraft:
     compact_date = _compact_date(service_date)
     compact_time = _compact_time(lift.time)
@@ -141,8 +148,10 @@ def render_lift_detail(
     lines.append(f"Manual: {lift.manual_count}")
     lines.append(f"Total: {lift.total_count}/{lift.capacity}")
     if riders:
+        paid = sum(rider.paid for rider in riders)
+        lines.append(f"Paid: {paid}/{len(riders)}")
         lines.append("")
-        lines.append(", ".join(riders))
+        lines.append(", ".join(rider.label for rider in riders))
 
     if lift.cancelled:
         action = InlineKeyboardButton(
@@ -154,10 +163,21 @@ def render_lift_detail(
             text="🚫 Cancel lift",
             callback_data=f"mon:cancel:{compact_date}:{compact_time}",
         )
-    rows = [
-        [action],
-        [InlineKeyboardButton(text="⬅️ Back", callback_data=f"mon:back:{compact_date}")],
-    ]
+    rows: list[list[InlineKeyboardButton]] = []
+    # Tapping a rider records a payment made outside Telegram — cash, or a direct
+    # message to Misho. Riders who can tap the payments board do not need this.
+    for index in range(0, len(riders), 2):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{'✓ ' if rider.paid else ''}{rider.label}",
+                    callback_data=f"mon:paid:{compact_date}:{rider.telegram_user_id}",
+                )
+                for rider in riders[index : index + 2]
+            ]
+        )
+    rows.append([action])
+    rows.append([InlineKeyboardButton(text="⬅️ Back", callback_data=f"mon:back:{compact_date}")])
     return BookingMonitorDraft(
         text="\n".join(lines),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),

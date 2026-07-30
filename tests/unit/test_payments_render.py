@@ -43,19 +43,19 @@ def test_board_lists_running_lifts_price_and_the_four_taps() -> None:
     }
 
 
-def test_board_marks_verified_payments_and_counts_the_rest() -> None:
+def test_board_lists_payments_and_counts_the_rest() -> None:
     draft = render_payments_board(
         _view(
             booked_rider_count=4,
             payments=(
-                RiderPayment(label="@stas", seats=2, amount_gel=30, verified=True),
+                RiderPayment(label="@stas", seats=2, amount_gel=30),
                 RiderPayment(label="Anna", seats=1, amount_gel=15),
             ),
         )
     )
 
     assert "✓ @stas — 30 GEL · 2 seats" in draft.text
-    assert "• Anna — 15 GEL" in draft.text
+    assert "✓ Anna — 15 GEL" in draft.text
     assert "Waiting on 2 more." in draft.text
 
 
