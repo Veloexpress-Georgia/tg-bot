@@ -16,6 +16,7 @@ from veloexpress_bot.payments.service import (
     ALREADY_CLAIMED_TEXT,
     NOT_BOOKED_TEXT,
     NOT_CLAIMED_YET_TEXT,
+    PAYMENTS_DISABLED_TEXT,
     PaymentsService,
 )
 from veloexpress_bot.polls.render import PollDraft
@@ -461,6 +462,28 @@ async def test_unmarking_a_rider_claim_also_removes_the_line_the_bot_posted(
     )
 
     assert posted.message_id in client.deleted
+
+
+async def test_nothing_is_posted_when_the_payments_topic_is_unset(db: SharedDatabase) -> None:
+    """The admin mark is reachable from the monitor even with payments switched off.
+
+    Without a guard the board would be sent with no thread id, which lands in the
+    group's root topic rather than nowhere.
+    """
+    poll_service, payments, client, poll_id, saturday = await _setup(db, payments_thread=None)
+    await _fill(poll_service, poll_id, 0, riders=5)
+
+    notice = await payments.toggle_admin_payment(
+        service_date=saturday,
+        telegram_user_id=100,
+        admin_user_id=1,
+    )
+
+    assert notice == PAYMENTS_DISABLED_TEXT
+    assert [record for record in client.sent if record.thread_id is None] == []
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentsBoard)) is None
+        assert await session.scalar(select(PaymentClaim)) is None
 
 
 async def test_a_cancelled_day_closes_the_board(db: SharedDatabase) -> None:

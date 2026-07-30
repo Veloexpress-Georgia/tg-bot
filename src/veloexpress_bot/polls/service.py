@@ -1061,14 +1061,29 @@ class PollPostingService:
                     idempotency_key=idempotency_key,
                 )
                 session.add(batch)
-            # A fresh poll for this date starts with a clean slate; drop any lift
-            # cancellations left over from an earlier poll on the same day.
+            # A fresh poll for this date starts with a clean slate: drop lift
+            # cancellations and the record of which notices already went out, or a
+            # re-posted day would never announce itself again.
             await session.execute(
                 delete(CancelledLift)
                 .where(CancelledLift.environment == self._settings.app_env)
                 .where(CancelledLift.chat_id == self._settings.telegram_target_chat_id)
                 .where(CancelledLift.thread_id == self._settings.telegram_target_thread_id)
                 .where(CancelledLift.service_date == setup.service_date)
+            )
+            await session.execute(
+                delete(LiftSignalState)
+                .where(LiftSignalState.environment == self._settings.app_env)
+                .where(LiftSignalState.chat_id == self._settings.telegram_target_chat_id)
+                .where(LiftSignalState.thread_id == self._settings.telegram_target_thread_id)
+                .where(LiftSignalState.service_date == setup.service_date)
+            )
+            await session.execute(
+                delete(ServiceDayNotice)
+                .where(ServiceDayNotice.environment == self._settings.app_env)
+                .where(ServiceDayNotice.chat_id == self._settings.telegram_target_chat_id)
+                .where(ServiceDayNotice.thread_id == self._settings.telegram_target_thread_id)
+                .where(ServiceDayNotice.service_date == setup.service_date)
             )
             try:
                 await session.flush()

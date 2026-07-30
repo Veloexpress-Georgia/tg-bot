@@ -37,6 +37,7 @@ NOTHING_TO_UNDO_TEXT = "You have not marked a payment for this day."
 NOT_CLAIMED_YET_TEXT = "Tap 💸 I paid first."
 MIN_SEATS_TEXT = "At least one seat."
 BOARD_GONE_TEXT = "This payments board is no longer active."
+PAYMENTS_DISABLED_TEXT = "Payments are not set up for this chat."
 
 
 @dataclass
@@ -95,6 +96,8 @@ class PaymentsService:
         username: str | None,
         full_name: str,
     ) -> str:
+        if not self.enabled:
+            return PAYMENTS_DISABLED_TEXT
         day = await self._day(service_date)
         if day is None:
             return BOARD_GONE_TEXT
@@ -135,6 +138,8 @@ class PaymentsService:
         telegram_user_id: int,
         delta: int,
     ) -> str:
+        if not self.enabled:
+            return PAYMENTS_DISABLED_TEXT
         day = await self._day(service_date)
         if day is None:
             return BOARD_GONE_TEXT
@@ -159,6 +164,8 @@ class PaymentsService:
         return f"{seats} seat(s) · {self._amount(seats)} GEL."
 
     async def undo(self, *, service_date: date, telegram_user_id: int) -> str:
+        if not self.enabled:
+            return PAYMENTS_DISABLED_TEXT
         day = await self._day(service_date)
         posted_message_id: int | None = None
         async with self._session_factory() as session:
@@ -194,6 +201,10 @@ class PaymentsService:
         Nothing is posted to the payments topic: whoever took the cash already
         knows, and the board is where the group reads the result.
         """
+        if not self.enabled:
+            # Reachable from the booking monitor even with no payments topic set,
+            # and without this the board would land in the group's root topic.
+            return PAYMENTS_DISABLED_TEXT
         day = await self._day(service_date)
         if day is None:
             return BOARD_GONE_TEXT

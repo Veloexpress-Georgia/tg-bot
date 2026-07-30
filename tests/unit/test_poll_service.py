@@ -659,6 +659,27 @@ async def test_no_deadline_reminder_when_every_lift_is_already_running(
     assert not any("⏳ Tomorrow" in text for text in client.sent_texts)
 
 
+async def test_a_reposted_day_announces_itself_again(db: SharedDatabase) -> None:
+    """Cancelling a day and posting a fresh poll must not inherit sent notices."""
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    setup = PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",))
+    poll = await service.create_poll(setup, pin_after_send=False)
+    await _fill_lift(service, poll.poll_id or "", riders=5)
+    assert [event.kind for event in await service.evaluate_lift_signals()] == ["confirmed"]
+
+    await service.cancel_day(service_date=saturday, admin_user_id=1)
+    reposted = await service.create_poll(setup, pin_after_send=False)
+    await _fill_lift(service, reposted.poll_id or "", riders=5)
+
+    assert [event.kind for event in await service.evaluate_lift_signals()] == ["confirmed"]
+
+
 async def test_manual_booking_count_cannot_go_below_zero(db: SharedDatabase) -> None:
     service = PollPostingService(
         settings=settings(),
