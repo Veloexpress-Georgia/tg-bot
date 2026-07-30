@@ -34,6 +34,7 @@ from veloexpress_bot.db.models import (
     PollScheduleHistory,
     PollVote,
     PollVoteEvent,
+    ServiceDayNotice,
 )
 from veloexpress_bot.polls.defaults import (
     DEFAULT_CANCELLED_LIFT_TIMES,
@@ -45,9 +46,12 @@ from veloexpress_bot.polls.liftsignals import (
     LiftEventKind,
     LiftMemory,
     LiftSignal,
+    booking_deadline_at,
     day_opener_time,
+    decide_deadline_reminder,
     decide_lift_signal,
     lift_departure_at,
+    render_deadline_reminder,
     render_lift_signal_notice,
 )
 from veloexpress_bot.polls.render import (
@@ -201,6 +205,13 @@ class PollPostingService:
         self._telegram_client = telegram_client
         self._availability_locks: dict[str, Lock] = {}
         self._zone = ZoneInfo(settings.schedule_timezone)
+
+    def _require_target_chat_id(self) -> int:
+        chat_id = self._settings.telegram_target_chat_id
+        if chat_id is None:
+            msg = "TELEGRAM_TARGET_CHAT_ID is required to post to the group."
+            raise ValueError(msg)
+        return chat_id
 
     async def suggested_cancelled_lift_times(self) -> tuple[str, ...]:
         if self._settings.telegram_target_chat_id is None:
@@ -707,9 +718,69 @@ class PollPostingService:
             if day.service_date < moment.date():
                 continue
             events.extend(await self._evaluate_day_signals(day, now=moment))
+            await self._remind_booking_deadline(day, now=moment)
         if events:
             await self._send_lift_signal_notices(tuple(events))
         return tuple(events)
+
+    async def _remind_booking_deadline(self, day: BookingMonitorDay, *, now: datetime) -> None:
+        """Nudge the group once, the evening before, while a lift can still fill."""
+        signals = _day_signals(day)
+        async with self._session_factory() as session:
+            notice = await self._service_day_notice(session=session, service_date=day.service_date)
+            if not decide_deadline_reminder(
+                signals,
+                now=now,
+                deadline_at=booking_deadline_at(
+                    day.service_date,
+                    self._settings.booking_deadline_time,
+                    zone=self._zone,
+                ),
+                already_reminded=notice is not None and notice.deadline_reminded_at is not None,
+            ):
+                return
+            if notice is None:
+                notice = ServiceDayNotice(
+                    environment=self._settings.app_env,
+                    chat_id=self._require_target_chat_id(),
+                    thread_id=self._settings.telegram_target_thread_id,
+                    service_date=day.service_date,
+                )
+                session.add(notice)
+            notice.deadline_reminded_at = now.astimezone(UTC)
+            notice.updated_at = now.astimezone(UTC)
+            await session.commit()
+
+        await self._send_tagged_notice(
+            render_deadline_reminder(
+                day.service_date,
+                signals,
+                deadline_time=self._settings.booking_deadline_time,
+            ),
+            # Nobody is tagged: whoever is booked is already booked, and tagging
+            # the whole group is exactly the spam this bot avoids.
+            {},
+            log_label="booking_deadline_reminder_failed",
+        )
+        logger.info(
+            "booking_deadline_reminded service_date=%s",
+            day.service_date.isoformat(),
+            extra={"service_date": day.service_date.isoformat()},
+        )
+
+    async def _service_day_notice(
+        self,
+        *,
+        session: AsyncSession,
+        service_date: date,
+    ) -> ServiceDayNotice | None:
+        return await session.scalar(
+            select(ServiceDayNotice)
+            .where(ServiceDayNotice.environment == self._settings.app_env)
+            .where(ServiceDayNotice.chat_id == self._settings.telegram_target_chat_id)
+            .where(ServiceDayNotice.thread_id == self._settings.telegram_target_thread_id)
+            .where(ServiceDayNotice.service_date == service_date)
+        )
 
     async def _evaluate_day_signals(
         self,
@@ -717,15 +788,7 @@ class PollPostingService:
         *,
         now: datetime,
     ) -> list[LiftEvent]:
-        signals = tuple(
-            LiftSignal(
-                service_date=day.service_date,
-                lift_time=lift.time,
-                seats=lift.total_count,
-                cancelled=lift.cancelled,
-            )
-            for lift in day.lifts
-        )
+        signals = _day_signals(day)
         opener = day_opener_time(signals)
         events: list[LiftEvent] = []
         async with self._session_factory() as session:
@@ -2129,6 +2192,18 @@ def _service_week_start(service_date: date) -> date:
 
 def _service_day_label(service_date: date) -> str:
     return f"{service_date:%a}, {service_date.day} {service_date:%b}"
+
+
+def _day_signals(day: BookingMonitorDay) -> tuple[LiftSignal, ...]:
+    return tuple(
+        LiftSignal(
+            service_date=day.service_date,
+            lift_time=lift.time,
+            seats=lift.total_count,
+            cancelled=lift.cancelled,
+        )
+        for lift in day.lifts
+    )
 
 
 def _lift_memory(row: LiftSignalState | None) -> LiftMemory:

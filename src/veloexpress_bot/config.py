@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     # Misho raises this from time to time; a redeploy should not be the way to
     # change a price.
     payment_price_gel: int = 15
+    # Riders must be booked and paid by this time the evening before a lift day.
+    booking_deadline_time: str = "20:00"
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod

@@ -20,6 +20,10 @@ DEPARTURE_PING_LEAD = timedelta(minutes=30)
 # keeps a lift that only reaches the minimum at the last moment from pinging.
 DEPARTURE_PING_CUTOFF = timedelta(minutes=5)
 
+# How long before the booking deadline the group gets its one reminder. Early
+# enough that somebody can still decide to come, late enough to be the last word.
+DEADLINE_REMINDER_LEAD = timedelta(hours=2)
+
 LiftEventKind = Literal["confirmed", "undershoot", "departure"]
 
 
@@ -165,6 +169,65 @@ def day_opener_time(signals: Iterable[LiftSignal]) -> str | None:
     if not running:
         return None
     return min(running, key=lambda signal: lift_minutes(signal.lift_time)).lift_time
+
+
+def booking_deadline_at(service_date: date, deadline_time: str, *, zone: tzinfo) -> datetime:
+    """The deadline sits on the evening before the lift day, not on the day itself."""
+    hour, minute = _parse_lift_time(deadline_time)
+    return datetime(
+        service_date.year,
+        service_date.month,
+        service_date.day,
+        hour,
+        minute,
+        tzinfo=zone,
+    ) - timedelta(days=1)
+
+
+def decide_deadline_reminder(
+    signals: Iterable[LiftSignal],
+    *,
+    now: datetime,
+    deadline_at: datetime,
+    already_reminded: bool,
+) -> bool:
+    """One reminder per day, and only while a lift can still be saved."""
+    if already_reminded:
+        return False
+    if not any(_is_short(signal) for signal in signals):
+        # Everything already runs; there is nothing to ask the group for.
+        return False
+    return deadline_at - DEADLINE_REMINDER_LEAD <= now <= deadline_at
+
+
+def render_deadline_reminder(
+    service_date: date,
+    signals: Iterable[LiftSignal],
+    *,
+    deadline_time: str,
+) -> str:
+    day = SHORT_DAY_LABELS.get(service_date.weekday(), "Lift day")
+    month = EN_SHORT_MONTHS[service_date.month]
+    lines = [
+        f"⏳ Tomorrow · {day}, {service_date.day} {month} — book and pay by {deadline_time}.",
+        "",
+    ]
+    ordered = sorted(signals, key=lambda signal: lift_minutes(signal.lift_time))
+    lines.extend(_reminder_line(signal) for signal in ordered)
+    return "\n".join(lines)
+
+
+def _reminder_line(signal: LiftSignal) -> str:
+    if signal.cancelled:
+        return f"{signal.lift_time} — ❌ cancelled"
+    if signal.seats < MINIMUM_RIDERS:
+        missing = MINIMUM_RIDERS - signal.seats
+        return f"{signal.lift_time} — {signal.seats}/{MINIMUM_RIDERS} · needs {missing} more"
+    return f"{signal.lift_time} — {signal.seats} riders · running"
+
+
+def _is_short(signal: LiftSignal) -> bool:
+    return not signal.cancelled and signal.seats < MINIMUM_RIDERS
 
 
 def lift_departure_at(service_date: date, lift_time: str, *, zone: tzinfo) -> datetime:

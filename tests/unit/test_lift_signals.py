@@ -7,9 +7,12 @@ from veloexpress_bot.polls.liftsignals import (
     LiftEvent,
     LiftMemory,
     LiftSignal,
+    booking_deadline_at,
     day_opener_time,
+    decide_deadline_reminder,
     decide_lift_signal,
     lift_departure_at,
+    render_deadline_reminder,
     render_lift_signal_notice,
 )
 
@@ -202,6 +205,78 @@ def test_notices_read_naturally_for_one_lift_and_for_many() -> None:
     )
     assert departure.splitlines()[0].startswith("🚐 First lift of the day")
     assert departure.splitlines()[-1] == "8:30 · Sat, 18 Jul"
+
+
+def test_the_deadline_sits_on_the_evening_before_the_lift_day() -> None:
+    deadline = booking_deadline_at(SATURDAY, "20:00", zone=TBILISI)
+
+    assert deadline == datetime(2026, 7, 17, 20, 0, tzinfo=TBILISI)
+
+
+def test_the_deadline_reminder_fires_once_while_a_lift_can_still_fill() -> None:
+    deadline = booking_deadline_at(SATURDAY, "20:00", zone=TBILISI)
+    short_day = (_signal(3, lift_time="8:30"), _signal(6, lift_time="10:00"))
+
+    def due(now: datetime, *, already_reminded: bool = False) -> bool:
+        return decide_deadline_reminder(
+            short_day,
+            now=now,
+            deadline_at=deadline,
+            already_reminded=already_reminded,
+        )
+
+    assert due(deadline - timedelta(hours=3)) is False, "too early to be the last word"
+    assert due(deadline - timedelta(hours=1)) is True
+    assert due(deadline + timedelta(minutes=1)) is False, "the deadline has passed"
+    assert due(deadline - timedelta(hours=1), already_reminded=True) is False
+
+
+def test_no_reminder_when_every_lift_already_runs() -> None:
+    deadline = booking_deadline_at(SATURDAY, "20:00", zone=TBILISI)
+
+    assert (
+        decide_deadline_reminder(
+            (_signal(6, lift_time="8:30"), _signal(9, lift_time="10:00")),
+            now=deadline - timedelta(hours=1),
+            deadline_at=deadline,
+            already_reminded=False,
+        )
+        is False
+    )
+
+
+def test_a_cancelled_lift_does_not_justify_a_reminder() -> None:
+    deadline = booking_deadline_at(SATURDAY, "20:00", zone=TBILISI)
+
+    assert (
+        decide_deadline_reminder(
+            (_signal(6, lift_time="8:30"), _signal(0, lift_time="10:00", cancelled=True)),
+            now=deadline - timedelta(hours=1),
+            deadline_at=deadline,
+            already_reminded=False,
+        )
+        is False
+    )
+
+
+def test_the_reminder_states_the_deadline_and_what_each_lift_needs() -> None:
+    text = render_deadline_reminder(
+        SATURDAY,
+        (
+            _signal(6, lift_time="10:00"),
+            _signal(3, lift_time="8:30"),
+            _signal(0, lift_time="11:45", cancelled=True),
+        ),
+        deadline_time="20:00",
+    )
+
+    assert text.splitlines() == [
+        "⏳ Tomorrow · Sat, 18 Jul — book and pay by 20:00.",
+        "",
+        "8:30 — 3/5 · needs 2 more",
+        "10:00 — 6 riders · running",
+        "11:45 — ❌ cancelled",
+    ]
 
 
 def test_rendering_without_events_is_a_programming_error() -> None:

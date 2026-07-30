@@ -219,6 +219,22 @@ class LiftSignalState(Base):
     )
 
 
+class ServiceDayNotice(Base):
+    """Day-level notices the bot has already sent, so it never repeats one."""
+
+    __tablename__ = "service_day_notice"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    deadline_reminded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
 class PaymentClaim(Base):
     """A rider's own "I paid" for one service day, priced per seat.
 
@@ -369,6 +385,16 @@ Index(
     func.coalesce(LiftSignalState.thread_id, 0),
     LiftSignalState.service_date,
     LiftSignalState.lift_time,
+    unique=True,
+)
+
+
+Index(
+    "uq_service_day_notice_scope_date",
+    ServiceDayNotice.environment,
+    ServiceDayNotice.chat_id,
+    func.coalesce(ServiceDayNotice.thread_id, 0),
+    ServiceDayNotice.service_date,
     unique=True,
 )
 

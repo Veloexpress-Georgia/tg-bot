@@ -23,7 +23,7 @@ from veloexpress_bot.db.models import (
     PollVoteEvent,
 )
 from veloexpress_bot.polls.defaults import StartLocation
-from veloexpress_bot.polls.liftsignals import lift_departure_at
+from veloexpress_bot.polls.liftsignals import booking_deadline_at, lift_departure_at
 from veloexpress_bot.polls.render import PollDraft
 from veloexpress_bot.polls.service import (
     DuplicatePollError,
@@ -601,6 +601,62 @@ async def test_lift_signals_ping_only_the_first_lift_before_departure(
     assert client.sent_texts[-1].startswith("🚐 First lift of the day")
 
     assert await service.evaluate_lift_signals(now=departure - timedelta(minutes=10)) == ()
+
+
+async def test_the_deadline_reminder_goes_out_once_and_names_no_one(db: SharedDatabase) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    poll = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
+        pin_after_send=False,
+    )
+    # Three riders on 8:30: short of the minimum, so the day is worth a nudge.
+    await _fill_lift(service, poll.poll_id or "", riders=3)
+
+    deadline = booking_deadline_at(saturday, "20:00", zone=ZoneInfo("Asia/Tbilisi"))
+    assert await service.evaluate_lift_signals(now=deadline - timedelta(hours=3)) == ()
+    assert not any("⏳ Tomorrow" in text for text in client.sent_texts)
+
+    await service.evaluate_lift_signals(now=deadline - timedelta(hours=1))
+    reminders = [text for text in client.sent_texts if "⏳ Tomorrow" in text]
+    assert len(reminders) == 1
+    assert "book and pay by 20:00" in reminders[0]
+    assert "8:30 — 3/5 · needs 2 more" in reminders[0]
+    assert "tg://user?id=" not in reminders[0], "a nudge tags nobody"
+
+    await service.evaluate_lift_signals(now=deadline - timedelta(minutes=30))
+    assert len([text for text in client.sent_texts if "⏳ Tomorrow" in text]) == 1
+
+
+async def test_no_deadline_reminder_when_every_lift_is_already_running(
+    db: SharedDatabase,
+) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    poll = await service.create_poll(
+        PollSetup(
+            service_date=saturday,
+            created_by_user_id=1,
+            cancelled_lift_times=("10:00", "11:45", "13:30", "15:30"),
+        ),
+        pin_after_send=False,
+    )
+    await _fill_lift(service, poll.poll_id or "", riders=5)
+
+    deadline = booking_deadline_at(saturday, "20:00", zone=ZoneInfo("Asia/Tbilisi"))
+    await service.evaluate_lift_signals(now=deadline - timedelta(hours=1))
+
+    assert not any("⏳ Tomorrow" in text for text in client.sent_texts)
 
 
 async def test_manual_booking_count_cannot_go_below_zero(db: SharedDatabase) -> None:
