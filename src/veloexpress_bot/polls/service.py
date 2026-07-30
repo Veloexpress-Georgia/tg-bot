@@ -449,7 +449,7 @@ class PollPostingService:
                 sorted(
                     _rider_label(vote)
                     for vote in votes
-                    if snapshot.option_index in _decode_option_ids(vote.option_ids)
+                    if snapshot.option_index in decode_option_ids(vote.option_ids)
                 )
             )
             manual_count = await self._manual_booking_count(
@@ -532,7 +532,7 @@ class PollPostingService:
 
             mentions: dict[int, str] = {}
             for vote in votes:
-                if _decode_option_ids(vote.option_ids):
+                if decode_option_ids(vote.option_ids):
                     mentions.setdefault(vote.telegram_user_id, vote.full_name or _rider_label(vote))
 
             for batch in batches:
@@ -825,7 +825,7 @@ class PollPostingService:
             return [
                 (vote.telegram_user_id, vote.full_name or _rider_label(vote))
                 for vote in votes
-                if snapshot.option_index in _decode_option_ids(vote.option_ids)
+                if snapshot.option_index in decode_option_ids(vote.option_ids)
             ]
 
     async def _active_poll_id(self, *, service_date: date, lift_time: str) -> str | None:
@@ -1227,7 +1227,7 @@ class PollPostingService:
             )
             counts: dict[int, int] = {}
             for vote in votes:
-                for option_id in _decode_option_ids(vote.option_ids):
+                for option_id in decode_option_ids(vote.option_ids):
                     counts[option_id] = counts.get(option_id, 0) + 1
 
             capacity_by_time = {lift.time: lift.capacity for lift in DEFAULT_LIFTS}
@@ -1409,7 +1409,7 @@ class PollPostingService:
         options_by_poll = _options_by_poll_id(snapshots)
         votes_by_poll: dict[str, list[PollVote]] = {}
         for vote in votes:
-            if _decode_option_ids(vote.option_ids):
+            if decode_option_ids(vote.option_ids):
                 votes_by_poll.setdefault(vote.poll_id, []).append(vote)
 
         lines = ["Recreated existing polls.", "", "Tracked votes before recreate:"]
@@ -1428,7 +1428,7 @@ class PollPostingService:
             grouped: dict[int, list[str]] = {}
             for vote in poll_votes:
                 rider = _rider_label(vote)
-                for option_id in _decode_option_ids(vote.option_ids):
+                for option_id in decode_option_ids(vote.option_ids):
                     grouped.setdefault(option_id, []).append(rider)
             for option_id, riders in sorted(grouped.items()):
                 option = options_by_poll.get(poll_id, {}).get(option_id)
@@ -1691,7 +1691,7 @@ class PollPostingService:
                 if snapshot.lift_time is None:
                     continue
                 vote_count = sum(
-                    snapshot.option_index in _decode_option_ids(vote.option_ids)
+                    snapshot.option_index in decode_option_ids(vote.option_ids)
                     for vote in votes_by_poll.get(snapshot.poll_id, [])
                 )
                 lifts.append(
@@ -2298,7 +2298,7 @@ def _encode_option_ids(option_ids: tuple[int, ...]) -> str:
     return ",".join(str(option_id) for option_id in sorted(set(option_ids)))
 
 
-def _decode_option_ids(option_ids: str) -> tuple[int, ...]:
+def decode_option_ids(option_ids: str) -> tuple[int, ...]:
     if not option_ids:
         return ()
     return tuple(int(item) for item in option_ids.split(",") if item)

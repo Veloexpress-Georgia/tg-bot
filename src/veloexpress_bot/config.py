@@ -24,8 +24,13 @@ class Settings(BaseSettings):
     telegram_admin_ids: Annotated[tuple[int, ...], NoDecode] = ()
     telegram_target_chat_id: int | None = None
     telegram_target_thread_id: int | None = None
+    # Leave empty to switch the payments board off entirely.
+    telegram_payments_thread_id: int | None = None
     telegram_pin_poll: bool = True
     schedule_timezone: str = "Asia/Tbilisi"
+    # Misho raises this from time to time; a redeploy should not be the way to
+    # change a price.
+    payment_price_gel: int = 15
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod
@@ -38,7 +43,12 @@ class Settings(BaseSettings):
             return (value,)
         return tuple(int(item) for item in value)
 
-    @field_validator("telegram_target_chat_id", "telegram_target_thread_id", mode="before")
+    @field_validator(
+        "telegram_target_chat_id",
+        "telegram_target_thread_id",
+        "telegram_payments_thread_id",
+        mode="before",
+    )
     @classmethod
     def parse_optional_int(cls, value: Any) -> int | None:
         if value in (None, ""):

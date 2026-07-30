@@ -219,6 +219,70 @@ class LiftSignalState(Base):
     )
 
 
+class PaymentClaim(Base):
+    """A rider's own "I paid" for one service day, priced per seat.
+
+    Granularity is rider + day, not rider + lift: a rider who booked two lifts
+    may only ride one, so the seat count is declared, not derived from votes.
+    """
+
+    __tablename__ = "payment_claim"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger)
+    username: Mapped[str | None] = mapped_column(String(128))
+    full_name: Mapped[str] = mapped_column(Text)
+    seats: Mapped[int] = mapped_column(Integer, default=1)
+    claimed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    # The message the bot posted on the rider's behalf, so a seat change edits it
+    # instead of adding another line to the payments topic.
+    posted_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    verified_by_user_id: Mapped[int | None] = mapped_column(BigInteger)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class PaymentsBoard(Base):
+    """The live payments message for one service day, edited in place."""
+
+    __tablename__ = "payments_board"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    telegram_message_id: Mapped[int] = mapped_column(BigInteger)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class PaymentsTopicPost(Base):
+    """When a rider last wrote in the payments topic — user id and time only.
+
+    The bot deliberately does not read what they wrote. Its only question is
+    whether the rider already spoke for themselves, so it can stay quiet.
+    """
+
+    __tablename__ = "payments_topic_post"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger)
+    last_posted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
 class AdminBookingMonitor(Base):
     __tablename__ = "admin_booking_monitor"
 
@@ -305,6 +369,35 @@ Index(
     func.coalesce(LiftSignalState.thread_id, 0),
     LiftSignalState.service_date,
     LiftSignalState.lift_time,
+    unique=True,
+)
+
+
+Index(
+    "uq_payment_claim_scope_date_user",
+    PaymentClaim.environment,
+    PaymentClaim.chat_id,
+    func.coalesce(PaymentClaim.thread_id, 0),
+    PaymentClaim.service_date,
+    PaymentClaim.telegram_user_id,
+    unique=True,
+)
+
+
+Index(
+    "uq_payments_board_scope_date",
+    PaymentsBoard.environment,
+    PaymentsBoard.chat_id,
+    PaymentsBoard.service_date,
+    unique=True,
+)
+
+
+Index(
+    "uq_payments_topic_post_scope_user",
+    PaymentsTopicPost.environment,
+    PaymentsTopicPost.chat_id,
+    PaymentsTopicPost.telegram_user_id,
     unique=True,
 )
 

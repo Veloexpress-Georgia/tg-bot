@@ -20,6 +20,8 @@ from veloexpress_bot.bot.keyboards import start_menu_keyboard
 from veloexpress_bot.bot.permissions import is_admin
 from veloexpress_bot.bot.states import ExtraDayStates
 from veloexpress_bot.config import Settings
+from veloexpress_bot.payments.render import decode_board_date
+from veloexpress_bot.payments.service import PaymentsService
 from veloexpress_bot.polls.autoposter import PollAutoScheduler
 from veloexpress_bot.polls.autoschedule import CardView
 from veloexpress_bot.polls.extraday import (
@@ -47,6 +49,7 @@ logger = logging.getLogger(__name__)
 ADMIN_ONLY_TEXT = "Admins only."
 PRIVATE_ONLY_TEXT = "Open the bot in a private chat via /start."
 STALE_SETUP_ALERT = "This menu is outdated. Run /start again."
+STALE_BOARD_ALERT = "This payments board is outdated."
 TELEGRAM_NOT_MODIFIED_TEXT = "message is not modified"
 
 # Telegram invalidates a callback query a few seconds after the tap. Handlers ack
@@ -664,6 +667,55 @@ async def track_poll_answer(answer: PollAnswer, poll_service: PollPostingService
     )
 
 
+@router.callback_query(F.data.startswith("pay:"))
+async def handle_payment_button(
+    callback: CallbackQuery,
+    payments_service: PaymentsService,
+) -> None:
+    """Payments board taps. Open to every rider, not just admins.
+
+    Inline buttons in the group reach people who never opened a private chat
+    with the bot, which is most of the group; the reply is a private toast so a
+    shared keyboard can still give personal feedback.
+    """
+    action, value = _split_callback(callback.data)
+    user = callback.from_user
+    try:
+        service_date = decode_board_date(value)
+    except ValueError:
+        await callback.answer(STALE_BOARD_ALERT, show_alert=True)
+        return
+
+    if action == "paid":
+        notice = await payments_service.claim(
+            service_date=service_date,
+            telegram_user_id=user.id,
+            username=user.username,
+            full_name=user.full_name,
+        )
+    elif action == "guest":
+        notice = await payments_service.adjust_seats(
+            service_date=service_date,
+            telegram_user_id=user.id,
+            delta=1,
+        )
+    elif action == "fewer":
+        notice = await payments_service.adjust_seats(
+            service_date=service_date,
+            telegram_user_id=user.id,
+            delta=-1,
+        )
+    elif action == "undo":
+        notice = await payments_service.undo(
+            service_date=service_date,
+            telegram_user_id=user.id,
+        )
+    else:
+        notice = STALE_BOARD_ALERT
+
+    await callback.answer(notice, show_alert=False)
+
+
 @router.message(F.pinned_message)
 async def cleanup_bot_pin_notice(
     message: Message,
@@ -682,6 +734,51 @@ async def cleanup_bot_pin_notice(
     await poll_service.cleanup_setup_messages(
         chat_id=message.chat.id,
         message_ids=(message.message_id,),
+    )
+
+
+# Registered after the narrower message handlers on purpose: this one matches any
+# forum-topic message, and the first matching handler ends propagation.
+@router.message(F.message_thread_id, F.from_user, ~F.pinned_message)
+async def watch_payments_topic(
+    message: Message,
+    bot: Bot,
+    settings: Settings,
+    payments_service: PaymentsService,
+) -> None:
+    """Note that a rider wrote in the payments topic — who and when, nothing more.
+
+    A rider who reported their own payment should not then get a second line
+    posted about them by the bot.
+    """
+    actor = message.from_user
+    if actor is None or not _is_payments_topic_post(
+        chat_id=message.chat.id,
+        thread_id=message.message_thread_id,
+        actor_user_id=actor.id,
+        bot_user_id=bot.id,
+        settings=settings,
+    ):
+        return
+    await payments_service.record_topic_post(
+        telegram_user_id=actor.id,
+        posted_at=message.date,
+    )
+
+
+def _is_payments_topic_post(
+    *,
+    chat_id: int,
+    thread_id: int | None,
+    actor_user_id: int,
+    bot_user_id: int,
+    settings: Settings,
+) -> bool:
+    return (
+        settings.telegram_payments_thread_id is not None
+        and chat_id == settings.telegram_target_chat_id
+        and thread_id == settings.telegram_payments_thread_id
+        and actor_user_id != bot_user_id
     )
 
 

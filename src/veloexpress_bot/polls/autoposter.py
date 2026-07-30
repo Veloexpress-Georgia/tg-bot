@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.models import PollAutoSchedule
+from veloexpress_bot.payments.service import PaymentsService
 from veloexpress_bot.polls.autoschedule import (
     AutoScheduleState,
     CardView,
@@ -54,11 +55,13 @@ class PollAutoScheduler:
         session_factory: SessionFactory,
         poll_service: PollPostingService,
         telegram_client: TelegramPollClient,
+        payments_service: PaymentsService | None = None,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
         self._poll_service = poll_service
         self._telegram_client = telegram_client
+        self._payments_service = payments_service
         self._zone = ZoneInfo(settings.schedule_timezone)
 
     @property
@@ -95,6 +98,14 @@ class PollAutoScheduler:
             await self._poll_service.evaluate_lift_signals(now=now_local)
         except Exception:
             logger.exception("lift_signal_evaluation_failed")
+
+        if self._payments_service is not None:
+            # Boards are synced from current bookings rather than from the events
+            # above, so a restart mid-weekend just catches up on the next tick.
+            try:
+                await self._payments_service.sync_boards(now=now_local)
+            except Exception:
+                logger.exception("payments_board_sync_failed")
 
         row_data = await self._load_row_data()
         if row_data is None:

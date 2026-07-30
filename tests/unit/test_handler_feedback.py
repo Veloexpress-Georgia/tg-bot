@@ -95,7 +95,16 @@ def test_core_callback_handlers_are_registered() -> None:
         "handle_extra_day_card",
         "open_poll_schedule",
         "handle_poll_schedule_card",
+        "handle_payment_button",
     } <= names
+
+
+def test_the_payments_topic_watcher_yields_to_narrower_message_handlers() -> None:
+    names = [handler.callback.__name__ for handler in router.message.handlers]
+
+    # It matches any forum-topic message, and the first match ends propagation.
+    assert names.index("watch_payments_topic") > names.index("cleanup_bot_pin_notice")
+    assert names.index("watch_payments_topic") > names.index("show_start_menu")
 
 
 def test_split_callback_keeps_colons_in_lift_time_value() -> None:
