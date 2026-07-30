@@ -146,8 +146,10 @@ class WeekendPlanner:
         *,
         view: PlanCardView = "main",
         now: datetime | None = None,
+        schedule_label: str = "off",
     ) -> PlanCardDraft:
-        return render_weekend_plan_card(await self._plan_view(now=now), view=view)
+        plan_view = replace(await self._plan_view(now=now), schedule_label=schedule_label)
+        return render_weekend_plan_card(plan_view, view=view)
 
     async def toggle_day(
         self,

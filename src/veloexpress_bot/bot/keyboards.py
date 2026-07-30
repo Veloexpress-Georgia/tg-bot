@@ -8,7 +8,7 @@ def start_menu_keyboard(*, is_admin: bool) -> InlineKeyboardMarkup | None:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📋 Weekend plan",
+                    text="📋 Weekend",
                     callback_data="menu:weekend_plan",
                 ),
                 InlineKeyboardButton(
@@ -20,10 +20,6 @@ def start_menu_keyboard(*, is_admin: bool) -> InlineKeyboardMarkup | None:
                 InlineKeyboardButton(
                     text="➕ Extra lift day",
                     callback_data="menu:extra_day",
-                ),
-                InlineKeyboardButton(
-                    text="⏰ Poll schedule",
-                    callback_data="menu:poll_schedule",
                 ),
             ],
             [

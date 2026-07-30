@@ -145,6 +145,32 @@ def render_booking_monitor(
     )
 
 
+def render_start_status(
+    days: tuple[BookingMonitorDay, ...],
+    *,
+    schedule_line: str,
+) -> str:
+    """The start card answers instead of greeting: state first, buttons after."""
+    lines = ["🚐 Veloexpress", ""]
+    if days:
+        lines.extend(_start_day_line(day) for day in days)
+    else:
+        lines.append("No active lift polls.")
+    lines.extend(("", schedule_line))
+    return "\n".join(lines)
+
+
+def _start_day_line(day: BookingMonitorDay) -> str:
+    label = _long_day_label(day.service_date)
+    active = sum(not lift.cancelled for lift in day.lifts)
+    if not day.running_count:
+        return f"{label} · {day.seat_count} booked, nothing running yet"
+    paid = ""
+    if day.booked_rider_count:
+        paid = f" · paid {day.paid_rider_count}/{day.booked_rider_count}"
+    return f"{label} · {day.running_count} of {active} lifts running{paid}"
+
+
 def render_lift_detail(
     *,
     service_date: date,

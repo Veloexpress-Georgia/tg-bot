@@ -15,6 +15,7 @@ from veloexpress_bot.bookings.render import (
     decode_monitor_date,
     decode_monitor_time,
     render_lift_detail,
+    render_start_status,
 )
 from veloexpress_bot.bot.keyboards import start_menu_keyboard
 from veloexpress_bot.bot.permissions import is_admin
@@ -64,10 +65,8 @@ POLL_TARGET_FORBIDDEN_TEXT = (
     "then try again."
 )
 ALREADY_POSTED_ALERT = "Polls for this weekend are already posted."
-START_TEXT = (
-    "🚐 Veloexpress Bot\n\n"
-    "I help admins plan weekend lift polls and keep Telegram operations natural."
-)
+# Only non-admins see this. Admins get live state instead of a greeting.
+START_TEXT = "🚐 Veloexpress Bot"
 
 PLAN_VIEWS: set[str] = {"main", "first", "last", "recreate"}
 EXTRA_VIEWS: set[str] = {"date", "main", "first", "last"}
@@ -78,22 +77,24 @@ async def show_start_menu(
     message: Message,
     state: FSMContext,
     settings: Settings,
+    poll_service: PollPostingService,
+    auto_scheduler: PollAutoScheduler,
 ) -> None:
-    user_is_admin = is_admin(message.from_user.id if message.from_user else None, settings)
-    admin_text = "\n\nChoose an action below." if user_is_admin else "\n\nAdmins only."
+    if not is_admin(message.from_user.id if message.from_user else None, settings):
+        await message.answer(f"{START_TEXT}\n\nAdmins only.")
+        return
     sent = await message.answer(
-        f"{START_TEXT}{admin_text}",
-        reply_markup=start_menu_keyboard(is_admin=user_is_admin),
+        await _start_status(poll_service, auto_scheduler),
+        reply_markup=start_menu_keyboard(is_admin=True),
     )
-    if user_is_admin:
-        await state.update_data(
-            menu_message_ids=list(
-                _menu_message_ids_for_cleanup(
-                    command_message_id=message.message_id,
-                    menu_message_id=sent.message_id,
-                )
+    await state.update_data(
+        menu_message_ids=list(
+            _menu_message_ids_for_cleanup(
+                command_message_id=message.message_id,
+                menu_message_id=sent.message_id,
             )
         )
+    )
 
 
 @router.message(Command("create_lift_poll"))
@@ -102,6 +103,7 @@ async def create_lift_poll(
     settings: Settings,
     planner: WeekendPlanner,
     poll_service: PollPostingService,
+    auto_scheduler: PollAutoScheduler,
 ) -> None:
     if not is_admin(message.from_user.id if message.from_user else None, settings):
         await message.answer("This command is only available to Veloexpress admins.")
@@ -110,7 +112,7 @@ async def create_lift_poll(
         await message.answer(PRIVATE_ONLY_TEXT)
         return
 
-    card = await planner.plan_card()
+    card = await planner.plan_card(schedule_label=await auto_scheduler.schedule_label())
     await message.answer(card.text, reply_markup=card.reply_markup)
     await poll_service.cleanup_setup_messages(
         chat_id=message.chat.id,
@@ -123,12 +125,13 @@ async def open_weekend_plan(
     callback: CallbackQuery,
     settings: Settings,
     planner: WeekendPlanner,
+    auto_scheduler: PollAutoScheduler,
 ) -> None:
     message = await _admin_private_message(callback, settings)
     if message is None:
         return
 
-    card = await planner.plan_card()
+    card = await planner.plan_card(schedule_label=await auto_scheduler.schedule_label())
     await _edit_card(message, card.text, card.reply_markup)
     await callback.answer()
 
@@ -353,27 +356,13 @@ async def handle_lift_cancellation(
     await _edit_card(message, draft.text, draft.reply_markup)
 
 
-@router.callback_query(F.data == "menu:poll_schedule")
-async def open_poll_schedule(
-    callback: CallbackQuery,
-    settings: Settings,
-    auto_scheduler: PollAutoScheduler,
-) -> None:
-    message = await _admin_private_message(callback, settings)
-    if message is None:
-        return
-
-    card = await auto_scheduler.schedule_card()
-    await _edit_card(message, card.text, card.reply_markup)
-    await callback.answer()
-
-
 @router.callback_query(F.data.startswith("plan:"))
 async def handle_weekend_plan_card(
     callback: CallbackQuery,
     settings: Settings,
     planner: WeekendPlanner,
     poll_service: PollPostingService,
+    auto_scheduler: PollAutoScheduler,
 ) -> None:
     message = await _admin_private_message(callback, settings)
     if message is None:
@@ -381,6 +370,11 @@ async def handle_weekend_plan_card(
 
     action, value = _split_callback(callback.data)
 
+    if action == "schedule":
+        card = await auto_scheduler.schedule_card()
+        await _edit_card(message, card.text, card.reply_markup)
+        await callback.answer()
+        return
     if action == "close":
         await callback.answer("Plan closed.")
         await poll_service.cleanup_setup_messages(
@@ -389,7 +383,7 @@ async def handle_weekend_plan_card(
         )
         return
     if action == "menu":
-        await _show_menu(message)
+        await _show_menu(message, poll_service, auto_scheduler)
         await callback.answer()
         return
     if action == "posted":
@@ -508,6 +502,7 @@ async def handle_poll_schedule_card(
     settings: Settings,
     auto_scheduler: PollAutoScheduler,
     poll_service: PollPostingService,
+    planner: WeekendPlanner,
 ) -> None:
     message = await _admin_private_message(callback, settings)
     if message is None:
@@ -515,6 +510,11 @@ async def handle_poll_schedule_card(
 
     action, value = _split_callback(callback.data)
 
+    if action == "plan":
+        card = await planner.plan_card(schedule_label=await auto_scheduler.schedule_label())
+        await _edit_card(message, card.text, card.reply_markup)
+        await callback.answer()
+        return
     if action == "close":
         await callback.answer("Schedule closed.")
         await poll_service.cleanup_setup_messages(
@@ -523,7 +523,7 @@ async def handle_poll_schedule_card(
         )
         return
     if action == "menu":
-        await _show_menu(message)
+        await _show_menu(message, poll_service, auto_scheduler)
         await callback.answer()
         return
 
@@ -561,6 +561,7 @@ async def handle_extra_day_card(
     state: FSMContext,
     settings: Settings,
     poll_service: PollPostingService,
+    auto_scheduler: PollAutoScheduler,
 ) -> None:
     message = await _admin_private_message(callback, settings)
     if message is None:
@@ -578,7 +579,7 @@ async def handle_extra_day_card(
         return
     if action == "menu":
         await state.clear()
-        await _show_menu(message)
+        await _show_menu(message, poll_service, auto_scheduler)
         await callback.answer()
         return
 
@@ -608,6 +609,7 @@ async def handle_extra_day_card(
                 message=message,
                 state=state,
                 poll_service=poll_service,
+                auto_scheduler=auto_scheduler,
                 draft=draft,
             )
             if answer_text is None:
@@ -637,6 +639,7 @@ async def _post_extra_day(
     message: Message,
     state: FSMContext,
     poll_service: PollPostingService,
+    auto_scheduler: PollAutoScheduler,
     draft: ExtraDayDraftState,
 ) -> str | None:
     if draft.selected_date is None:
@@ -664,7 +667,7 @@ async def _post_extra_day(
 
     await state.clear()
     await callback.answer("Posted extra day polls.")
-    await _show_menu(message)
+    await _show_menu(message, poll_service, auto_scheduler)
     return "Posted"
 
 
@@ -889,11 +892,25 @@ async def _report_refunds(
         await message.answer(report, parse_mode="HTML")
 
 
-async def _show_menu(message: Message) -> None:
+async def _show_menu(
+    message: Message,
+    poll_service: PollPostingService,
+    auto_scheduler: PollAutoScheduler,
+) -> None:
     await _edit_card(
         message,
-        f"{START_TEXT}\n\nChoose an action below.",
+        await _start_status(poll_service, auto_scheduler),
         start_menu_keyboard(is_admin=True),
+    )
+
+
+async def _start_status(
+    poll_service: PollPostingService,
+    auto_scheduler: PollAutoScheduler,
+) -> str:
+    return render_start_status(
+        await poll_service.status_days(),
+        schedule_line=await auto_scheduler.schedule_summary(),
     )
 
 

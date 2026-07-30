@@ -1,10 +1,10 @@
 # Veloexpress Bot
 
-Telegram admin bot for Veloexpress lift polls.
+Telegram bot for the Veloexpress shuttle group: it runs the weekend lift polls, tells the group which lifts actually happen, and keeps track of who has paid.
 
-The first MVP is intentionally narrow: an admin command creates weekend Telegram polls from a predefined English template. Admins can enable or disable Saturday/Sunday and choose the first and last lift times before posting; every time between those boundaries is included automatically.
+Admins work from a single private menu — `📋 Weekend` plans and schedules what gets posted, `📊 Booking monitor` is the live view during a weekend, `➕ Extra lift day` covers midweek rides. A background worker posts the polls on time, announces a lift once it reaches the rider minimum, reminds the group before the booking deadline, and pings the day's first lift before it leaves. Riders confirm payment with a button in the group or simply by writing in the payments topic.
 
-Out of scope for the first MVP: payment tracking, balances, automatic waitlist management, scheduling, miniapp, website, and template editing.
+Still out of scope: balances, automatic waitlist management, miniapp, website, and template editing.
 
 ## Product Principle
 
@@ -81,11 +81,11 @@ just down
 Use `just run` only when Postgres is already running and you want a one-shot bot
 process without hot reload.
 
-All admin controls live in a private chat with the bot. Send `/start` and pick an action; `/create_lift_poll` jumps straight to the weekend plan. Polls are always posted to `TELEGRAM_TARGET_CHAT_ID` and, when configured, `TELEGRAM_TARGET_THREAD_ID`.
+All admin controls live in a private chat with the bot. `/start` answers rather than greets: it opens with each active day's state — how many lifts are running, how many riders have paid — and when the next polls appear, with the menu underneath. `/create_lift_poll` still jumps straight to the weekend card but is no longer suggested, so the menu stays the single way in instead of a second, drifting copy of it. Polls are always posted to `TELEGRAM_TARGET_CHAT_ID` and, when configured, `TELEGRAM_TARGET_THREAD_ID`.
 
-`📋 Weekend plan` is the single source of truth for what gets posted: it shows the upcoming weekend, the lift-time range (learned from recent weeks), which days are enabled, and when the polls will open automatically. Edits are saved as a plan — nothing posts until the scheduled time or an explicit `🚀 Post now`. Posted days are marked and protected; `♻️ Recreate polls` (with confirmation) replaces an already-posted weekend and reports tracked votes first. A `⏭ Skip weekend` toggle suppresses one auto run.
+`📋 Weekend` is the single source of truth for what gets posted: it shows the upcoming weekend, the lift-time range (learned from recent weeks), which days are enabled, and when the polls will open automatically. Edits are saved as a plan — nothing posts until the scheduled time or an explicit `🚀 Post now`. Posted days are marked and protected; `♻️ Recreate polls` (with confirmation) replaces an already-posted weekend and reports tracked votes first. A `⏭ Skip weekend` toggle suppresses one auto run.
 
-`⏰ Poll schedule` controls only the "when": the posting day (Monday–Saturday) and time in `SCHEDULE_TIMEZONE` (default `Asia/Tbilisi`), plus an optional group announcement 1–3 hours before posting. A background worker checks the schedule every 30 seconds and stores all state in Postgres, so restarts never lose or duplicate a run. The worker posts whatever the weekend plan says, skips days that already have active polls, and deletes the announcement message once the polls are up.
+`⏰ Opens` sits inside the weekend card rather than in the menu, because an admin thinks about one weekend and not about a standing setting — the card's `Opens` line always shows when polls appear, or `off`, so the auto-posting switch cannot hide. It controls the "when": the posting day (Monday–Saturday) and time in `SCHEDULE_TIMEZONE` (default `Asia/Tbilisi`), plus an optional group announcement 1–3 hours before posting. A background worker checks the schedule every 30 seconds and stores all state in Postgres, so restarts never lose or duplicate a run. The worker posts whatever the weekend plan says, skips days that already have active polls, and deletes the announcement message once the polls are up.
 
 `➕ Extra lift day` covers mid-week lifts: pick a date within the next 7 days and a lift range, and the polls post to the group immediately (unpinned, so weekend polls stay pinned).
 
@@ -157,10 +157,9 @@ lefthook run pre-commit
 
 ```text
 /start
-/create_lift_poll
 ```
 
-The bot registers these commands on startup. Only Telegram user IDs listed in `TELEGRAM_ADMIN_IDS` can use `/create_lift_poll`. The setup flow starts with upcoming Saturday and Sunday enabled and supports disabling either day. Lift times are configured as a continuous first-to-last range. Confirmed weekend schedules are remembered; a changed start or end time must be used for two consecutive weekends before it becomes the suggested default.
+`/start` is the only command the bot suggests; everything else is a menu button. `/create_lift_poll` still works as an unlisted shortcut to the weekend card. Only Telegram user IDs listed in `TELEGRAM_ADMIN_IDS` can use either. The setup flow starts with upcoming Saturday and Sunday enabled and supports disabling either day. Lift times are configured as a continuous first-to-last range. Confirmed weekend schedules are remembered; a changed start or end time must be used for two consecutive weekends before it becomes the suggested default.
 
 The bot also registers its suggested default group admin rights on startup. Telegram will preselect pin/delete permissions when adding the bot as an admin, but the person adding it can still change the permissions before confirming.
 

@@ -225,7 +225,7 @@ def _card_text(
     zone: tzinfo,
     planned_lifts_label: str | None = None,
 ) -> str:
-    lines = ["⏰ Poll schedule", ""]
+    lines = ["⏰ When polls open", ""]
     if state.enabled:
         lines.append("Status: ✅ polls are created automatically")
     else:
@@ -288,7 +288,7 @@ def _main_keyboard(
         rows.append([InlineKeyboardButton(text=skip_text, callback_data="sched:skip")])
     rows.append(
         [
-            InlineKeyboardButton(text="⬅️ Menu", callback_data="sched:menu"),
+            InlineKeyboardButton(text="⬅️ Weekend", callback_data="sched:plan"),
             InlineKeyboardButton(text="✖️ Close", callback_data="sched:close"),
         ]
     )

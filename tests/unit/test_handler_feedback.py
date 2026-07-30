@@ -93,7 +93,6 @@ def test_core_callback_handlers_are_registered() -> None:
         "handle_weekend_plan_card",
         "open_extra_day",
         "handle_extra_day_card",
-        "open_poll_schedule",
         "handle_poll_schedule_card",
         "handle_payment_button",
         "toggle_rider_payment",

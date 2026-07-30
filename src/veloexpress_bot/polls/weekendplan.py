@@ -33,6 +33,7 @@ class WeekendPlanView:
     opens_at: datetime | None
     auto_enabled: bool
     skipped: bool
+    schedule_label: str = "off"
 
     @property
     def any_posted(self) -> bool:
@@ -106,7 +107,7 @@ def _opens_line(view_state: WeekendPlanView) -> str:
     if view_state.opens_at is not None:
         return f"🕓 Opens: {_moment_label(view_state.opens_at)} (auto)"
     if not view_state.auto_enabled:
-        return "🕓 Auto-posting is off — use Post now or enable the ⏰ schedule."
+        return "🕓 Auto-posting is off — use Post now, or ⏰ Opens to switch it on."
     return "🕓 Auto-posting already ran for this weekend — use Post now if needed."
 
 
@@ -128,6 +129,17 @@ def _main_keyboard(view_state: WeekendPlanView) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text=f"▶️ First · {first_time}", callback_data="plan:view:first"),
             InlineKeyboardButton(text=f"⏹ Last · {last_time}", callback_data="plan:view:last"),
+        ]
+    )
+
+    # "When" is part of planning the weekend, not a separate menu entry: the admin
+    # thinks about one weekend, not about a standing setting.
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text=f"⏰ Opens · {view_state.schedule_label}",
+                callback_data="plan:schedule",
+            )
         ]
     )
 

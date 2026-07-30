@@ -32,6 +32,13 @@ def button_map(markup) -> dict[str, str]:  # type: ignore[no-untyped-def]
     return {button.callback_data: button.text for row in markup.inline_keyboard for button in row}
 
 
+def test_the_schedule_opens_from_the_weekend_card() -> None:
+    """When polls open is part of planning a weekend, not a separate menu entry."""
+    card = render_weekend_plan_card(plan_view(schedule_label="Fri 14:00"))
+
+    assert button_map(card.reply_markup)["plan:schedule"] == "⏰ Opens · Fri 14:00"
+
+
 def test_plan_card_shows_lifts_and_auto_open_moment() -> None:
     card = render_weekend_plan_card(plan_view())
 

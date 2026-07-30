@@ -11,10 +11,9 @@ def test_start_menu_exposes_admin_actions_only_to_admins() -> None:
         for button in row
     }
     assert labels == {
-        "menu:weekend_plan": "📋 Weekend plan",
+        "menu:weekend_plan": "📋 Weekend",
         "menu:booking_monitor": "📊 Booking monitor",
         "menu:extra_day": "➕ Extra lift day",
-        "menu:poll_schedule": "⏰ Poll schedule",
         "menu:cancel": "✖️ Close",
     }
     assert start_menu_keyboard(is_admin=False) is None

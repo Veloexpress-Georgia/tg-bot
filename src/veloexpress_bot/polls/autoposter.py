@@ -14,6 +14,8 @@ from veloexpress_bot.config import Settings
 from veloexpress_bot.db.models import PollAutoSchedule
 from veloexpress_bot.payments.service import PaymentsService
 from veloexpress_bot.polls.autoschedule import (
+    SHORT_WEEKDAY_LABELS,
+    WEEKDAY_LABELS,
     AutoScheduleState,
     CardView,
     ScheduleCardDraft,
@@ -21,6 +23,7 @@ from veloexpress_bot.polls.autoschedule import (
     decide_tick,
     decode_card_time,
     next_announce_lead,
+    next_pending_creation,
     render_schedule_announcement,
     render_schedule_card,
     skip_target_week,
@@ -122,6 +125,30 @@ class PollAutoScheduler:
         else:
             await self._mark_week_skipped(action, row_data)
         return action.kind
+
+    async def schedule_label(self) -> str:
+        """Two or three words for the weekend card's ⏰ button."""
+        state = await self.schedule_state()
+        if state is None or not state.enabled:
+            return "off"
+        return f"{SHORT_WEEKDAY_LABELS[state.creation_weekday]} {state.creation_time}"
+
+    async def schedule_summary(self) -> str:
+        """One line for the start card: when the next polls appear, or why they will not."""
+        state = await self.schedule_state()
+        if state is None or not state.enabled:
+            return "⏰ Auto-posting is off — post from 📋 Weekend."
+        now = datetime.now(UTC).astimezone(self._zone)
+        pending = next_pending_creation(state, now, zone=self._zone)
+        if pending is None:
+            return f"⏰ Polls open {WEEKDAY_LABELS[state.creation_weekday]} {state.creation_time}."
+        _, creation_at = pending
+        if now >= creation_at:
+            return "⏰ Polls are due now."
+        return (
+            f"⏰ Next polls open {SHORT_WEEKDAY_LABELS[creation_at.weekday()]} "
+            f"{creation_at.hour}:{creation_at.minute:02d}."
+        )
 
     async def schedule_card(self, *, view: CardView = "main") -> ScheduleCardDraft:
         row_data = await self._load_row_data()

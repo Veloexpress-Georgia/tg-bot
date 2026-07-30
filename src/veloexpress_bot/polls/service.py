@@ -360,6 +360,10 @@ class PollPostingService:
         )
         return message_id
 
+    async def status_days(self) -> tuple[BookingMonitorDay, ...]:
+        """Current and upcoming lift days, for the start card."""
+        return await self._booking_monitor_days()
+
     async def booking_monitor_view(
         self,
         *,

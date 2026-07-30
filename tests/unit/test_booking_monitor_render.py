@@ -8,6 +8,7 @@ from veloexpress_bot.bookings.render import (
     decode_monitor_time,
     render_booking_monitor,
     render_lift_detail,
+    render_start_status,
 )
 
 
@@ -117,6 +118,43 @@ def test_render_lift_detail_toggles_cancel_and_restore() -> None:
     assert "❌ Cancelled." in cancelled.text
     cancelled_buttons = _button_map(cancelled.reply_markup)
     assert cancelled_buttons["mon:restore:20260718:0830"] == "♻️ Restore lift"
+
+
+def test_start_status_answers_instead_of_greeting() -> None:
+    text = render_start_status(
+        (
+            BookingMonitorDay(
+                service_date=date(2026, 8, 1),
+                lifts=(
+                    BookingLiftStatus(time="8:30", vote_count=6, manual_count=0),
+                    BookingLiftStatus(time="10:00", vote_count=2, manual_count=0),
+                ),
+                paid_rider_count=3,
+                booked_rider_count=8,
+            ),
+            BookingMonitorDay(
+                service_date=date(2026, 8, 2),
+                lifts=(BookingLiftStatus(time="8:30", vote_count=2, manual_count=0),),
+            ),
+        ),
+        schedule_line="⏰ Next polls open Fri 14:00.",
+    )
+
+    assert text.splitlines() == [
+        "🚐 Veloexpress",
+        "",
+        "Sat, 1 Aug · 1 of 2 lifts running · paid 3/8",
+        "Sun, 2 Aug · 2 booked, nothing running yet",
+        "",
+        "⏰ Next polls open Fri 14:00.",
+    ]
+
+
+def test_start_status_says_so_when_there_is_nothing_on() -> None:
+    text = render_start_status((), schedule_line="⏰ Auto-posting is off.")
+
+    assert "No active lift polls." in text
+    assert "⏰ Auto-posting is off." in text
 
 
 def test_booking_monitor_empty_state_and_callback_decoding() -> None:
