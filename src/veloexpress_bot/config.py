@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     payment_price_gel: int = 15
     # Riders must be booked and paid by this time the evening before a lift day.
     booking_deadline_time: str = "20:00"
+    # Where riders actually pay. Left empty, every message simply omits the link.
+    payment_link: str = ""
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod

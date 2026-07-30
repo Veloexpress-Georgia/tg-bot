@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from veloexpress_bot.polls.defaults import CHECK_ANSWERS_OPTION, StartLocation
+from veloexpress_bot.polls.defaults import CHECK_ANSWERS_OPTION, PaymentTerms, StartLocation
 from veloexpress_bot.polls.render import (
     LiftAvailability,
     PollRenderInput,
@@ -24,18 +24,37 @@ def test_render_poll_uses_ru_en_weekend_template() -> None:
     assert draft.allows_multiple_answers is True
 
 
+TERMS = PaymentTerms(price_gel=15, deadline_time="20:00", link="https://pay.example")
+
+
 def test_render_poll_notice_explains_dynamic_first_lift_location() -> None:
-    assert render_poll_notice(StartLocation.JUSTICE_HALL) == (
+    assert render_poll_notice(StartLocation.JUSTICE_HALL, terms=TERMS).startswith(
         "📍 The day's first running lift departs from Justice Hall. "
-        "All later lifts depart from Vake Park.\n\n"
-        "💳 Please prepay after voting."
+        "All later lifts depart from Vake Park."
     )
 
 
-def test_render_poll_notice_supports_future_vake_only_override() -> None:
-    assert render_poll_notice(StartLocation.VAKE) == (
-        "📍 All lifts: Vake Park.\n\n💳 Please prepay after voting."
+def test_render_poll_notice_states_the_money_rules_in_order() -> None:
+    assert render_poll_notice(StartLocation.VAKE, terms=TERMS).splitlines() == [
+        "📍 All lifts: Vake Park.",
+        "",
+        "💳 15 GEL per seat.",
+        # The old notice said "prepay after voting", which is now simply wrong.
+        "A lift runs from 5 riders. Wait for the ✅ message, then pay — "
+        "nothing to pay before that.",
+        "Book, change or cancel free until 20:00 the day before.",
+        "🔗 Pay: https://pay.example",
+    ]
+
+
+def test_the_poll_notice_omits_the_link_when_none_is_configured() -> None:
+    notice = render_poll_notice(
+        StartLocation.VAKE,
+        terms=PaymentTerms(price_gel=15, deadline_time="20:00"),
     )
+
+    assert "🔗" not in notice
+    assert "15 GEL per seat." in notice
 
 
 def test_render_availability_status_shows_counts_and_state_tags() -> None:

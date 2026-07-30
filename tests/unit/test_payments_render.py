@@ -32,12 +32,13 @@ def test_board_lists_running_lifts_price_and_the_four_taps() -> None:
 
     assert "💸 Payments · Sat, 18 Jul" in draft.text
     assert "Running: 8:30, 10:00" in draft.text
-    assert "15 GEL per seat" in draft.text
+    assert "15 GEL per seat · pay by 20:00" in draft.text
+    assert "➕/➖ for a guest or fewer laps than you booked." in draft.text
     assert "Waiting on 6 more." in draft.text
     assert draft.reply_markup is not None
     assert _buttons(draft.reply_markup) == {
         "pay:paid:20260718": "💸 I paid",
-        "pay:guest:20260718": "➕ Guest",
+        "pay:guest:20260718": "➕ Seat",
         "pay:fewer:20260718": "➖ Seat",
         "pay:undo:20260718": "↩️ Undo",
     }

@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, tzinfo
 from typing import Literal
 
-from veloexpress_bot.polls.defaults import MINIMUM_RIDERS
+from veloexpress_bot.polls.defaults import MINIMUM_RIDERS, PaymentTerms
 from veloexpress_bot.polls.render import EN_SHORT_MONTHS, SHORT_DAY_LABELS
 
 # Dropping below the minimum is usually one rider re-picking slots, so the
@@ -247,26 +247,39 @@ def lift_minutes(lift_time: str) -> int:
     return hour * 60 + minute
 
 
-def render_lift_signal_notice(kind: LiftEventKind, events: tuple[LiftEvent, ...]) -> str:
+def render_lift_signal_notice(
+    kind: LiftEventKind,
+    events: tuple[LiftEvent, ...],
+    *,
+    terms: PaymentTerms,
+) -> str:
     """One message per event kind per tick, so a busy tick is not a spam burst."""
     if not events:
         msg = "A lift notice needs at least one event."
         raise ValueError(msg)
     ordered = sorted(events, key=lambda event: (event.service_date, lift_minutes(event.lift_time)))
     if kind == "confirmed":
-        return _confirmed_notice(ordered)
+        return _confirmed_notice(ordered, terms=terms)
     if kind == "undershoot":
         return _undershoot_notice(ordered)
     return _departure_notice(ordered)
 
 
-def _confirmed_notice(events: list[LiftEvent]) -> str:
+def _confirmed_notice(events: list[LiftEvent], *, terms: PaymentTerms) -> str:
     if len(events) == 1:
         event = events[0]
-        return f"✅ {_lift_label(event)} is running — {event.seats} riders booked."
-    lines = ["✅ These lifts are running:", ""]
-    lines.extend(f"{_lift_label(event)} — {event.seats} riders" for event in events)
-    return "\n".join(lines)
+        headline = f"✅ {_lift_label(event)} is running — {event.seats} riders booked."
+    else:
+        headline = "\n".join(
+            (
+                "✅ These lifts are running:",
+                "",
+                *(f"{_lift_label(event)} — {event.seats} riders" for event in events),
+            )
+        )
+    # Crossing the minimum is exactly the moment payment becomes due, so the rule
+    # travels with the news instead of living only in the pinned poll notice.
+    return "\n".join((headline, "", *terms.pay_now()))
 
 
 def _undershoot_notice(events: list[LiftEvent]) -> str:

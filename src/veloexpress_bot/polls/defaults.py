@@ -31,4 +31,28 @@ EXTRA_LIFT_TIME = "15:30"
 DEFAULT_CANCELLED_LIFT_TIMES: tuple[str, ...] = (EXTRA_LIFT_TIME,)
 
 CHECK_ANSWERS_OPTION = "👀 Check answers"
-PAYMENT_REMINDER = "💳 Please prepay after voting."
+
+
+@dataclass(frozen=True)
+class PaymentTerms:
+    """The money rules, in one place so every message states them the same way."""
+
+    price_gel: int
+    deadline_time: str
+    link: str = ""
+
+    def rules(self) -> tuple[str, ...]:
+        lines = (
+            f"💳 {self.price_gel} GEL per seat.",
+            f"A lift runs from {MINIMUM_RIDERS} riders. Wait for the ✅ message, then pay — "
+            "nothing to pay before that.",
+            f"Book, change or cancel free until {self.deadline_time} the day before.",
+        )
+        return (*lines, f"🔗 Pay: {self.link}") if self.link else lines
+
+    def pay_now(self) -> tuple[str, ...]:
+        lines = (
+            f"💳 Time to pay: {self.price_gel} GEL per seat, "
+            f"by {self.deadline_time} the day before the lift.",
+        )
+        return (*lines, f"🔗 {self.link}") if self.link else lines

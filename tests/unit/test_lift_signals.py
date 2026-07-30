@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from veloexpress_bot.polls.defaults import PaymentTerms
 from veloexpress_bot.polls.liftsignals import (
     LiftEvent,
     LiftMemory,
@@ -17,6 +18,7 @@ from veloexpress_bot.polls.liftsignals import (
 )
 
 SATURDAY = date(2026, 7, 18)
+TERMS = PaymentTerms(price_gel=15, deadline_time="20:00", link="https://pay.example")
 TBILISI = ZoneInfo("Asia/Tbilisi")
 
 
@@ -169,39 +171,57 @@ def test_day_opener_is_the_earliest_lift_that_can_run() -> None:
 def test_notices_read_naturally_for_one_lift_and_for_many() -> None:
     confirmed = render_lift_signal_notice(
         "confirmed",
-        (LiftEvent("confirmed", SATURDAY, "8:30", 5),),
+        terms=TERMS,
+        events=(LiftEvent("confirmed", SATURDAY, "8:30", 5),),
     )
-    assert confirmed == "✅ 8:30 · Sat, 18 Jul is running — 5 riders booked."
+    # Crossing the minimum is the moment payment falls due, so the rule rides along.
+    assert confirmed.splitlines() == [
+        "✅ 8:30 · Sat, 18 Jul is running — 5 riders booked.",
+        "",
+        "💳 Time to pay: 15 GEL per seat, by 20:00 the day before the lift.",
+        "🔗 https://pay.example",
+    ]
 
     batched = render_lift_signal_notice(
         "confirmed",
-        (
+        terms=TERMS,
+        events=(
             LiftEvent("confirmed", SATURDAY, "10:00", 6),
             LiftEvent("confirmed", SATURDAY, "8:30", 5),
         ),
     )
     assert batched.splitlines()[0] == "✅ These lifts are running:"
     # Batched into one message, earliest first, so a busy tick is not a burst.
-    assert batched.splitlines()[2:] == [
+    assert batched.splitlines()[2:4] == [
         "8:30 · Sat, 18 Jul — 5 riders",
         "10:00 · Sat, 18 Jul — 6 riders",
     ]
 
+    without_link = render_lift_signal_notice(
+        "confirmed",
+        terms=PaymentTerms(price_gel=15, deadline_time="20:00"),
+        events=(LiftEvent("confirmed", SATURDAY, "8:30", 5),),
+    )
+    assert "🔗" not in without_link
+
     short = render_lift_signal_notice(
         "undershoot",
-        (LiftEvent("undershoot", SATURDAY, "8:30", 4),),
+        terms=TERMS,
+        events=(LiftEvent("undershoot", SATURDAY, "8:30", 4),),
     )
     assert short == "⚠️ 8:30 · Sat, 18 Jul is short — 4/5 riders. One more and it runs."
 
     scarce = render_lift_signal_notice(
         "undershoot",
-        (LiftEvent("undershoot", SATURDAY, "8:30", 2),),
+        terms=TERMS,
+        events=(LiftEvent("undershoot", SATURDAY, "8:30", 2),),
     )
     assert "Needs 3 more to run." in scarce
 
     departure = render_lift_signal_notice(
         "departure",
-        (LiftEvent("departure", SATURDAY, "8:30", 6),),
+        terms=TERMS,
+        events=(LiftEvent("departure", SATURDAY, "8:30", 6),),
     )
     assert departure.splitlines()[0].startswith("🚐 First lift of the day")
     assert departure.splitlines()[-1] == "8:30 · Sat, 18 Jul"
@@ -281,4 +301,4 @@ def test_the_reminder_states_the_deadline_and_what_each_lift_needs() -> None:
 
 def test_rendering_without_events_is_a_programming_error() -> None:
     with pytest.raises(ValueError, match="at least one event"):
-        render_lift_signal_notice("confirmed", ())
+        render_lift_signal_notice("confirmed", terms=TERMS, events=())

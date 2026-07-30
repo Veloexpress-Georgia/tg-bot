@@ -795,7 +795,8 @@ async def test_poll_service_can_send_notice_before_poll_and_pin_poll(
     assert result.notice_message_id == 42
     assert result.availability_message_id == 43
     assert result.message_id == 44
-    assert client.sent_texts[0] == ("📍 All lifts: Vake Park.\n\n💳 Please prepay after voting.")
+    assert client.sent_texts[0].startswith("📍 All lifts: Vake Park.")
+    assert "Wait for the ✅ message, then pay" in client.sent_texts[0]
     assert "🚐 Availability · Sat, 16 May" in client.sent_texts[1]
     assert client.sent[0].question == "🚐 Saturday · May 16"
 

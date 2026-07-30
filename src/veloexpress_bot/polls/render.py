@@ -5,8 +5,8 @@ from veloexpress_bot.polls.defaults import (
     CHECK_ANSWERS_OPTION,
     DEFAULT_LIFTS,
     MINIMUM_RIDERS,
-    PAYMENT_REMINDER,
     LiftTemplate,
+    PaymentTerms,
     StartLocation,
 )
 
@@ -101,7 +101,7 @@ def render_poll(render_input: PollRenderInput) -> PollDraft:
     return PollDraft(question=question, options=options)
 
 
-def render_poll_notice(first_lift_location: StartLocation) -> str:
+def render_poll_notice(first_lift_location: StartLocation, *, terms: PaymentTerms) -> str:
     if first_lift_location == StartLocation.VAKE:
         route_notice = "📍 All lifts: Vake Park."
     else:
@@ -109,7 +109,7 @@ def render_poll_notice(first_lift_location: StartLocation) -> str:
             "📍 The day's first running lift departs from Justice Hall. "
             "All later lifts depart from Vake Park."
         )
-    return f"{route_notice}\n\n{PAYMENT_REMINDER}"
+    return "\n".join((route_notice, "", *terms.rules()))
 
 
 def render_availability_status(

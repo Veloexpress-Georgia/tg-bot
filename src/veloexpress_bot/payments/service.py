@@ -401,6 +401,8 @@ class PaymentsService:
                 for claim in claims
             ),
             booked_rider_count=day.booked_rider_count,
+            deadline_time=self._settings.booking_deadline_time,
+            link=self._settings.payment_link,
             cancelled=day.cancelled,
         )
 

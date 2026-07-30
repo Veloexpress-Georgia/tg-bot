@@ -41,6 +41,7 @@ from veloexpress_bot.db.models import (
 from veloexpress_bot.polls.defaults import (
     DEFAULT_CANCELLED_LIFT_TIMES,
     DEFAULT_LIFTS,
+    PaymentTerms,
     StartLocation,
 )
 from veloexpress_bot.polls.liftsignals import (
@@ -207,6 +208,13 @@ class PollPostingService:
         self._telegram_client = telegram_client
         self._availability_locks: dict[str, Lock] = {}
         self._zone = ZoneInfo(settings.schedule_timezone)
+
+    def _payment_terms(self) -> PaymentTerms:
+        return PaymentTerms(
+            price_gel=self._settings.payment_price_gel,
+            deadline_time=self._settings.booking_deadline_time,
+            link=self._settings.payment_link,
+        )
 
     def _require_target_chat_id(self) -> int:
         chat_id = self._settings.telegram_target_chat_id
@@ -878,7 +886,11 @@ class PollPostingService:
                 ):
                     mentions.setdefault(user_id, label)
             await self._send_tagged_notice(
-                render_lift_signal_notice(kind, tuple(kind_events)),
+                render_lift_signal_notice(
+                    kind,
+                    tuple(kind_events),
+                    terms=self._payment_terms(),
+                ),
                 mentions,
                 log_label="lift_signal_notice_failed",
             )
@@ -1099,7 +1111,10 @@ class PollPostingService:
                     notice_message = await self._telegram_client.send_text(
                         chat_id=self._settings.telegram_target_chat_id,
                         message_thread_id=self._settings.telegram_target_thread_id,
-                        text=render_poll_notice(setup.first_lift_location),
+                        text=render_poll_notice(
+                            setup.first_lift_location,
+                            terms=self._payment_terms(),
+                        ),
                     )
                 availability_message = await self._telegram_client.send_text(
                     chat_id=self._settings.telegram_target_chat_id,

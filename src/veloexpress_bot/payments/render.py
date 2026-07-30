@@ -13,7 +13,10 @@ PAYMENTS_PARSE_MODE = "HTML"
 # Riders tap these in the group, so the labels cannot be personal: one shared
 # keyboard serves everyone and the bot answers each tap with a private toast.
 PAID_BUTTON = "💸 I paid"
-GUEST_BUTTON = "➕ Guest"
+# The plus and minus buttons move the seat count, which is how a rider pays for a
+# guest or for fewer laps than they booked. Undo is a different axis entirely: it
+# retracts the payment, so the two are not redundant.
+GUEST_BUTTON = "➕ Seat"
 FEWER_BUTTON = "➖ Seat"
 UNDO_BUTTON = "↩️ Undo"
 
@@ -32,6 +35,8 @@ class PaymentsBoardView:
     price_gel: int
     payments: tuple[RiderPayment, ...]
     booked_rider_count: int
+    deadline_time: str = "20:00"
+    link: str = ""
     cancelled: bool = False
 
 
@@ -55,8 +60,12 @@ def render_payments_board(view: PaymentsBoardView) -> PaymentsBoardDraft:
         header,
         "",
         f"Running: {', '.join(view.running_lift_times)}",
-        f"{view.price_gel} GEL per seat",
+        f"{view.price_gel} GEL per seat · pay by {view.deadline_time}",
     ]
+    if view.link:
+        lines.append(f"🔗 {view.link}")
+    lines.append("")
+    lines.append("➕/➖ for a guest or fewer laps than you booked.")
     if view.payments:
         lines.extend(("", "Paid:"))
         lines.extend(_payment_line(payment) for payment in view.payments)
