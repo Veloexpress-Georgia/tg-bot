@@ -5,7 +5,6 @@ from aiogram.methods import AnswerCallbackQuery
 from aiogram.types import CallbackQuery, ErrorEvent, Update
 
 from veloexpress_bot.bot.handlers import (
-    _menu_message_ids_for_cleanup,
     _should_cleanup_bot_pin_notice,
     _should_send_recreate_report,
     _split_callback,
@@ -113,13 +112,6 @@ def test_split_callback_keeps_colons_in_lift_time_value() -> None:
     assert _split_callback("plan:view:recreate") == ("view", "recreate")
     assert _split_callback("plan:post") == ("post", "")
     assert _split_callback(None) == ("", "")
-
-
-def test_menu_cleanup_includes_admin_command_message() -> None:
-    assert _menu_message_ids_for_cleanup(
-        command_message_id=10,
-        menu_message_id=11,
-    ) == (10, 11)
 
 
 def test_recreate_report_is_only_sent_when_votes_are_present() -> None:

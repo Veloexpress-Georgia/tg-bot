@@ -83,17 +83,20 @@ async def show_start_menu(
     if not is_admin(message.from_user.id if message.from_user else None, settings):
         await message.answer(f"{START_TEXT}\n\nAdmins only.")
         return
+
+    data = await state.get_data()
+    stale = tuple(int(item) for item in _string_items(data.get("menu_message_ids", [])))
     sent = await message.answer(
         await _start_status(poll_service, auto_scheduler),
         reply_markup=start_menu_keyboard(is_admin=True),
     )
-    await state.update_data(
-        menu_message_ids=list(
-            _menu_message_ids_for_cleanup(
-                command_message_id=message.message_id,
-                menu_message_id=sent.message_id,
-            )
-        )
+    await state.update_data(menu_message_ids=[sent.message_id])
+    # There is no Close button: exactly one card should be live, so /start drops the
+    # command echo and whatever card an earlier /start left behind. Posting first
+    # means the admin is never briefly left with nothing.
+    await poll_service.cleanup_setup_messages(
+        chat_id=message.chat.id,
+        message_ids=(message.message_id, *stale),
     )
 
 
@@ -157,34 +160,6 @@ async def open_extra_day(
     )
     await _edit_card(message, card.text, card.reply_markup)
     await callback.answer()
-
-
-@router.callback_query(F.data == "menu:cancel")
-async def cancel_start_menu(
-    callback: CallbackQuery,
-    state: FSMContext,
-    settings: Settings,
-    poll_service: PollPostingService,
-) -> None:
-    if not is_admin(callback.from_user.id, settings):
-        await callback.answer(ADMIN_ONLY_TEXT, show_alert=True)
-        return
-    message = _accessible_message(callback)
-    if message is None:
-        await callback.answer("Menu closed.")
-        return
-
-    data = await state.get_data()
-    menu_message_ids = tuple(int(item) for item in _string_items(data.get("menu_message_ids", [])))
-    if not menu_message_ids:
-        menu_message_ids = (message.message_id,)
-
-    await callback.answer("Menu closed.")
-    await poll_service.cleanup_setup_messages(
-        chat_id=message.chat.id,
-        message_ids=menu_message_ids,
-    )
-    await state.update_data(menu_message_ids=[])
 
 
 @router.callback_query(F.data == "menu:booking_monitor")
@@ -375,13 +350,6 @@ async def handle_weekend_plan_card(
         await _edit_card(message, card.text, card.reply_markup)
         await callback.answer()
         return
-    if action == "close":
-        await callback.answer("Plan closed.")
-        await poll_service.cleanup_setup_messages(
-            chat_id=message.chat.id,
-            message_ids=(message.message_id,),
-        )
-        return
     if action == "menu":
         await _show_menu(message, poll_service, auto_scheduler)
         await callback.answer()
@@ -515,13 +483,6 @@ async def handle_poll_schedule_card(
         await _edit_card(message, card.text, card.reply_markup)
         await callback.answer()
         return
-    if action == "close":
-        await callback.answer("Schedule closed.")
-        await poll_service.cleanup_setup_messages(
-            chat_id=message.chat.id,
-            message_ids=(message.message_id,),
-        )
-        return
     if action == "menu":
         await _show_menu(message, poll_service, auto_scheduler)
         await callback.answer()
@@ -569,14 +530,6 @@ async def handle_extra_day_card(
 
     action, value = _split_callback(callback.data)
 
-    if action == "close":
-        await state.clear()
-        await callback.answer("Extra day closed.")
-        await poll_service.cleanup_setup_messages(
-            chat_id=message.chat.id,
-            message_ids=(message.message_id,),
-        )
-        return
     if action == "menu":
         await state.clear()
         await _show_menu(message, poll_service, auto_scheduler)
@@ -965,14 +918,6 @@ def _should_cleanup_bot_pin_notice(
 
 def _should_send_recreate_report(report_text: str) -> bool:
     return "No tracked rider votes were found." not in report_text
-
-
-def _menu_message_ids_for_cleanup(
-    *,
-    command_message_id: int,
-    menu_message_id: int,
-) -> tuple[int, ...]:
-    return command_message_id, menu_message_id
 
 
 def _accessible_message(callback: CallbackQuery) -> Message | None:

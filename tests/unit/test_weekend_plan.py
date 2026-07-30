@@ -32,6 +32,30 @@ def button_map(markup) -> dict[str, str]:  # type: ignore[no-untyped-def]
     return {button.callback_data: button.text for row in markup.inline_keyboard for button in row}
 
 
+def test_no_card_offers_a_close_button() -> None:
+    """/start replaces its own card, so there is never a stale one to dismiss."""
+    cards = (
+        render_weekend_plan_card(plan_view()),
+        render_weekend_plan_card(plan_view(), view="first"),
+        render_weekend_plan_card(plan_view(days=_posted_days()), view="recreate"),
+        render_extra_day_card(
+            ExtraDayDraftState(selected_date=None, cancelled_lift_times=("15:30",)),
+            view="date",
+            today=date(2026, 7, 20),
+        ),
+    )
+
+    for card in cards:
+        assert "close" not in str(button_map(card.reply_markup))
+
+
+def _posted_days() -> tuple[DayPlanStatus, ...]:
+    return (
+        DayPlanStatus(service_date=WEEK, enabled=True, posted=True),
+        DayPlanStatus(service_date=date(2026, 7, 26), enabled=True, posted=True),
+    )
+
+
 def test_the_schedule_opens_from_the_weekend_card() -> None:
     """When polls open is part of planning a weekend, not a separate menu entry."""
     card = render_weekend_plan_card(plan_view(schedule_label="Fri 14:00"))

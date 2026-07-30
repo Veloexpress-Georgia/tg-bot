@@ -159,12 +159,7 @@ def _main_keyboard(view_state: WeekendPlanView) -> InlineKeyboardMarkup:
     if action_row:
         rows.append(action_row)
 
-    rows.append(
-        [
-            InlineKeyboardButton(text="⬅️ Menu", callback_data="plan:menu"),
-            InlineKeyboardButton(text="✖️ Close", callback_data="plan:close"),
-        ]
-    )
+    rows.append([InlineKeyboardButton(text="⬅️ Menu", callback_data="plan:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -290,12 +290,7 @@ def _main_keyboard(
         else:
             skip_text = f"⏭ Skip {_weekend_label(target_week)}"
         rows.append([InlineKeyboardButton(text=skip_text, callback_data="sched:skip")])
-    rows.append(
-        [
-            InlineKeyboardButton(text="⬅️ Weekend", callback_data="sched:plan"),
-            InlineKeyboardButton(text="✖️ Close", callback_data="sched:close"),
-        ]
-    )
+    rows.append([InlineKeyboardButton(text="⬅️ Weekend", callback_data="sched:plan")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

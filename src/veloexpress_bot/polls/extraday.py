@@ -84,12 +84,7 @@ def _date_picker_keyboard(
         for choice in date_choices(today)
     ]
     rows = [buttons[index : index + 3] for index in range(0, len(buttons), 3)]
-    rows.append(
-        [
-            InlineKeyboardButton(text="⬅️ Menu", callback_data="extra:menu"),
-            InlineKeyboardButton(text="✖️ Close", callback_data="extra:close"),
-        ]
-    )
+    rows.append([InlineKeyboardButton(text="⬅️ Menu", callback_data="extra:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -113,10 +108,7 @@ def _main_keyboard(
                 InlineKeyboardButton(text=f"⏹ Last · {last_time}", callback_data="extra:view:last"),
             ],
             [InlineKeyboardButton(text="🚀 Post polls", callback_data="extra:post")],
-            [
-                InlineKeyboardButton(text="⬅️ Menu", callback_data="extra:menu"),
-                InlineKeyboardButton(text="✖️ Close", callback_data="extra:close"),
-            ],
+            [InlineKeyboardButton(text="⬅️ Menu", callback_data="extra:menu")],
         ]
     )
 

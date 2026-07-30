@@ -23,8 +23,5 @@ def start_menu_keyboard(*, is_admin: bool) -> InlineKeyboardMarkup | None:
                     callback_data="menu:booking_monitor",
                 ),
             ],
-            [
-                InlineKeyboardButton(text="✖️ Close", callback_data="menu:cancel"),
-            ],
         ]
     )
