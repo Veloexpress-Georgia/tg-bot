@@ -70,13 +70,31 @@ def test_board_lists_payments_and_counts_the_rest() -> None:
     assert "Waiting on:" in draft.text
 
 
+def test_the_board_shows_what_is_still_due_after_a_re_vote() -> None:
+    """Paid and owed are two numbers. Re-voting moves the bill, not the payment."""
+    draft = render_payments_board(
+        _view(
+            payments=(
+                RiderPayment(label="@whekin", seats=2, amount_gel=30, due_gel=60),
+                RiderPayment(label="@anna", seats=2, amount_gel=30, due_gel=15),
+                RiderPayment(label="@stas", seats=1, amount_gel=15, due_gel=15),
+            ),
+        )
+    )
+
+    assert "✓ @whekin — 30 GEL · 2 seats · +30 due" in draft.text
+    assert "✓ @anna — 30 GEL · 2 seats · 15 back" in draft.text
+    # Settled riders stay a plain line; no arithmetic to read where none is owed.
+    assert "✓ @stas — 15 GEL" in draft.text
+
+
 def test_cash_is_named_on_the_board_and_transfers_are_not() -> None:
     """Cash is the line Misho will not find in his bank, so it is worth naming."""
     draft = render_payments_board(
         _view(
             payments=(
-                RiderPayment(label="@stas", seats=1, amount_gel=15, cash=True),
-                RiderPayment(label="Anna", seats=1, amount_gel=15),
+                RiderPayment(label="@stas", seats=1, amount_gel=15, due_gel=15, cash=True),
+                RiderPayment(label="Anna", seats=1, amount_gel=15, due_gel=15),
             ),
         )
     )
@@ -89,8 +107,6 @@ def test_a_cash_post_is_marked_so_misho_does_not_hunt_for_a_transfer() -> None:
     text = render_payment_post(
         label="@konstantin",
         service_date=SATURDAY,
-        lift_times=("10:00",),
-        seats=1,
         amount_gel=15,
         user_id=12,
         cash=True,
@@ -132,38 +148,38 @@ def test_a_cancelled_day_closes_the_board() -> None:
     assert draft.reply_markup is None
 
 
-def test_payment_post_tags_the_rider_with_amount_and_lifts() -> None:
+def test_payment_post_tags_the_rider_with_the_amount() -> None:
     text = render_payment_post(
         label="@stas",
         service_date=SATURDAY,
-        lift_times=("8:30", "10:00"),
-        seats=2,
         amount_gel=30,
         user_id=10,
     )
 
-    assert text == '💸 <a href="tg://user?id=10">@stas</a> — 30 GEL · Sat, 18 Jul · 8:30, 10:00'
+    # No lift names: payment covers the day, and riders may re-vote until the
+    # deadline, so a receipt listing lifts would go stale on the next slot change.
+    assert text == '💸 <a href="tg://user?id=10">@stas</a> — 30 GEL · Sat, 18 Jul'
 
 
-def test_payment_post_reports_guest_seats_beyond_the_rider_own_lifts() -> None:
+def test_payment_post_reports_declared_guests() -> None:
+    """Guests are declared, not inferred from the seat total: re-voting moves the
+    lift count, and inferring would silently turn a new lift into a guest."""
     text = render_payment_post(
         label="Anna",
         service_date=SATURDAY,
-        lift_times=("8:30",),
-        seats=3,
         amount_gel=45,
         user_id=11,
+        guests=2,
     )
 
-    assert text.endswith("8:30 · +2 guests")
+    assert text.endswith("+2 guests")
 
     single = render_payment_post(
         label="Anna",
         service_date=SATURDAY,
-        lift_times=("8:30",),
-        seats=2,
         amount_gel=30,
         user_id=11,
+        guests=1,
     )
     assert single.endswith("+1 guest")
 

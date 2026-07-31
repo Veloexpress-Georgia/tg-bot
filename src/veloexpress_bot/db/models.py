@@ -252,7 +252,12 @@ class PaymentClaim(Base):
     telegram_user_id: Mapped[int] = mapped_column(BigInteger)
     username: Mapped[str | None] = mapped_column(String(128))
     full_name: Mapped[str] = mapped_column(Text)
+    # What the rider has settled for. Not what they owe: re-voting before the
+    # deadline changes the bill, and conflating the two makes the bot lie about money.
     seats: Mapped[int] = mapped_column(Integer, default=1)
+    # Extra riders they bring. Votes cannot express these, so the rider declares them
+    # and the owed total is their booked lifts plus this.
+    guests: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # "cash" | "transfer" | NULL when the bot never learned how the money arrived.
     # Misho reconciles against his bank statement, so cash is the case worth naming.
     method: Mapped[str | None] = mapped_column(String(16))

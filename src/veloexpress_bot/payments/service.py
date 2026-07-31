@@ -35,10 +35,9 @@ from veloexpress_bot.polls.service import SessionFactory, TelegramPollClient, de
 logger = logging.getLogger(__name__)
 
 NOT_BOOKED_TEXT = "You are not booked for this day."
-ALREADY_CLAIMED_TEXT = "Already marked as paid — ↩️ Undo to start over."
+ALREADY_SETTLED_TEXT = "You are already settled up for this day."
 NOTHING_TO_UNDO_TEXT = "You have not marked a payment for this day."
-NOT_CLAIMED_YET_TEXT = "Tap 💸 I paid first."
-MIN_SEATS_TEXT = "At least one seat."
+NOT_CLAIMED_YET_TEXT = "Tap 💸 I paid or 💵 Cash first."
 BOARD_GONE_TEXT = "This payments board is no longer active."
 PAYMENTS_DISABLED_TEXT = "Payments are not set up for this chat."
 
@@ -121,10 +120,14 @@ class PaymentsService:
                 service_date=service_date,
                 telegram_user_id=telegram_user_id,
             )
-            if claim is not None:
-                return ALREADY_CLAIMED_TEXT
-            session.add(
-                PaymentClaim(
+            guests = claim.guests if claim is not None else 0
+            owed = len(lift_times) + guests
+            if claim is not None and claim.seats >= owed:
+                return ALREADY_SETTLED_TEXT
+            # The button means "I have paid everything I owe right now", so tapping it
+            # again after re-voting or adding a guest settles the difference.
+            if claim is None:
+                claim = PaymentClaim(
                     environment=self._settings.app_env,
                     chat_id=self._require_chat_id(),
                     thread_id=self._settings.telegram_target_thread_id,
@@ -132,10 +135,14 @@ class PaymentsService:
                     telegram_user_id=telegram_user_id,
                     username=username,
                     full_name=full_name,
-                    seats=len(lift_times),
-                    method=method,
                 )
-            )
+                session.add(claim)
+            claim.username = username
+            claim.full_name = full_name
+            claim.seats = owed
+            claim.guests = guests
+            claim.method = method
+            claim.updated_at = datetime.now(UTC)
             await session.commit()
 
         await self._announce_claim(day, telegram_user_id)
@@ -143,15 +150,11 @@ class PaymentsService:
         # Name the lifts: the amount only makes sense once you can see that lifts
         # still short of the minimum are not charged for.
         how = " in cash" if method == CASH_METHOD else ""
-        return f"Thanks! {', '.join(lift_times)} · {self._amount(len(lift_times))} GEL{how}."
+        guest_note = f" +{guests} guest(s)" if guests else ""
+        return f"Thanks! {', '.join(lift_times)}{guest_note} · {self._amount(owed)} GEL{how}."
 
-    async def adjust_seats(
-        self,
-        *,
-        service_date: date,
-        telegram_user_id: int,
-        delta: int,
-    ) -> str:
+    async def add_guest(self, *, service_date: date, telegram_user_id: int) -> str:
+        """Declare one more seat. It raises the bill rather than claiming it is paid."""
         if not self.enabled:
             return PAYMENTS_DISABLED_TEXT
         day = await self._day(service_date)
@@ -166,16 +169,15 @@ class PaymentsService:
             )
             if claim is None:
                 return NOT_CLAIMED_YET_TEXT
-            seats = claim.seats + delta
-            if seats < 1:
-                return MIN_SEATS_TEXT
-            claim.seats = seats
+            claim.guests += 1
+            guests = claim.guests
             claim.updated_at = datetime.now(UTC)
             await session.commit()
 
         await self._announce_claim(day, telegram_user_id)
         await self._refresh_board(day)
-        return f"{seats} seats · {self._amount(seats)} GEL."
+        due = self._amount(len(day.lift_times_by_user.get(telegram_user_id, ())) + guests)
+        return f"+{guests} guest(s) · {due} GEL total. Tap 💸 or 💵 once you have paid it."
 
     async def undo(self, *, service_date: date, telegram_user_id: int) -> str:
         if not self.enabled:
@@ -418,6 +420,7 @@ class PaymentsService:
             if claim is None:
                 return
             seats = claim.seats
+            guests = claim.guests
             label = _rider_label(claim.username, claim.full_name)
             cash = claim.method == CASH_METHOD
             posted_message_id = claim.posted_message_id
@@ -433,8 +436,7 @@ class PaymentsService:
         text = render_payment_post(
             label=label,
             service_date=day.service_date,
-            lift_times=day.lift_times_by_user.get(telegram_user_id, ()),
-            seats=seats,
+            guests=guests,
             amount_gel=self._amount(seats),
             user_id=telegram_user_id,
             cash=cash,
@@ -534,6 +536,7 @@ class PaymentsService:
                     label=_rider_label(claim.username, claim.full_name),
                     seats=claim.seats,
                     amount_gel=self._amount(claim.seats),
+                    due_gel=self._amount(self._owed_seats(day, claim)),
                     cash=claim.method == CASH_METHOD,
                 )
                 for claim in claims
@@ -549,6 +552,13 @@ class PaymentsService:
             deadline_time=self._settings.booking_deadline_time,
             cancelled=day.cancelled,
         )
+
+    def _owed_seats(self, day: DayBookings, claim: PaymentClaim) -> int:
+        """What the rider owes right now: the lifts they hold, plus their guests.
+
+        Derived rather than stored, because re-voting is allowed until the deadline.
+        """
+        return len(day.lift_times_by_user.get(claim.telegram_user_id, ())) + claim.guests
 
     async def _day(self, service_date: date) -> DayBookings | None:
         days = await self._active_days(today=service_date)

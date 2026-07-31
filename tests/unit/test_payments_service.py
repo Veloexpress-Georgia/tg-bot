@@ -13,7 +13,7 @@ from veloexpress_bot.config import Settings
 from veloexpress_bot.db.base import Base
 from veloexpress_bot.db.models import PaymentClaim, PaymentsBoard
 from veloexpress_bot.payments.service import (
-    ALREADY_CLAIMED_TEXT,
+    ALREADY_SETTLED_TEXT,
     CASH_METHOD,
     NOT_BOOKED_TEXT,
     NOT_CLAIMED_YET_TEXT,
@@ -238,7 +238,7 @@ async def test_the_board_appears_once_a_lift_runs_and_is_then_edited_in_place(
     assert stored.service_date == saturday
 
 
-async def test_a_claim_posts_the_rider_line_with_amount_and_lifts(db: SharedDatabase) -> None:
+async def test_a_claim_posts_the_rider_line_with_the_amount(db: SharedDatabase) -> None:
     poll_service, payments, client, poll_id, saturday = await _setup(db)
     await _fill(poll_service, poll_id, 0, riders=5)
     await _fill(poll_service, poll_id, 1, riders=5, first_user_id=200)
@@ -253,10 +253,12 @@ async def test_a_claim_posts_the_rider_line_with_amount_and_lifts(db: SharedData
         full_name="Stas",
     )
 
-    assert "30 GEL" in notice
+    # The toast names the lifts so the amount explains itself; the posted receipt
+    # does not, because re-voting would make a lift list stale.
+    assert "8:30, 10:00 · 30 GEL" in notice
     posted = client.payments_sends()[-1]
     assert "30 GEL" in posted.text
-    assert "8:30, 10:00" in posted.text
+    assert "8:30" not in posted.text
     assert "tg://user?id=100" in posted.text
 
     async with db.session() as session:
@@ -298,7 +300,7 @@ async def test_claiming_twice_says_so_instead_of_posting_again(db: SharedDatabas
         service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
     )
 
-    assert notice == ALREADY_CLAIMED_TEXT
+    assert notice == ALREADY_SETTLED_TEXT
     assert len(client.payments_sends()) == after_first
 
 
@@ -340,6 +342,59 @@ async def test_the_running_notice_links_to_that_days_board(db: SharedDatabase) -
     # A private supergroup link drops the -100 prefix: -100123 becomes 123.
     assert f'href="https://t.me/c/123/{PAYMENTS_THREAD}/{board.message_id}"' in running.text
     assert "Pay here" in running.text
+
+
+async def test_re_voting_after_paying_moves_the_bill_not_the_payment(
+    db: SharedDatabase,
+) -> None:
+    """Re-voting is free until the deadline, so what a rider owes changes after they
+    pay. Restating the paid figure would be a lie about money; the gap is shown."""
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    # 8:30 and 10:00 both run, so the rider holds two seats when they settle.
+    await _fill(poll_service, poll_id, 0, 1, riders=5)
+    await payments.sync_boards()
+    board = client.payments_sends()[-1]
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
+
+    # Now they drop 10:00 and take 11:45 and 13:30 instead — three lifts, not two.
+    await _vote(poll_service, poll_id, 100, 0, 2, 3)
+    for user_id in range(200, 204):
+        await _vote(poll_service, poll_id, user_id, 2, 3)
+    await payments.sync_boards()
+
+    board_edits = [text for message_id, text in client.edits if message_id == board.message_id]
+    assert "✓ @stas — 30 GEL · 2 seats · +15 due" in board_edits[-1]
+
+    # Settling again clears the gap without a second receipt in the topic.
+    sends_before = len(client.payments_sends())
+    notice = await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="rider100", full_name="R100"
+    )
+    assert "45 GEL" in notice
+    assert len(client.payments_sends()) == sends_before
+    await payments.sync_boards()
+    board_edits = [text for message_id, text in client.edits if message_id == board.message_id]
+    assert "45 GEL · 3 seats" in board_edits[-1]
+    assert "due" not in board_edits[-1]
+
+
+async def test_paying_twice_without_changes_says_you_are_already_settled(
+    db: SharedDatabase,
+) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
+
+    notice = await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
+
+    assert notice == ALREADY_SETTLED_TEXT
 
 
 async def test_a_cash_tap_records_the_method_so_misho_can_reconcile(
@@ -465,34 +520,23 @@ async def test_a_guest_seat_edits_the_posted_line_instead_of_adding_one(
     posted = client.payments_sends()[-1]
     sends_before = len(client.payments_sends())
 
-    notice = await payments.adjust_seats(service_date=saturday, telegram_user_id=100, delta=1)
+    notice = await payments.add_guest(service_date=saturday, telegram_user_id=100)
 
-    assert "30 GEL" in notice
+    # A guest raises the bill; it does not claim the extra seat is already paid.
+    assert "30 GEL total" in notice
     assert len(client.payments_sends()) == sends_before
     edits = [text for message_id, text in client.edits if message_id == posted.message_id]
-    assert "30 GEL" in edits[-1]
     assert "+1 guest" in edits[-1]
 
 
-async def test_seats_never_drop_below_one(db: SharedDatabase) -> None:
-    poll_service, payments, _, poll_id, saturday = await _setup(db)
-    await _fill(poll_service, poll_id, 0, riders=5)
-    await payments.sync_boards()
-    await payments.claim(
-        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
-    )
-
-    assert "At least one seat." in await payments.adjust_seats(
-        service_date=saturday, telegram_user_id=100, delta=-1
-    )
-
-
-async def test_adjusting_before_claiming_asks_for_the_claim_first(db: SharedDatabase) -> None:
+async def test_adding_a_guest_before_paying_asks_for_the_payment_first(
+    db: SharedDatabase,
+) -> None:
     poll_service, payments, _, poll_id, saturday = await _setup(db)
     await _fill(poll_service, poll_id, 0, riders=5)
     await payments.sync_boards()
 
-    notice = await payments.adjust_seats(service_date=saturday, telegram_user_id=100, delta=1)
+    notice = await payments.add_guest(service_date=saturday, telegram_user_id=100)
 
     assert notice == NOT_CLAIMED_YET_TEXT
 
@@ -604,7 +648,10 @@ async def test_cancelling_a_day_reports_every_payment_as_a_refund(db: SharedData
     await payments.claim(
         service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
     )
-    await payments.adjust_seats(service_date=saturday, telegram_user_id=100, delta=1)
+    await payments.add_guest(service_date=saturday, telegram_user_id=100)
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
     await payments.claim(
         service_date=saturday, telegram_user_id=101, username="anna", full_name="Anna"
     )

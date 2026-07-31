@@ -117,6 +117,10 @@ Cash has its own `💵 Cash` button beside `💸 I paid`. Telling riders to pres
 
 Some riders pay cash or message Misho directly and never touch the bot at all. Tapping a rider in the monitor's lift detail records their payment; tapping again clears it. That admin mark posts nothing to the payments topic — whoever took the cash already knows — and the board shows it exactly like a rider's own claim, because who recorded a payment is bookkeeping the group does not need to read. There is no separate "verify a claim" step: with no enforcement behind it, a tap per rider would be work without a consequence.
 
+Paid and owed are two different numbers, because re-voting is free until the deadline. A claim stores what the rider has settled for; what they owe is derived from the lifts they currently hold plus the guests they declared. When the two differ the board says so — `+15 due` or `15 back` — rather than restating the paid figure, which would make the bot lie about money. Tapping 💸 or 💵 again settles the difference; tapping with nothing outstanding just says you are already settled. ➕ Guest raises the bill rather than claiming the extra seat is paid.
+
+The receipt the bot posts in the payments topic names no lifts, only the day and the amount. Payment covers the day, and a receipt listing lifts would go stale the moment the rider changed slots; the live breakdown belongs on the board.
+
 Riders can hold a booked seat without paying for it, and the bot does not chase them; the gap is visible on the board and in the admin monitor. Telegram poll votes cannot be withdrawn by a bot, so a rider who pays for fewer seats than they booked still occupies those slots — the availability count and the paid count can legitimately disagree.
 
 The bot must be able to see ordinary messages in the payments topic for the "already wrote it themselves" check. Group admins receive all messages, which the bot is; if the check never triggers, disable privacy mode for the bot in BotFather.

@@ -689,10 +689,9 @@ async def handle_payment_button(
             method=CASH_METHOD if action == "cash" else TRANSFER_METHOD,
         )
     elif action == "guest":
-        notice = await payments_service.adjust_seats(
+        notice = await payments_service.add_guest(
             service_date=service_date,
             telegram_user_id=user.id,
-            delta=1,
         )
     elif action == "undo":
         notice = await payments_service.undo(

@@ -31,7 +31,13 @@ class RiderPayment:
     label: str
     seats: int
     amount_gel: int
+    due_gel: int = 0
     cash: bool = False
+
+    @property
+    def gap_gel(self) -> int:
+        """Positive when they owe more, negative when they have overpaid."""
+        return self.due_gel - self.amount_gel
 
 
 @dataclass(frozen=True)
@@ -140,19 +146,20 @@ def render_payment_post(
     *,
     label: str,
     service_date: date,
-    lift_times: tuple[str, ...],
-    seats: int,
     amount_gel: int,
     user_id: int,
+    guests: int = 0,
     cash: bool = False,
 ) -> str:
-    """The line the bot posts on a rider's behalf, tagged so Misho can see who."""
+    """The line the bot posts on a rider's behalf, tagged so Misho can see who.
+
+    Deliberately names no lifts. Payment covers the day, and riders may re-vote
+    until the deadline, so a receipt listing lifts would go stale the moment they
+    changed slots. The live breakdown belongs on the board.
+    """
     mention = f'<a href="tg://user?id={user_id}">{html.escape(label)}</a>'
     marker = "💵" if cash else "💸"
     parts = [f"{marker} {mention} — {amount_gel} GEL · {_long_day_label(service_date)}"]
-    if lift_times:
-        parts.append(", ".join(lift_times))
-    guests = seats - len(lift_times)
     if guests > 0:
         parts.append(f"+{guests} guest" if guests == 1 else f"+{guests} guests")
     if cash:
@@ -193,7 +200,14 @@ def _payment_line(payment: RiderPayment) -> str:
     # the one exception worth naming: it is the line Misho will not find in his bank.
     seats = f" · {payment.seats} seats" if payment.seats > 1 else ""
     cash = " · cash" if payment.cash else ""
-    return f"✓ {payment.label} — {payment.amount_gel} GEL{seats}{cash}"
+    # Re-voting is free until the deadline, so what a rider owes moves after they
+    # pay. Showing the gap keeps the paid figure honest instead of restating it.
+    gap = ""
+    if payment.gap_gel > 0:
+        gap = f" · +{payment.gap_gel} due"
+    elif payment.gap_gel < 0:
+        gap = f" · {-payment.gap_gel} back"
+    return f"✓ {payment.label} — {payment.amount_gel} GEL{seats}{cash}{gap}"
 
 
 def _long_day_label(service_date: date) -> str:
