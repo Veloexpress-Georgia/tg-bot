@@ -48,11 +48,19 @@ class PaymentTerms:
             "nothing to pay before that.",
             f"Book, change or cancel free until {self.deadline_time} the day before.",
         )
-        return (*lines, f"🔗 Pay: {self.link}") if self.link else lines
+        return (*lines, self._link_line("Where to pay")) if self.link else lines
 
     def pay_now(self) -> tuple[str, ...]:
         lines = (
             f"💳 Time to pay: {self.price_gel} GEL per seat, "
             f"by {self.deadline_time} the day before the lift.",
         )
-        return (*lines, f"🔗 {self.link}") if self.link else lines
+        return (*lines, self._link_line("Pay here")) if self.link else lines
+
+    def _link_line(self, label: str) -> str:
+        # An anchor, not a bare URL: Telegram renders the raw link as noisy text.
+        return f'🔗 <a href="{self.link}">{label}</a>'
+
+
+# Every message carrying PaymentTerms must be sent as HTML for the link to render.
+PAYMENT_TERMS_PARSE_MODE = "HTML"

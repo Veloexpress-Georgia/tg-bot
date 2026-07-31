@@ -13,11 +13,12 @@ PAYMENTS_PARSE_MODE = "HTML"
 # Riders tap these in the group, so the labels cannot be personal: one shared
 # keyboard serves everyone and the bot answers each tap with a private toast.
 PAID_BUTTON = "💸 I paid"
-# The plus and minus buttons move the seat count, which is how a rider pays for a
-# guest or for fewer laps than they booked. Undo is a different axis entirely: it
-# retracts the payment, so the two are not redundant.
-GUEST_BUTTON = "➕ Seat"
-FEWER_BUTTON = "➖ Seat"
+# Guests have no vote of their own, so they need a button. There is deliberately no
+# "one fewer seat": paying for fewer laps than you booked leaves a seat you still
+# occupy, which is the phantom booking the group keeps tripping over. Ride less and
+# the honest fix is to change your poll answer, which frees the seat too. Undo
+# retracts the whole payment when something needs starting over.
+GUEST_BUTTON = "➕ Guest"
 UNDO_BUTTON = "↩️ Undo"
 
 
@@ -115,7 +116,7 @@ def render_payments_board(view: PaymentsBoardView) -> PaymentsBoardDraft:
         f"{view.price_gel} GEL per seat · pay by {view.deadline_time}",
     ]
     lines.append("")
-    lines.append("➕/➖ for a guest or fewer laps than you booked.")
+    lines.append("Bringing someone? ➕ Guest adds a seat.")
     if view.payments:
         lines.extend(("", "Paid:"))
         lines.extend(_payment_line(payment) for payment in view.payments)
@@ -166,10 +167,7 @@ def _keyboard(service_date: date) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text=PAID_BUTTON, callback_data=f"pay:paid:{encoded}"),
                 InlineKeyboardButton(text=GUEST_BUTTON, callback_data=f"pay:guest:{encoded}"),
             ],
-            [
-                InlineKeyboardButton(text=FEWER_BUTTON, callback_data=f"pay:fewer:{encoded}"),
-                InlineKeyboardButton(text=UNDO_BUTTON, callback_data=f"pay:undo:{encoded}"),
-            ],
+            [InlineKeyboardButton(text=UNDO_BUTTON, callback_data=f"pay:undo:{encoded}")],
         ]
     )
 

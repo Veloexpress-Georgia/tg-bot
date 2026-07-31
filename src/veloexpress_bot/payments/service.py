@@ -35,7 +35,7 @@ from veloexpress_bot.polls.service import SessionFactory, TelegramPollClient, de
 logger = logging.getLogger(__name__)
 
 NOT_BOOKED_TEXT = "You are not booked for this day."
-ALREADY_CLAIMED_TEXT = "Already marked as paid — use ➕/➖ to change seats."
+ALREADY_CLAIMED_TEXT = "Already marked as paid — ↩️ Undo to start over."
 NOTHING_TO_UNDO_TEXT = "You have not marked a payment for this day."
 NOT_CLAIMED_YET_TEXT = "Tap 💸 I paid first."
 MIN_SEATS_TEXT = "At least one seat."
@@ -135,7 +135,9 @@ class PaymentsService:
 
         await self._announce_claim(day, telegram_user_id)
         await self._refresh_board(day)
-        return f"Thanks! {self._amount(len(lift_times))} GEL · {len(lift_times)} seat(s)."
+        # Name the lifts: the amount only makes sense once you can see that lifts
+        # still short of the minimum are not charged for.
+        return f"Thanks! {', '.join(lift_times)} · {self._amount(len(lift_times))} GEL."
 
     async def adjust_seats(
         self,
@@ -167,7 +169,7 @@ class PaymentsService:
 
         await self._announce_claim(day, telegram_user_id)
         await self._refresh_board(day)
-        return f"{seats} seat(s) · {self._amount(seats)} GEL."
+        return f"{seats} seats · {self._amount(seats)} GEL."
 
     async def undo(self, *, service_date: date, telegram_user_id: int) -> str:
         if not self.enabled:

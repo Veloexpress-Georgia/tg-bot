@@ -322,6 +322,25 @@ async def test_the_bot_stays_quiet_when_the_rider_already_wrote_in_the_topic(
     assert len(client.payments_sends()) == before
 
 
+async def test_the_running_notice_links_to_that_days_board(db: SharedDatabase) -> None:
+    """The board is the thing worth linking to, so the link must point at the message.
+
+    Boards are synced before signals on each tick for exactly this reason: on the
+    tick a lift crosses the minimum, the board has to exist first.
+    """
+    poll_service, payments, client, poll_id, _ = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+
+    await payments.sync_boards()
+    board = client.payments_sends()[-1]
+    await poll_service.evaluate_lift_signals()
+
+    running = next(record for record in client.sent if "is running" in record.text)
+    # A private supergroup link drops the -100 prefix: -100123 becomes 123.
+    assert f'href="https://t.me/c/123/{PAYMENTS_THREAD}/{board.message_id}"' in running.text
+    assert "Pay here" in running.text
+
+
 async def test_writing_in_the_payments_topic_marks_the_rider_paid(db: SharedDatabase) -> None:
     """The group convention is that you post there once you have paid.
 

@@ -95,20 +95,22 @@ class PollAutoScheduler:
         if self._settings.telegram_target_chat_id is None:
             return None
         now_local = (now or datetime.now(UTC)).astimezone(self._zone)
+        if self._payments_service is not None:
+            # Boards first: the "lift is running" notice links to that day's board,
+            # and on the tick a lift crosses the minimum the board is created here.
+            # Synced from current bookings rather than from events, so a restart
+            # mid-weekend just catches up on the next tick.
+            try:
+                await self._payments_service.sync_boards(now=now_local)
+            except Exception:
+                logger.exception("payments_board_sync_failed")
+
         # Threshold and departure notices are independent of the posting
         # schedule: they must run even when auto-posting was never configured.
         try:
             await self._poll_service.evaluate_lift_signals(now=now_local)
         except Exception:
             logger.exception("lift_signal_evaluation_failed")
-
-        if self._payments_service is not None:
-            # Boards are synced from current bookings rather than from the events
-            # above, so a restart mid-weekend just catches up on the next tick.
-            try:
-                await self._payments_service.sync_boards(now=now_local)
-            except Exception:
-                logger.exception("payments_board_sync_failed")
 
         row_data = await self._load_row_data()
         if row_data is None:

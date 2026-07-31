@@ -34,19 +34,20 @@ def _buttons(markup) -> dict[str, str]:  # type: ignore[no-untyped-def]
     return {button.callback_data: button.text for row in markup.inline_keyboard for button in row}
 
 
-def test_board_lists_running_lifts_price_and_the_four_taps() -> None:
+def test_board_lists_running_lifts_price_and_the_taps() -> None:
     draft = render_payments_board(_view(outstanding=_owing(6)))
 
     assert "💸 Payments · Sat, 18 Jul" in draft.text
     assert "Running: 8:30, 10:00" in draft.text
     assert "15 GEL per seat · pay by 20:00" in draft.text
-    assert "➕/➖ for a guest or fewer laps than you booked." in draft.text
+    assert "Bringing someone? ➕ Guest adds a seat." in draft.text
     assert "Waiting on:" in draft.text
     assert draft.reply_markup is not None
+    # No "one fewer seat": underpaying while still holding the seat is the phantom
+    # booking the group keeps tripping over. Change your poll answer instead.
     assert _buttons(draft.reply_markup) == {
         "pay:paid:20260718": "💸 I paid",
-        "pay:guest:20260718": "➕ Seat",
-        "pay:fewer:20260718": "➖ Seat",
+        "pay:guest:20260718": "➕ Guest",
         "pay:undo:20260718": "↩️ Undo",
     }
 

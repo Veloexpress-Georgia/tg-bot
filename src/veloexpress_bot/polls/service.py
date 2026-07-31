@@ -30,6 +30,7 @@ from veloexpress_bot.db.models import (
     LiftSignalState,
     ManualBookingCount,
     PaymentClaim,
+    PaymentsBoard,
     PollBatch,
     PollMessage,
     PollOptionSnapshot,
@@ -38,10 +39,11 @@ from veloexpress_bot.db.models import (
     PollVoteEvent,
     ServiceDayNotice,
 )
-from veloexpress_bot.deeplinks import topic_link
+from veloexpress_bot.deeplinks import message_link, topic_link
 from veloexpress_bot.polls.defaults import (
     DEFAULT_CANCELLED_LIFT_TIMES,
     DEFAULT_LIFTS,
+    PAYMENT_TERMS_PARSE_MODE,
     PaymentTerms,
     StartLocation,
 )
@@ -210,16 +212,38 @@ class PollPostingService:
         self._availability_locks: dict[str, Lock] = {}
         self._zone = ZoneInfo(settings.schedule_timezone)
 
-    def _payment_terms(self) -> PaymentTerms:
+    async def _payment_terms(self, *, service_date: date | None = None) -> PaymentTerms:
         return PaymentTerms(
             price_gel=self._settings.payment_price_gel,
             deadline_time=self._settings.booking_deadline_time,
-            link=topic_link(
-                chat_id=self._settings.telegram_target_chat_id or 0,
-                thread_id=self._settings.telegram_payments_thread_id,
-            )
-            or "",
+            link=await self._payments_link(service_date),
         )
+
+    async def _payments_link(self, service_date: date | None) -> str:
+        """The day's payments board when it exists, else the payments topic.
+
+        At poll-creation time no lift is running yet, so there is no board to point
+        at and the topic is the best the bot can offer.
+        """
+        chat_id = self._settings.telegram_target_chat_id
+        thread_id = self._settings.telegram_payments_thread_id
+        if chat_id is None or thread_id is None:
+            return ""
+        board_message_id = None
+        if service_date is not None:
+            async with self._session_factory() as session:
+                board_message_id = await session.scalar(
+                    select(PaymentsBoard.telegram_message_id)
+                    .where(PaymentsBoard.environment == self._settings.app_env)
+                    .where(PaymentsBoard.chat_id == chat_id)
+                    .where(PaymentsBoard.service_date == service_date)
+                )
+        if board_message_id is not None:
+            return (
+                message_link(chat_id=chat_id, thread_id=thread_id, message_id=board_message_id)
+                or ""
+            )
+        return topic_link(chat_id=chat_id, thread_id=thread_id) or ""
 
     def _require_target_chat_id(self) -> int:
         chat_id = self._settings.telegram_target_chat_id
@@ -898,7 +922,7 @@ class PollPostingService:
                 render_lift_signal_notice(
                     kind,
                     tuple(kind_events),
-                    terms=self._payment_terms(),
+                    terms=await self._payment_terms(service_date=_shared_date(kind_events)),
                 ),
                 mentions,
                 log_label="lift_signal_notice_failed",
@@ -1122,8 +1146,9 @@ class PollPostingService:
                         message_thread_id=self._settings.telegram_target_thread_id,
                         text=render_poll_notice(
                             setup.first_lift_location,
-                            terms=self._payment_terms(),
+                            terms=await self._payment_terms(),
                         ),
+                        parse_mode=PAYMENT_TERMS_PARSE_MODE,
                     )
                 availability_message = await self._telegram_client.send_text(
                     chat_id=self._settings.telegram_target_chat_id,
@@ -1503,7 +1528,11 @@ class PollPostingService:
         return await self._cleanup_recreated_batches(
             old_batch_ids=result.old_batch_ids,
             replacement_by_date=result.replacement_by_date,
-            replaced_dates=result.replaced_dates,
+            # Recreate posts a fresh route/payment notice, so the old one is a
+            # duplicate. Keep it only if no replacement was posted.
+            replacement_has_notice=any(
+                item.notice_message_id is not None for item in result.created
+            ),
         )
 
     async def render_vote_report(self, batch_ids: tuple[int, ...]) -> str:
@@ -2223,14 +2252,14 @@ class PollPostingService:
         *,
         old_batch_ids: tuple[int, ...],
         replacement_by_date: dict[date, int],
-        replaced_dates: tuple[date, ...],
+        replacement_has_notice: bool,
     ) -> CleanupResult:
         if self._settings.telegram_target_chat_id is None:
             return CleanupResult(deleted_count=0, failed_count=0)
 
         deleted_count = 0
         failed_count = 0
-        delete_notice = _replaces_full_weekend(replaced_dates)
+        delete_notice = replacement_has_notice
 
         async with self._session_factory() as session:
             batches = (
@@ -2336,6 +2365,12 @@ def _service_week_start(service_date: date) -> date:
 
 def _service_day_label(service_date: date) -> str:
     return f"{service_date:%a}, {service_date.day} {service_date:%b}"
+
+
+def _shared_date(events: list[LiftEvent]) -> date | None:
+    """The one date these events cover, or None when they span a weekend."""
+    dates = {event.service_date for event in events}
+    return next(iter(dates)) if len(dates) == 1 else None
 
 
 def _day_signals(day: BookingMonitorDay) -> tuple[LiftSignal, ...]:
@@ -2534,8 +2569,3 @@ def _options_by_poll_id(
 
 def _rider_label(vote: PollVote) -> str:
     return f"@{vote.username}" if vote.username else vote.full_name
-
-
-def _replaces_full_weekend(replaced_dates: tuple[date, ...]) -> bool:
-    weekdays = {item.weekday() for item in replaced_dates}
-    return {5, 6} <= weekdays

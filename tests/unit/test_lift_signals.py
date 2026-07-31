@@ -179,7 +179,7 @@ def test_notices_read_naturally_for_one_lift_and_for_many() -> None:
         "✅ 8:30 · Sat, 18 Jul is running — 5 riders booked.",
         "",
         "💳 Time to pay: 15 GEL per seat, by 20:00 the day before the lift.",
-        "🔗 https://pay.example",
+        '🔗 <a href="https://pay.example">Pay here</a>',
     ]
 
     batched = render_lift_signal_notice(

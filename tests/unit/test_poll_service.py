@@ -1511,9 +1511,10 @@ async def test_recreate_rolls_back_created_replacements_after_partial_failure(
 
 
 @pytest.mark.asyncio
-async def test_recreate_reports_votes_supersedes_old_and_preserves_single_day_notice(
+async def test_recreate_replaces_the_notice_instead_of_leaving_a_duplicate(
     db: SharedDatabase,
 ) -> None:
+    """Recreate always posts a fresh notice, so keeping the old one duplicated it."""
     client = FakeTelegramClient()
     service = PollPostingService(
         settings=settings(),
@@ -1537,8 +1538,8 @@ async def test_recreate_reports_votes_supersedes_old_and_preserves_single_day_no
 
     cleanup = await service.cleanup_recreated_polls(result)
 
-    assert cleanup.deleted_count == 2
-    assert client.deleted == [43, 44]
+    assert cleanup.deleted_count == 3
+    assert client.deleted == [42, 43, 44]
     assert client.unpinned == [44]
     assert client.operations.index(("unpin", 44)) < client.operations.index(("delete", 44))
 
@@ -1551,7 +1552,7 @@ async def test_recreate_reports_votes_supersedes_old_and_preserves_single_day_no
     assert [batch.status for batch in batches] == ["recreated", "posted"]
     assert batches[0].superseded_by_batch_id == batches[1].id
     assert [(message.telegram_message_id, message.cleanup_status) for message in messages[:2]] == [
-        (42, "preserved"),
+        (42, "deleted"),
         (43, "deleted"),
     ]
 

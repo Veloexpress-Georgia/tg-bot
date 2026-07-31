@@ -686,12 +686,6 @@ async def handle_payment_button(
             telegram_user_id=user.id,
             delta=1,
         )
-    elif action == "fewer":
-        notice = await payments_service.adjust_seats(
-            service_date=service_date,
-            telegram_user_id=user.id,
-            delta=-1,
-        )
     elif action == "undo":
         notice = await payments_service.undo(
             service_date=service_date,
