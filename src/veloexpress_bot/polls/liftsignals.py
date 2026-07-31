@@ -279,9 +279,12 @@ def _confirmed_notice(events: list[LiftEvent], *, terms: PaymentTerms) -> str:
                 *(f"{_lift_label(event)} — {event.seats} riders" for event in events),
             )
         )
-    # Crossing the minimum is exactly the moment payment becomes due, so the rule
-    # travels with the news instead of living only in the pinned poll notice.
-    return "\n".join((headline, "", *terms.pay_now()))
+    # One line, not the whole rulebook: the rules live in the pinned notice and the
+    # amount lives on the board this links to. Three lines of money talk per confirmed
+    # lift read as spam in the lift topic, which is what admins said.
+    if terms.link:
+        return f"{headline} {terms.pay_link('💸 Pay')}"
+    return headline
 
 
 def _undershoot_notice(events: list[LiftEvent]) -> str:

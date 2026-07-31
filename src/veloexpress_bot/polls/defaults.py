@@ -60,6 +60,9 @@ class PaymentTerms:
         )
         return (*lines, self._link_line("Pay here")) if self.link else lines
 
+    def pay_link(self, label: str) -> str:
+        return f'<a href="{self.link}">{label}</a>'
+
     def _link_line(self, label: str) -> str:
         # An anchor, not a bare URL: Telegram renders the raw link as noisy text.
         return f'🔗 <a href="{self.link}">{label}</a>'

@@ -38,6 +38,7 @@ from veloexpress_bot.payments.render import (
     render_payments_board,
 )
 from veloexpress_bot.polls.defaults import DEFAULT_LIFTS, MINIMUM_RIDERS
+from veloexpress_bot.polls.seating import SeatCandidate, allocate_seats
 from veloexpress_bot.polls.service import SessionFactory, TelegramPollClient, decode_option_ids
 
 logger = logging.getLogger(__name__)
@@ -611,6 +612,12 @@ class PaymentsService:
                 )
             )
             await session.commit()
+        # The board is the payments menu, so it belongs at the top of the topic
+        # rather than wherever the day's chatter pushed it.
+        await self._telegram_client.pin_message(
+            chat_id=self._require_chat_id(),
+            message_id=sent.message_id,
+        )
         logger.info(
             "payments_board_posted service_date=%s message_id=%s",
             day.service_date.isoformat(),
@@ -772,15 +779,20 @@ class PaymentsService:
                 capacity = capacity_by_time.get(lift_time, 10)
                 day.seats_by_lift[lift_time] = seats
                 day.capacity_by_lift[lift_time] = capacity
-                # Manual bookings and guests hold their seats outright: an admin took
-                # them personally and a guest belongs to a rider who already declared
-                # them. Telegram voters fill the rest in booking order, which is the
-                # order the poll itself shows.
                 day.seat_holders_by_lift[lift_time] = tuple(
-                    vote.telegram_user_id
-                    for vote in sorted(voters, key=lambda item: _as_utc(item.updated_at))[
-                        : max(capacity - manual_total - guest_total, 0)
-                    ]
+                    candidate.telegram_user_id
+                    for candidate in allocate_seats(
+                        (
+                            SeatCandidate(
+                                telegram_user_id=vote.telegram_user_id,
+                                label=_rider_label(vote.username, vote.full_name),
+                                booked_at=_as_utc(vote.updated_at),
+                            )
+                            for vote in voters
+                        ),
+                        capacity=capacity,
+                        reserved=manual_total + guest_total,
+                    ).holders
                 )
                 for vote in voters:
                     day.booked_lift_times_by_user[vote.telegram_user_id] = (

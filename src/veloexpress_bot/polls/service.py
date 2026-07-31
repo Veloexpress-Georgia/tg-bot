@@ -11,7 +11,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from aiogram.types import InlineKeyboardMarkup
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +27,7 @@ from veloexpress_bot.db.models import (
     ACTIVE_POLL_BATCH_STATUSES,
     AdminBookingMonitor,
     CancelledLift,
+    GuestSeat,
     LiftSignalState,
     ManualBookingCount,
     PaymentClaim,
@@ -65,6 +66,7 @@ from veloexpress_bot.polls.render import (
     LiftAvailability,
     PollDraft,
     PollRenderInput,
+    WaitlistRider,
     render_availability_status,
     render_poll,
     render_poll_notice,
@@ -74,6 +76,7 @@ from veloexpress_bot.polls.schedule import (
     normalize_cancelled_lift_times,
     suggested_cancelled_lift_times,
 )
+from veloexpress_bot.polls.seating import SeatCandidate, allocate_seats
 
 
 class DuplicatePollError(RuntimeError):
@@ -970,6 +973,7 @@ class PollPostingService:
                 for user_id, label in await self._lift_voters(
                     service_date=event.service_date,
                     lift_time=event.lift_time,
+                    seat_holders_only=True,
                 ):
                     mentions.setdefault(user_id, label)
             await self._send_tagged_notice(
@@ -993,6 +997,7 @@ class PollPostingService:
         *,
         service_date: date,
         lift_time: str,
+        seat_holders_only: bool = False,
     ) -> list[tuple[int, str]]:
         async with self._session_factory() as session:
             snapshot = await self._active_snapshot_for_lift(
@@ -1005,10 +1010,42 @@ class PollPostingService:
             votes = (
                 await session.scalars(select(PollVote).where(PollVote.poll_id == snapshot.poll_id))
             ).all()
-            return [
-                (vote.telegram_user_id, vote.full_name or _rider_label(vote))
+            booked = [
+                vote
                 for vote in votes
                 if snapshot.option_index in decode_option_ids(vote.option_ids)
+            ]
+            if not seat_holders_only:
+                return [
+                    (vote.telegram_user_id, vote.full_name or _rider_label(vote)) for vote in booked
+                ]
+            # A waitlisted rider has no seat, so "it is running, pay up" is not for them.
+            capacity = {lift.time: lift.capacity for lift in DEFAULT_LIFTS}.get(lift_time, 10)
+            manual = await self._manual_booking_count(
+                session=session, service_date=service_date, lift_time=lift_time
+            )
+            guests = await session.scalar(
+                select(func.coalesce(func.sum(GuestSeat.count), 0))
+                .where(GuestSeat.environment == self._settings.app_env)
+                .where(GuestSeat.chat_id == self._settings.telegram_target_chat_id)
+                .where(GuestSeat.thread_id == self._settings.telegram_target_thread_id)
+                .where(GuestSeat.service_date == service_date)
+                .where(GuestSeat.lift_time == lift_time)
+            )
+            allocation = allocate_seats(
+                (
+                    SeatCandidate(
+                        telegram_user_id=vote.telegram_user_id,
+                        label=vote.full_name or _rider_label(vote),
+                        booked_at=_as_utc(vote.updated_at) or datetime.now(UTC),
+                    )
+                    for vote in booked
+                ),
+                capacity=capacity,
+                reserved=manual + (guests or 0),
+            )
+            return [
+                (candidate.telegram_user_id, candidate.label) for candidate in allocation.holders
             ]
 
     async def _active_poll_id(self, *, service_date: date, lift_time: str) -> str | None:
@@ -1423,6 +1460,22 @@ class PollPostingService:
                 )
             ).all()
             manual_by_time = {booking.lift_time: booking.count for booking in manual_bookings}
+            guest_rows = (
+                await session.scalars(
+                    select(GuestSeat)
+                    .where(GuestSeat.environment == self._settings.app_env)
+                    .where(GuestSeat.chat_id == batch.chat_id)
+                    .where(GuestSeat.thread_id == batch.thread_id)
+                    .where(GuestSeat.service_date == batch.service_date)
+                )
+            ).all()
+            guests_by_time: dict[str, int] = {}
+            for row in guest_rows:
+                guests_by_time[row.lift_time] = guests_by_time.get(row.lift_time, 0) + row.count
+            votes_by_option: dict[int, list[PollVote]] = {}
+            for vote in votes:
+                for option_id in decode_option_ids(vote.option_ids):
+                    votes_by_option.setdefault(option_id, []).append(vote)
             cancelled_times = await self._cancelled_lift_times(
                 session=session,
                 service_date=batch.service_date,
@@ -1439,10 +1492,21 @@ class PollPostingService:
                     voter_count=(
                         counts.get(snapshot.option_index, 0)
                         + manual_by_time.get(snapshot.lift_time, 0)
+                        + guests_by_time.get(snapshot.lift_time, 0)
                     ),
                     capacity=capacity_by_time.get(snapshot.lift_time, 10),
                     manual_count=manual_by_time.get(snapshot.lift_time, 0),
                     cancelled=snapshot.lift_time in cancelled_times,
+                    waitlist=(
+                        ()
+                        if snapshot.lift_time in cancelled_times
+                        else _waitlist_for(
+                            votes_by_option.get(snapshot.option_index, []),
+                            capacity=capacity_by_time.get(snapshot.lift_time, 10),
+                            reserved=manual_by_time.get(snapshot.lift_time, 0)
+                            + guests_by_time.get(snapshot.lift_time, 0),
+                        )
+                    ),
                 )
                 for snapshot in snapshots
                 if snapshot.lift_time is not None
@@ -2425,6 +2489,30 @@ def _shared_date(events: list[LiftEvent]) -> date | None:
     """The one date these events cover, or None when they span a weekend."""
     dates = {event.service_date for event in events}
     return next(iter(dates)) if len(dates) == 1 else None
+
+
+def _waitlist_for(
+    votes: list[PollVote],
+    *,
+    capacity: int,
+    reserved: int,
+) -> tuple[WaitlistRider, ...]:
+    allocation = allocate_seats(
+        (
+            SeatCandidate(
+                telegram_user_id=vote.telegram_user_id,
+                label=_rider_label(vote),
+                booked_at=_as_utc(vote.updated_at) or datetime.now(UTC),
+            )
+            for vote in votes
+        ),
+        capacity=capacity,
+        reserved=reserved,
+    )
+    return tuple(
+        WaitlistRider(telegram_user_id=candidate.telegram_user_id, label=candidate.label)
+        for candidate in allocation.waitlist
+    )
 
 
 def _day_signals(day: BookingMonitorDay) -> tuple[LiftSignal, ...]:

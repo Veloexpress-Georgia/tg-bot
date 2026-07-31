@@ -1007,10 +1007,13 @@ def _should_cleanup_bot_pin_notice(
     thread_id: int | None,
     settings: Settings,
 ) -> bool:
+    # Both topics the bot pins in: the lift topic for polls, the payments topic for
+    # the board. Otherwise its own "pinned a message" notices pile up and later turn
+    # into "pinned Deleted message".
     return (
         actor_user_id == bot_user_id
         and chat_id == settings.telegram_target_chat_id
-        and thread_id == settings.telegram_target_thread_id
+        and thread_id in {settings.telegram_target_thread_id, settings.telegram_payments_thread_id}
     )
 
 

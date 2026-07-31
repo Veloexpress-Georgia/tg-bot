@@ -174,13 +174,12 @@ def test_notices_read_naturally_for_one_lift_and_for_many() -> None:
         terms=TERMS,
         events=(LiftEvent("confirmed", SATURDAY, "8:30", 5),),
     )
-    # Crossing the minimum is the moment payment falls due, so the rule rides along.
-    assert confirmed.splitlines() == [
-        "✅ 8:30 · Sat, 18 Jul is running — 5 riders booked.",
-        "",
-        "💳 Time to pay: 15 GEL per seat, by 20:00 the day before the lift.",
-        '🔗 <a href="https://pay.example">Pay here</a>',
-    ]
+    # One line, not the rulebook: the rules live in the pinned notice and the amount
+    # lives on the board this links to. Three lines per confirmed lift read as spam.
+    assert confirmed == (
+        "✅ 8:30 · Sat, 18 Jul is running — 5 riders booked. "
+        '<a href="https://pay.example">💸 Pay</a>'
+    )
 
     batched = render_lift_signal_notice(
         "confirmed",
@@ -192,10 +191,8 @@ def test_notices_read_naturally_for_one_lift_and_for_many() -> None:
     )
     assert batched.splitlines()[0] == "✅ These lifts are running:"
     # Batched into one message, earliest first, so a busy tick is not a burst.
-    assert batched.splitlines()[2:4] == [
-        "8:30 · Sat, 18 Jul — 5 riders",
-        "10:00 · Sat, 18 Jul — 6 riders",
-    ]
+    assert batched.splitlines()[2].startswith("8:30 · Sat, 18 Jul — 5 riders")
+    assert "10:00 · Sat, 18 Jul — 6 riders" in batched
 
     without_link = render_lift_signal_notice(
         "confirmed",

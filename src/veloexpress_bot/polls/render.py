@@ -1,3 +1,4 @@
+import html
 from dataclasses import dataclass
 from datetime import date
 
@@ -80,12 +81,19 @@ class PollDraft:
 
 
 @dataclass(frozen=True)
+class WaitlistRider:
+    telegram_user_id: int
+    label: str
+
+
+@dataclass(frozen=True)
 class LiftAvailability:
     time: str
     voter_count: int
     capacity: int = 10
     manual_count: int = 0
     cancelled: bool = False
+    waitlist: tuple[WaitlistRider, ...] = ()
 
 
 def render_poll(render_input: PollRenderInput) -> PollDraft:
@@ -122,8 +130,18 @@ def render_availability_status(
         return header
 
     lines = [header, ""]
-    lines.extend(_availability_line(lift) for lift in lifts)
+    for lift in lifts:
+        lines.append(_availability_line(lift))
+        if lift.waitlist:
+            # Named right where the seats are counted, so "waitlist +2" stops being a
+            # riddle. The board is edited in place and a Telegram edit sends no
+            # notification, so this informs without pinging anyone.
+            lines.append(f"    ⏳ {' '.join(_waitlist_mention(r) for r in lift.waitlist)}")
     return "\n".join(lines)
+
+
+def _waitlist_mention(rider: WaitlistRider) -> str:
+    return f'<a href="tg://user?id={rider.telegram_user_id}">{html.escape(rider.label)}</a>'
 
 
 def _availability_line(lift: LiftAvailability) -> str:

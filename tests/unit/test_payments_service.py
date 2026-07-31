@@ -341,7 +341,7 @@ async def test_the_running_notice_links_to_that_days_board(db: SharedDatabase) -
     running = next(record for record in client.sent if "is running" in record.text)
     # A private supergroup link drops the -100 prefix: -100123 becomes 123.
     assert f'href="https://t.me/c/123/{PAYMENTS_THREAD}/{board.message_id}"' in running.text
-    assert "Pay here" in running.text
+    assert "💸 Pay" in running.text
 
 
 async def test_re_voting_after_paying_moves_the_bill_not_the_payment(

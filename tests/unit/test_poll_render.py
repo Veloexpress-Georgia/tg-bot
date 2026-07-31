@@ -6,6 +6,7 @@ from veloexpress_bot.polls.defaults import CHECK_ANSWERS_OPTION, PaymentTerms, S
 from veloexpress_bot.polls.render import (
     LiftAvailability,
     PollRenderInput,
+    WaitlistRider,
     render_availability_status,
     render_poll,
     render_poll_notice,
@@ -56,6 +57,33 @@ def test_the_poll_notice_omits_the_link_when_none_is_configured() -> None:
 
     assert "🔗" not in notice
     assert "15 GEL per seat." in notice
+
+
+def test_availability_names_the_waitlist_where_the_seats_are_counted() -> None:
+    """ "waitlist +2" is a riddle without names. The board is edited in place, and a
+    Telegram edit sends no notification, so naming informs without pinging."""
+    status = render_availability_status(
+        date(2026, 8, 1),
+        (
+            LiftAvailability(
+                time="8:30",
+                voter_count=12,
+                waitlist=(
+                    WaitlistRider(telegram_user_id=11, label="@konstantin"),
+                    WaitlistRider(telegram_user_id=12, label="Ivan"),
+                ),
+            ),
+            LiftAvailability(time="10:00", voter_count=6),
+        ),
+    )
+
+    lines = status.splitlines()
+    assert lines[2] == "8:30 — <b>12/10</b> · waitlist +2"
+    assert lines[3] == (
+        '    ⏳ <a href="tg://user?id=11">@konstantin</a> <a href="tg://user?id=12">Ivan</a>'
+    )
+    # A lift with nobody waiting stays a single line.
+    assert lines[4] == "10:00 — <b>6/10</b> · 4 left"
 
 
 def test_render_availability_status_shows_counts_and_state_tags() -> None:
