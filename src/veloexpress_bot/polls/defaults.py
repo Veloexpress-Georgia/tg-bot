@@ -47,6 +47,9 @@ class PaymentTerms:
             f"A lift runs from {MINIMUM_RIDERS} riders. Wait for the ✅ message, then pay — "
             "nothing to pay before that.",
             f"Book, change or cancel free until {self.deadline_time} the day before.",
+            # Cash was the first thing riders asked about, and the bot said nothing
+            # about it. It does not care how the money arrived, only that it did.
+            "💵 Cash is fine — settle with Misho, then tap 💸 I paid all the same.",
         )
         return (*lines, self._link_line("Where to pay")) if self.link else lines
 
