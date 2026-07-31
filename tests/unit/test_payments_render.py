@@ -31,16 +31,23 @@ def _owing(count: int) -> tuple[OutstandingRider, ...]:
 
 
 def _buttons(markup) -> dict[str, str]:  # type: ignore[no-untyped-def]
-    return {button.callback_data: button.text for row in markup.inline_keyboard for button in row}
+    return {
+        button.callback_data: button.text
+        for row in markup.inline_keyboard
+        for button in row
+        if button.callback_data is not None
+    }
 
 
 def test_board_lists_running_lifts_price_and_the_taps() -> None:
-    draft = render_payments_board(_view(outstanding=_owing(6)))
+    draft = render_payments_board(
+        _view(outstanding=_owing(6), guests_url="https://t.me/bot?start=guests-20260718")
+    )
 
     assert "💸 Payments · Sat, 18 Jul" in draft.text
     assert "Running: 8:30, 10:00" in draft.text
     assert "15 GEL per seat · pay by 20:00" in draft.text
-    assert "💸 transfer · 💵 cash · ➕ Guest adds a seat" in draft.text
+    assert "💸 transfer · 💵 cash · 👤 Guests opens a form in the bot" in draft.text
     assert "Waiting on:" in draft.text
     assert draft.reply_markup is not None
     # Cash has its own button rather than a rule telling riders to press the
@@ -49,9 +56,18 @@ def test_board_lists_running_lifts_price_and_the_taps() -> None:
     assert _buttons(draft.reply_markup) == {
         "pay:paid:20260718": "💸 I paid",
         "pay:cash:20260718": "💵 Cash",
-        "pay:guest:20260718": "➕ Guest",
         "pay:undo:20260718": "↩️ Undo",
     }
+    # Guests is a url button, not a callback: the tap must open the private chat,
+    # which is also a Start for riders who never opened the bot.
+    guest_button = next(
+        button
+        for row in draft.reply_markup.inline_keyboard
+        for button in row
+        if button.text == "👤 Guests"
+    )
+    assert guest_button.url == "https://t.me/bot?start=guests-20260718"
+    assert guest_button.callback_data is None
 
 
 def test_board_lists_payments_and_counts_the_rest() -> None:

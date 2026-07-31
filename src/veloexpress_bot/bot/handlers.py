@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot, F, Router
 from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command, ExceptionTypeFilter
+from aiogram.filters import Command, CommandObject, CommandStart, ExceptionTypeFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, ErrorEvent, InlineKeyboardMarkup, Message, PollAnswer
 
@@ -21,10 +21,18 @@ from veloexpress_bot.bot.keyboards import start_menu_keyboard
 from veloexpress_bot.bot.permissions import is_admin
 from veloexpress_bot.bot.states import ExtraDayStates
 from veloexpress_bot.config import Settings
+from veloexpress_bot.payments.guests import (
+    GUEST_CARD_PARSE_MODE,
+    GuestCardDraft,
+    decode_guest_date,
+    decode_guest_time,
+    parse_deep_link,
+)
 from veloexpress_bot.payments.render import decode_board_date
 from veloexpress_bot.payments.service import (
     CASH_METHOD,
     TRANSFER_METHOD,
+    WAITLIST_WARNING_TEXT,
     PaymentsService,
 )
 from veloexpress_bot.polls.autoposter import PollAutoScheduler
@@ -72,8 +80,90 @@ ALREADY_POSTED_ALERT = "Polls for this weekend are already posted."
 # Only non-admins see this. Admins get live state instead of a greeting.
 START_TEXT = "🚐 Veloexpress Bot"
 
+# Riders who have seen the waitlist warning for one day and payment method.
+_waitlist_warned: set[tuple[int, date, str]] = set()
+
 PLAN_VIEWS: set[str] = {"main", "first", "last", "recreate"}
 EXTRA_VIEWS: set[str] = {"date", "main", "first", "last"}
+
+
+@router.message(CommandStart(deep_link=True))
+async def open_guest_form(
+    message: Message,
+    command: CommandObject,
+    payments_service: PaymentsService,
+) -> None:
+    """Guest form, reached from the payments board. Open to every rider, not admins only.
+
+    Tapping the deep link is pressing Start, which is how a rider who never opened
+    the bot ends up with a private chat the bot may write to.
+    """
+    service_date = parse_deep_link(command.args or "")
+    if service_date is None:
+        await message.answer(STALE_BOARD_ALERT)
+        return
+    card = await payments_service.guest_card(
+        service_date=service_date,
+        telegram_user_id=message.from_user.id if message.from_user else 0,
+    )
+    await message.answer(
+        card.text,
+        reply_markup=card.reply_markup,
+        parse_mode=GUEST_CARD_PARSE_MODE,
+    )
+
+
+@router.callback_query(F.data.startswith("guest:"))
+async def handle_guest_form(
+    callback: CallbackQuery,
+    payments_service: PaymentsService,
+) -> None:
+    action, value = _split_callback(callback.data)
+    if action == "noop":
+        await callback.answer()
+        return
+
+    parts = value.split(":")
+    try:
+        service_date = decode_guest_date(parts[0])
+    except ValueError, IndexError:
+        await callback.answer(STALE_BOARD_ALERT, show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+    if action in {"all", "allsub"}:
+        card = await payments_service.guest_card(
+            service_date=service_date,
+            telegram_user_id=user_id,
+        )
+        lift_times = _guest_card_lift_times(card)
+    else:
+        lift_times = (decode_guest_time(parts[1]),)
+
+    notice = await payments_service.adjust_guest_seats(
+        service_date=service_date,
+        telegram_user_id=user_id,
+        lift_times=lift_times,
+        delta=-1 if action in {"sub", "allsub"} else 1,
+    )
+    card = await payments_service.guest_card(service_date=service_date, telegram_user_id=user_id)
+    message = _accessible_message(callback)
+    if message is not None:
+        await _edit_card(message, card.text, card.reply_markup, parse_mode=GUEST_CARD_PARSE_MODE)
+    await callback.answer(notice)
+
+
+def _guest_card_lift_times(card: GuestCardDraft) -> tuple[str, ...]:
+    """Read the lifts back off the rendered form, so "with me" means what it shows."""
+    if card.reply_markup is None:
+        return ()
+    times: list[str] = []
+    for row in card.reply_markup.inline_keyboard:
+        for button in row:
+            data = button.callback_data or ""
+            if data.startswith(("guest:add:", "guest:sub:")):
+                times.append(decode_guest_time(data.split(":")[3]))
+    return tuple(dict.fromkeys(times))
 
 
 @router.message(Command("start"))
@@ -681,18 +771,23 @@ async def handle_payment_button(
         return
 
     if action in {"paid", "cash"}:
+        # The warning is shown once; the same tap again is the rider saying "I know".
+        # Kept in memory rather than the database: it is a two-tap gesture, and losing
+        # it on restart only means the warning appears one more time.
+        gesture = (user.id, service_date, action)
         notice = await payments_service.claim(
             service_date=service_date,
             telegram_user_id=user.id,
             username=user.username,
             full_name=user.full_name,
             method=CASH_METHOD if action == "cash" else TRANSFER_METHOD,
+            acknowledged_waitlist=gesture in _waitlist_warned,
         )
-    elif action == "guest":
-        notice = await payments_service.add_guest(
-            service_date=service_date,
-            telegram_user_id=user.id,
-        )
+        if notice == WAITLIST_WARNING_TEXT:
+            _waitlist_warned.add(gesture)
+            await callback.answer(notice, show_alert=True)
+            return
+        _waitlist_warned.discard(gesture)
     elif action == "undo":
         notice = await payments_service.undo(
             service_date=service_date,
@@ -872,9 +967,11 @@ async def _edit_card(
     message: Message,
     text: str,
     reply_markup: InlineKeyboardMarkup | None,
+    *,
+    parse_mode: str | None = None,
 ) -> None:
     try:
-        await message.edit_text(text, reply_markup=reply_markup)
+        await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except TelegramBadRequest as error:
         if TELEGRAM_NOT_MODIFIED_TEXT not in str(error).lower():
             raise

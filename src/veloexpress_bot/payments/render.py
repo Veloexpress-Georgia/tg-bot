@@ -17,12 +17,11 @@ PAID_BUTTON = "💸 I paid"
 # one anyway. It also tells Misho which lines to look for in his bank statement and
 # which not to, which he cannot otherwise know.
 CASH_BUTTON = "💵 Cash"
-# Guests have no vote of their own, so they need a button. There is deliberately no
-# "one fewer seat": paying for fewer laps than you booked leaves a seat you still
-# occupy, which is the phantom booking the group keeps tripping over. Ride less and
-# the honest fix is to change your poll answer, which frees the seat too. Undo
-# retracts the whole payment when something needs starting over.
-GUEST_BUTTON = "➕ Guest"
+# Guests open a form in the bot's private chat: only a form can say how many seats
+# a lift has left, and only a private chat has room for one row per lift. This is
+# the one button that navigates away, so it stays the rarer action while paying
+# remains a single in-group tap.
+GUEST_BUTTON = "👤 Guests"
 UNDO_BUTTON = "↩️ Undo"
 
 
@@ -53,6 +52,7 @@ class PaymentsBoardView:
     price_gel: int
     payments: tuple[RiderPayment, ...]
     outstanding: tuple[OutstandingRider, ...] = ()
+    guests_url: str = ""
     deadline_time: str = "20:00"
     cancelled: bool = False
 
@@ -127,7 +127,7 @@ def render_payments_board(view: PaymentsBoardView) -> PaymentsBoardDraft:
         f"{view.price_gel} GEL per seat · pay by {view.deadline_time}",
     ]
     lines.append("")
-    lines.append("💸 transfer · 💵 cash · ➕ Guest adds a seat")
+    lines.append("💸 transfer · 💵 cash · 👤 Guests opens a form in the bot")
     if view.payments:
         lines.extend(("", "Paid:"))
         lines.extend(_payment_line(payment) for payment in view.payments)
@@ -138,7 +138,7 @@ def render_payments_board(view: PaymentsBoardView) -> PaymentsBoardDraft:
 
     return PaymentsBoardDraft(
         text="\n".join(lines),
-        reply_markup=_keyboard(view.service_date),
+        reply_markup=_keyboard(view.service_date, guests_url=view.guests_url),
     )
 
 
@@ -175,18 +175,20 @@ def decode_board_date(value: str) -> date:
     return datetime.strptime(value, "%Y%m%d").date()
 
 
-def _keyboard(service_date: date) -> InlineKeyboardMarkup:
+def _keyboard(service_date: date, *, guests_url: str = "") -> InlineKeyboardMarkup:
     encoded = encode_board_date(service_date)
+    second_row = [InlineKeyboardButton(text=UNDO_BUTTON, callback_data=f"pay:undo:{encoded}")]
+    if guests_url:
+        # A url button, not a callback: it has to open the private chat, and that tap
+        # is also a Start, which is how riders with no bot chat get one.
+        second_row.insert(0, InlineKeyboardButton(text=GUEST_BUTTON, url=guests_url))
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(text=PAID_BUTTON, callback_data=f"pay:paid:{encoded}"),
                 InlineKeyboardButton(text=CASH_BUTTON, callback_data=f"pay:cash:{encoded}"),
             ],
-            [
-                InlineKeyboardButton(text=GUEST_BUTTON, callback_data=f"pay:guest:{encoded}"),
-                InlineKeyboardButton(text=UNDO_BUTTON, callback_data=f"pay:undo:{encoded}"),
-            ],
+            second_row,
         ]
     )
 

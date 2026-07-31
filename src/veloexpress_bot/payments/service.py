@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.models import (
     CancelledLift,
+    GuestSeat,
     ManualBookingCount,
     PaymentClaim,
     PaymentsBoard,
@@ -18,6 +19,13 @@ from veloexpress_bot.db.models import (
     PollBatch,
     PollOptionSnapshot,
     PollVote,
+)
+from veloexpress_bot.payments.guests import (
+    GuestCardDraft,
+    GuestCardView,
+    GuestLiftRow,
+    deep_link,
+    render_guest_card,
 )
 from veloexpress_bot.payments.render import (
     PAYMENTS_PARSE_MODE,
@@ -29,7 +37,7 @@ from veloexpress_bot.payments.render import (
     render_payment_post,
     render_payments_board,
 )
-from veloexpress_bot.polls.defaults import MINIMUM_RIDERS
+from veloexpress_bot.polls.defaults import DEFAULT_LIFTS, MINIMUM_RIDERS
 from veloexpress_bot.polls.service import SessionFactory, TelegramPollClient, decode_option_ids
 
 logger = logging.getLogger(__name__)
@@ -40,6 +48,14 @@ NOTHING_TO_UNDO_TEXT = "You have not marked a payment for this day."
 NOT_CLAIMED_YET_TEXT = "Tap 💸 I paid or 💵 Cash first."
 BOARD_GONE_TEXT = "This payments board is no longer active."
 PAYMENTS_DISABLED_TEXT = "Payments are not set up for this chat."
+
+# Paying while every seat you hold is beyond capacity means paying for a waitlist
+# place. The bot says so once and takes the same tap again as "yes, I know" — it is
+# the rider's money and their call, but never a silent charge.
+WAITLIST_WARNING_TEXT = (
+    "⚠️ Your seats are past the 10-person capacity — you are on the waitlist. "
+    "Tap again to pay anyway; you get a refund if you do not ride."
+)
 
 CASH_METHOD = "cash"
 TRANSFER_METHOD = "transfer"
@@ -56,6 +72,34 @@ class DayBookings:
     # minimum: a refund question must not treat "not full yet" as "gone".
     booked_lift_times_by_user: dict[int, tuple[str, ...]] = field(default_factory=dict)
     labels_by_user: dict[int, tuple[str | None, str]] = field(default_factory=dict)
+    # Occupied seats and capacity per lift, so the guest form can say what is left.
+    seats_by_lift: dict[str, int] = field(default_factory=dict)
+    capacity_by_lift: dict[str, int] = field(default_factory=dict)
+    guests_by_user_lift: dict[tuple[int, str], int] = field(default_factory=dict)
+    # Riders holding a real seat on each lift, in booking order. Everyone booked
+    # beyond this is on the waitlist.
+    seat_holders_by_lift: dict[str, tuple[int, ...]] = field(default_factory=dict)
+
+    def is_waitlisted(self, telegram_user_id: int) -> bool:
+        """True when the rider holds no actual seat on any lift they booked."""
+        lifts = self.lift_times_by_user.get(telegram_user_id, ())
+        if not lifts:
+            return False
+        return not any(
+            telegram_user_id in self.seat_holders_by_lift.get(lift_time, ()) for lift_time in lifts
+        )
+
+    def seats_left(self, lift_time: str) -> int:
+        return max(
+            self.capacity_by_lift.get(lift_time, 0) - self.seats_by_lift.get(lift_time, 0), 0
+        )
+
+    def guest_seats(self, telegram_user_id: int) -> int:
+        """Guest seats the rider holds on lifts that are actually running."""
+        return sum(
+            self.guests_by_user_lift.get((telegram_user_id, lift_time), 0)
+            for lift_time in self.lift_times_by_user.get(telegram_user_id, ())
+        )
 
     @property
     def booked_rider_count(self) -> int:
@@ -71,10 +115,12 @@ class PaymentsService:
         settings: Settings,
         session_factory: SessionFactory,
         telegram_client: TelegramPollClient,
+        bot_username: str = "",
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
         self._telegram_client = telegram_client
+        self._bot_username = bot_username
         self._zone = ZoneInfo(settings.schedule_timezone)
 
     @property
@@ -104,6 +150,7 @@ class PaymentsService:
         username: str | None,
         full_name: str,
         method: str = TRANSFER_METHOD,
+        acknowledged_waitlist: bool = False,
     ) -> str:
         if not self.enabled:
             return PAYMENTS_DISABLED_TEXT
@@ -120,10 +167,12 @@ class PaymentsService:
                 service_date=service_date,
                 telegram_user_id=telegram_user_id,
             )
-            guests = claim.guests if claim is not None else 0
+            guests = day.guest_seats(telegram_user_id)
             owed = len(lift_times) + guests
             if claim is not None and claim.seats >= owed:
                 return ALREADY_SETTLED_TEXT
+            if not acknowledged_waitlist and day.is_waitlisted(telegram_user_id):
+                return WAITLIST_WARNING_TEXT
             # The button means "I have paid everything I owe right now", so tapping it
             # again after re-voting or adding a guest settles the difference.
             if claim is None:
@@ -140,7 +189,6 @@ class PaymentsService:
             claim.username = username
             claim.full_name = full_name
             claim.seats = owed
-            claim.guests = guests
             claim.method = method
             claim.updated_at = datetime.now(UTC)
             await session.commit()
@@ -153,31 +201,86 @@ class PaymentsService:
         guest_note = f" +{guests} guest(s)" if guests else ""
         return f"Thanks! {', '.join(lift_times)}{guest_note} · {self._amount(owed)} GEL{how}."
 
-    async def add_guest(self, *, service_date: date, telegram_user_id: int) -> str:
-        """Declare one more seat. It raises the bill rather than claiming it is paid."""
+    async def guest_card(self, *, service_date: date, telegram_user_id: int) -> GuestCardDraft:
+        """The private guest form: the rider's running lifts, their guests, seats left."""
+        day = await self._day(service_date) if self.enabled else None
+        rows: tuple[GuestLiftRow, ...] = ()
+        if day is not None and not day.cancelled:
+            rows = tuple(
+                GuestLiftRow(
+                    lift_time=lift_time,
+                    guests=day.guests_by_user_lift.get((telegram_user_id, lift_time), 0),
+                    seats_left=day.seats_left(lift_time),
+                )
+                for lift_time in day.lift_times_by_user.get(telegram_user_id, ())
+            )
+        return render_guest_card(
+            GuestCardView(
+                service_date=service_date,
+                price_gel=self._settings.payment_price_gel,
+                rows=rows,
+            )
+        )
+
+    async def adjust_guest_seats(
+        self,
+        *,
+        service_date: date,
+        telegram_user_id: int,
+        lift_times: tuple[str, ...],
+        delta: int,
+    ) -> str:
+        """Move guest seats on specific lifts. Raises the bill; never claims it paid."""
         if not self.enabled:
             return PAYMENTS_DISABLED_TEXT
         day = await self._day(service_date)
-        if day is None:
+        if day is None or day.cancelled:
             return BOARD_GONE_TEXT
 
+        changed = 0
         async with self._session_factory() as session:
-            claim = await self._claim_row(
-                session=session,
-                service_date=service_date,
-                telegram_user_id=telegram_user_id,
-            )
-            if claim is None:
-                return NOT_CLAIMED_YET_TEXT
-            claim.guests += 1
-            guests = claim.guests
-            claim.updated_at = datetime.now(UTC)
+            for lift_time in lift_times:
+                if lift_time not in day.lift_times_by_user.get(telegram_user_id, ()):
+                    continue
+                current = day.guests_by_user_lift.get((telegram_user_id, lift_time), 0)
+                if delta > 0 and day.seats_left(lift_time) <= 0:
+                    # Never sell a seat the lift does not have.
+                    continue
+                if delta < 0 and current <= 0:
+                    continue
+                row = await session.scalar(
+                    select(GuestSeat)
+                    .where(GuestSeat.environment == self._settings.app_env)
+                    .where(GuestSeat.chat_id == self._require_chat_id())
+                    .where(GuestSeat.thread_id == self._settings.telegram_target_thread_id)
+                    .where(GuestSeat.service_date == service_date)
+                    .where(GuestSeat.lift_time == lift_time)
+                    .where(GuestSeat.host_user_id == telegram_user_id)
+                )
+                if row is None:
+                    row = GuestSeat(
+                        environment=self._settings.app_env,
+                        chat_id=self._require_chat_id(),
+                        thread_id=self._settings.telegram_target_thread_id,
+                        service_date=service_date,
+                        lift_time=lift_time,
+                        host_user_id=telegram_user_id,
+                        count=0,
+                    )
+                    session.add(row)
+                row.count = max(row.count + delta, 0)
+                row.updated_at = datetime.now(UTC)
+                changed += 1
             await session.commit()
 
-        await self._announce_claim(day, telegram_user_id)
-        await self._refresh_board(day)
-        due = self._amount(len(day.lift_times_by_user.get(telegram_user_id, ())) + guests)
-        return f"+{guests} guest(s) · {due} GEL total. Tap 💸 or 💵 once you have paid it."
+        if not changed:
+            return "No seats left on those lifts." if delta > 0 else "You have no guests there."
+
+        refreshed = await self._day(service_date)
+        if refreshed is not None:
+            await self._announce_claim(refreshed, telegram_user_id)
+            await self._refresh_board(refreshed)
+        return "Guests updated."
 
     async def undo(self, *, service_date: date, telegram_user_id: int) -> str:
         if not self.enabled:
@@ -420,7 +523,7 @@ class PaymentsService:
             if claim is None:
                 return
             seats = claim.seats
-            guests = claim.guests
+            guests = day.guest_seats(telegram_user_id)
             label = _rider_label(claim.username, claim.full_name)
             cash = claim.method == CASH_METHOD
             posted_message_id = claim.posted_message_id
@@ -547,7 +650,12 @@ class PaymentsService:
                     label=_rider_label(*day.labels_by_user.get(user_id, (None, "Rider"))),
                 )
                 for user_id in day.lift_times_by_user
-                if user_id not in paid_user_ids
+                if user_id not in paid_user_ids and not day.is_waitlisted(user_id)
+            ),
+            guests_url=(
+                deep_link(bot_username=self._bot_username, service_date=day.service_date)
+                if self._bot_username
+                else ""
             ),
             deadline_time=self._settings.booking_deadline_time,
             cancelled=day.cancelled,
@@ -558,7 +666,9 @@ class PaymentsService:
 
         Derived rather than stored, because re-voting is allowed until the deadline.
         """
-        return len(day.lift_times_by_user.get(claim.telegram_user_id, ())) + claim.guests
+        return len(day.lift_times_by_user.get(claim.telegram_user_id, ())) + day.guest_seats(
+            claim.telegram_user_id
+        )
 
     async def _day(self, service_date: date) -> DayBookings | None:
         days = await self._active_days(today=service_date)
@@ -605,6 +715,15 @@ class PaymentsService:
                     .where(ManualBookingCount.service_date.in_(service_dates))
                 )
             ).all()
+            guest_seats = (
+                await session.scalars(
+                    select(GuestSeat)
+                    .where(GuestSeat.environment == self._settings.app_env)
+                    .where(GuestSeat.chat_id == chat_id)
+                    .where(GuestSeat.thread_id == self._settings.telegram_target_thread_id)
+                    .where(GuestSeat.service_date.in_(service_dates))
+                )
+            ).all()
             cancelled_lifts = (
                 await session.scalars(
                     select(CancelledLift)
@@ -621,6 +740,7 @@ class PaymentsService:
         manual_by_date_time = {(row.service_date, row.lift_time): row.count for row in manual}
         cancelled_date_time = {(row.service_date, row.lift_time) for row in cancelled_lifts}
 
+        capacity_by_time = {lift.time: lift.capacity for lift in DEFAULT_LIFTS}
         days: list[DayBookings] = []
         for service_date, batch in latest_by_date.items():
             day = DayBookings(
@@ -639,7 +759,29 @@ class PaymentsService:
                     for vote in votes_by_poll.get(snapshot.poll_id, [])
                     if snapshot.option_index in decode_option_ids(vote.option_ids)
                 ]
-                seats = len(voters) + manual_by_date_time.get((service_date, lift_time), 0)
+                guest_total = sum(
+                    row.count
+                    for row in guest_seats
+                    if row.service_date == service_date and row.lift_time == lift_time
+                )
+                for row in guest_seats:
+                    if row.service_date == service_date and row.lift_time == lift_time:
+                        day.guests_by_user_lift[(row.host_user_id, lift_time)] = row.count
+                manual_total = manual_by_date_time.get((service_date, lift_time), 0)
+                seats = len(voters) + manual_total + guest_total
+                capacity = capacity_by_time.get(lift_time, 10)
+                day.seats_by_lift[lift_time] = seats
+                day.capacity_by_lift[lift_time] = capacity
+                # Manual bookings and guests hold their seats outright: an admin took
+                # them personally and a guest belongs to a rider who already declared
+                # them. Telegram voters fill the rest in booking order, which is the
+                # order the poll itself shows.
+                day.seat_holders_by_lift[lift_time] = tuple(
+                    vote.telegram_user_id
+                    for vote in sorted(voters, key=lambda item: _as_utc(item.updated_at))[
+                        : max(capacity - manual_total - guest_total, 0)
+                    ]
+                )
                 for vote in voters:
                     day.booked_lift_times_by_user[vote.telegram_user_id] = (
                         *day.booked_lift_times_by_user.get(vote.telegram_user_id, ()),

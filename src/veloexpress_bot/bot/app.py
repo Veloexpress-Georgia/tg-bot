@@ -50,6 +50,9 @@ async def run_polling() -> None:
         session_factory = create_session_factory(settings)
         await check_database(session_factory)
         telegram_client = AiogramTelegramClient(bot)
+        # The guest form is reached by a deep link, which needs the bot's own username.
+        # Read once from Telegram rather than kept in config, so there is one source.
+        bot_username = (await bot.me()).username or ""
         poll_service = PollPostingService(
             settings=settings,
             session_factory=session_factory,
@@ -59,6 +62,7 @@ async def run_polling() -> None:
             settings=settings,
             session_factory=session_factory,
             telegram_client=telegram_client,
+            bot_username=bot_username,
         )
         auto_scheduler = PollAutoScheduler(
             settings=settings,

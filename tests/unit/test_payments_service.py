@@ -16,8 +16,8 @@ from veloexpress_bot.payments.service import (
     ALREADY_SETTLED_TEXT,
     CASH_METHOD,
     NOT_BOOKED_TEXT,
-    NOT_CLAIMED_YET_TEXT,
     PAYMENTS_DISABLED_TEXT,
+    WAITLIST_WARNING_TEXT,
     PaymentsService,
 )
 from veloexpress_bot.polls.render import PollDraft
@@ -397,6 +397,67 @@ async def test_paying_twice_without_changes_says_you_are_already_settled(
     assert notice == ALREADY_SETTLED_TEXT
 
 
+async def test_the_waitlist_is_not_billed_and_is_warned_before_paying(
+    db: SharedDatabase,
+) -> None:
+    """A rider past the ten-seat capacity holds no seat, so the bot must not bill them.
+
+    They may still pay for a waitlist place — it is their money — but never silently.
+    """
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    # Eleven riders on 8:30: the eleventh is past capacity.
+    await _fill(poll_service, poll_id, 0, riders=11)
+    await payments.sync_boards()
+    board = client.payments_sends()[-1]
+
+    board_edits = [text for message_id, text in client.edits if message_id == board.message_id]
+    latest = board_edits[-1] if board_edits else board.text
+    assert "tg://user?id=110" not in latest, "the waitlisted rider is not asked to pay"
+    assert "tg://user?id=100" in latest
+
+    first = await payments.claim(
+        service_date=saturday, telegram_user_id=110, username="last", full_name="Last"
+    )
+    assert first == WAITLIST_WARNING_TEXT
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentClaim)) is None
+
+    second = await payments.claim(
+        service_date=saturday,
+        telegram_user_id=110,
+        username="last",
+        full_name="Last",
+        acknowledged_waitlist=True,
+    )
+    assert "15 GEL" in second
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentClaim)) is not None
+
+
+async def test_manual_bookings_take_seats_before_telegram_voters(db: SharedDatabase) -> None:
+    """An admin accepted them personally, so a poll vote cannot bump them."""
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=9)
+    for _ in range(2):
+        await poll_service.adjust_manual_booking(
+            service_date=saturday,
+            lift_time="8:30",
+            delta=1,
+            admin_user_id=1,
+        )
+
+    # 9 voters + 2 manual = 11 for ten seats, so the last voter loses their place.
+    assert (
+        await payments.claim(
+            service_date=saturday, telegram_user_id=108, username="ninth", full_name="Ninth"
+        )
+        == WAITLIST_WARNING_TEXT
+    )
+    assert "15 GEL" in await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="first", full_name="First"
+    )
+
+
 async def test_a_cash_tap_records_the_method_so_misho_can_reconcile(
     db: SharedDatabase,
 ) -> None:
@@ -520,25 +581,35 @@ async def test_a_guest_seat_edits_the_posted_line_instead_of_adding_one(
     posted = client.payments_sends()[-1]
     sends_before = len(client.payments_sends())
 
-    notice = await payments.add_guest(service_date=saturday, telegram_user_id=100)
+    notice = await payments.adjust_guest_seats(
+        service_date=saturday,
+        telegram_user_id=100,
+        lift_times=("8:30",),
+        delta=1,
+    )
 
     # A guest raises the bill; it does not claim the extra seat is already paid.
-    assert "30 GEL total" in notice
+    assert notice == "Guests updated."
     assert len(client.payments_sends()) == sends_before
     edits = [text for message_id, text in client.edits if message_id == posted.message_id]
     assert "+1 guest" in edits[-1]
 
 
-async def test_adding_a_guest_before_paying_asks_for_the_payment_first(
-    db: SharedDatabase,
-) -> None:
+async def test_a_guest_seat_can_be_taken_before_paying(db: SharedDatabase) -> None:
     poll_service, payments, _, poll_id, saturday = await _setup(db)
     await _fill(poll_service, poll_id, 0, riders=5)
     await payments.sync_boards()
 
-    notice = await payments.add_guest(service_date=saturday, telegram_user_id=100)
+    # No claim yet, so there is nothing to attach a guest to on the board — but the
+    # seat itself is still bookable, because a guest is capacity, not a payment.
+    notice = await payments.adjust_guest_seats(
+        service_date=saturday,
+        telegram_user_id=100,
+        lift_times=("8:30",),
+        delta=1,
+    )
 
-    assert notice == NOT_CLAIMED_YET_TEXT
+    assert notice == "Guests updated."
 
 
 async def test_undo_removes_the_claim_and_the_posted_line(db: SharedDatabase) -> None:
@@ -648,7 +719,12 @@ async def test_cancelling_a_day_reports_every_payment_as_a_refund(db: SharedData
     await payments.claim(
         service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
     )
-    await payments.add_guest(service_date=saturday, telegram_user_id=100)
+    await payments.adjust_guest_seats(
+        service_date=saturday,
+        telegram_user_id=100,
+        lift_times=("8:30",),
+        delta=1,
+    )
     await payments.claim(
         service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
     )

@@ -255,9 +255,6 @@ class PaymentClaim(Base):
     # What the rider has settled for. Not what they owe: re-voting before the
     # deadline changes the bill, and conflating the two makes the bot lie about money.
     seats: Mapped[int] = mapped_column(Integer, default=1)
-    # Extra riders they bring. Votes cannot express these, so the rider declares them
-    # and the owed total is their booked lifts plus this.
-    guests: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # "cash" | "transfer" | NULL when the bot never learned how the money arrived.
     # Misho reconciles against his bank statement, so cash is the case worth naming.
     method: Mapped[str | None] = mapped_column(String(16))
@@ -269,6 +266,29 @@ class PaymentClaim(Base):
     posted_message_id: Mapped[int | None] = mapped_column(BigInteger)
     verified_by_user_id: Mapped[int | None] = mapped_column(BigInteger)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class GuestSeat(Base):
+    """Seats a rider takes for someone who has no Telegram vote of their own.
+
+    Per lift, not per day: a seat is capacity, and capacity is what a single lift
+    has ten of. Declared in the bot's private chat, where a form can show how many
+    seats are actually left.
+    """
+
+    __tablename__ = "guest_seat"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    lift_time: Mapped[str] = mapped_column(String(16))
+    host_user_id: Mapped[int] = mapped_column(BigInteger)
+    count: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
@@ -414,6 +434,18 @@ Index(
     func.coalesce(PaymentClaim.thread_id, 0),
     PaymentClaim.service_date,
     PaymentClaim.telegram_user_id,
+    unique=True,
+)
+
+
+Index(
+    "uq_guest_seat_scope_date_time_host",
+    GuestSeat.environment,
+    GuestSeat.chat_id,
+    func.coalesce(GuestSeat.thread_id, 0),
+    GuestSeat.service_date,
+    GuestSeat.lift_time,
+    GuestSeat.host_user_id,
     unique=True,
 )
 
