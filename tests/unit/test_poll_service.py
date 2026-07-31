@@ -720,6 +720,39 @@ async def test_a_posted_notice_picks_up_changed_money_rules(db: SharedDatabase) 
     assert await service.refresh_poll_notices() == 0
 
 
+async def test_a_revived_day_does_not_inherit_hand_added_riders(db: SharedDatabase) -> None:
+    """A retired day takes its manual bookings with it.
+
+    Nobody can tell whether a hand-added rider still intends to come, so leaving
+    them behind opens a fresh poll with seats taken by people nobody can name.
+    """
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    setup = PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",))
+    await service.create_poll(setup, pin_after_send=False)
+    for _ in range(3):
+        await service.adjust_manual_booking(
+            service_date=saturday,
+            lift_time="10:00",
+            delta=1,
+            admin_user_id=1,
+        )
+
+    await service.cancel_day(service_date=saturday, admin_user_id=1)
+    await service.create_poll(setup, pin_after_send=False)
+
+    detail = await service.lift_detail(service_date=saturday, lift_time="10:00")
+    assert detail is not None
+    assert detail[0].manual_count == 0
+    async with db.session() as session:
+        assert await session.scalar(select(ManualBookingCount)) is None
+
+
 async def test_a_reposted_day_announces_itself_again(db: SharedDatabase) -> None:
     """Cancelling a day and posting a fresh poll must not inherit sent notices."""
     client = FakeTelegramClient()

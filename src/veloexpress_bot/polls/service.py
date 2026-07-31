@@ -619,6 +619,16 @@ class PollPostingService:
                 .where(CancelledLift.thread_id == self._settings.telegram_target_thread_id)
                 .where(CancelledLift.service_date == service_date)
             )
+            # Hand-added riders go with the day. Nobody can tell whether they still
+            # intend to come if it is revived, and leaving them behind means a fresh
+            # poll opens with seats already taken by people nobody can name.
+            await session.execute(
+                delete(ManualBookingCount)
+                .where(ManualBookingCount.environment == self._settings.app_env)
+                .where(ManualBookingCount.chat_id == self._settings.telegram_target_chat_id)
+                .where(ManualBookingCount.thread_id == self._settings.telegram_target_thread_id)
+                .where(ManualBookingCount.service_date == service_date)
+            )
             await session.commit()
 
         await self._send_tagged_notice(

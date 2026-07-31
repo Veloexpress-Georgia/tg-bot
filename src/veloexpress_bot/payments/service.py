@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from veloexpress_bot.config import Settings
@@ -302,6 +302,29 @@ class PaymentsService:
             service_date=service_date,
             cancelled_lift_time=cancelled_lift_time,
             rows=rows,
+        )
+
+    async def forget_day(self, *, service_date: date) -> None:
+        """Drop the day's payments once the refunds have been reported.
+
+        A retired day is being paid back, so leaving the claims behind would make a
+        revived poll open with money the bot no longer holds. Call this after
+        cancellation_report — that report is the record.
+        """
+        if not self.enabled:
+            return
+        async with self._session_factory() as session:
+            await session.execute(
+                delete(PaymentClaim)
+                .where(PaymentClaim.environment == self._settings.app_env)
+                .where(PaymentClaim.chat_id == self._require_chat_id())
+                .where(PaymentClaim.service_date == service_date)
+            )
+            await session.commit()
+        logger.info(
+            "payments_day_forgotten service_date=%s",
+            service_date.isoformat(),
+            extra={"service_date": service_date.isoformat()},
         )
 
     async def record_topic_post(self, *, telegram_user_id: int, posted_at: datetime) -> None:

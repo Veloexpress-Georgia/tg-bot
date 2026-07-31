@@ -606,6 +606,26 @@ async def test_cancelling_one_lift_separates_refunds_from_riders_who_stay(
     assert "Refund 15 GEL of 30 GEL paid." in report
 
 
+async def test_forgetting_a_day_clears_its_payments_after_the_report(
+    db: SharedDatabase,
+) -> None:
+    """The refund report is the record; keeping the claims would overstate the till."""
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
+
+    await poll_service.cancel_day(service_date=saturday, admin_user_id=1)
+    assert await payments.cancellation_report(service_date=saturday) is not None
+    await payments.forget_day(service_date=saturday)
+
+    assert await payments.cancellation_report(service_date=saturday) is None
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentClaim)) is None
+
+
 async def test_no_refund_report_when_nobody_had_paid(db: SharedDatabase) -> None:
     poll_service, payments, _client, poll_id, saturday = await _setup(db)
     await _fill(poll_service, poll_id, 0, riders=5)

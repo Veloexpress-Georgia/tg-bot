@@ -296,6 +296,9 @@ async def handle_lift_cancellation(
         await callback.answer("Day cancelled.")
         await _show_monitor(message, poll_service, admin_user_id, service_date)
         await _report_refunds(message, payments_service, service_date=service_date)
+        # Only after the report: it is the record, and the money is going back, so a
+        # revived poll must not open holding payments the bot no longer has.
+        await payments_service.forget_day(service_date=service_date)
         return
     if action == "back":
         await callback.answer()
