@@ -105,6 +105,13 @@ class PollAutoScheduler:
             except Exception:
                 logger.exception("payments_board_sync_failed")
 
+        # A rules or price change has to reach notices already posted; recreating
+        # the polls would throw away live votes.
+        try:
+            await self._poll_service.refresh_poll_notices(now=now_local)
+        except Exception:
+            logger.exception("poll_notice_refresh_failed")
+
         # Threshold and departure notices are independent of the posting
         # schedule: they must run even when auto-posting was never configured.
         try:

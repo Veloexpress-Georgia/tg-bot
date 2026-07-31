@@ -287,7 +287,7 @@ def test_the_reminder_states_the_deadline_and_what_each_lift_needs() -> None:
             _signal(3, lift_time="8:30"),
             _signal(0, lift_time="11:45", cancelled=True),
         ),
-        deadline_time="20:00",
+        terms=TERMS,
     )
 
     assert text.splitlines() == [
@@ -296,6 +296,8 @@ def test_the_reminder_states_the_deadline_and_what_each_lift_needs() -> None:
         "8:30 — 3/5 · needs 2 more",
         "10:00 — 6 riders · running",
         "11:45 — ❌ cancelled",
+        "",
+        '🔗 <a href="https://pay.example">Where to pay</a>',
     ]
 
 

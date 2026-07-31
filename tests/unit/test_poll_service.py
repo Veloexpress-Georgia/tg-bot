@@ -687,6 +687,39 @@ async def test_new_polls_reopen_the_monitor_at_the_bottom_of_the_admin_chat(
     assert monitor.telegram_message_id != monitor_message_id
 
 
+async def test_a_posted_notice_picks_up_changed_money_rules(db: SharedDatabase) -> None:
+    """A price or rule change must reach notices already posted.
+
+    Recreating the polls would carry the new text but throw away live votes, so
+    the notice is re-rendered in place instead.
+    """
+    service_settings = settings()
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=service_settings,
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    result = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
+        include_notice=True,
+        pin_after_send=False,
+    )
+    assert result.notice_message_id is not None
+    service_settings.payment_price_gel = 20
+
+    assert await service.refresh_poll_notices() == 1
+
+    edits = [
+        text for message_id, text in client.edited_texts if message_id == result.notice_message_id
+    ]
+    assert "20 GEL per seat." in edits[-1]
+    # Once per day per process: a second pass would spend an API call to change
+    # nothing, and Telegram edits are silent anyway.
+    assert await service.refresh_poll_notices() == 0
+
+
 async def test_a_reposted_day_announces_itself_again(db: SharedDatabase) -> None:
     """Cancelling a day and posting a fresh poll must not inherit sent notices."""
     client = FakeTelegramClient()

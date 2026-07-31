@@ -210,6 +210,8 @@ class PollPostingService:
         self._session_factory = session_factory
         self._telegram_client = telegram_client
         self._availability_locks: dict[str, Lock] = {}
+        # Notices already reconciled in this process; see refresh_poll_notices.
+        self._reconciled_notice_batch_ids: set[int] = set()
         self._zone = ZoneInfo(settings.schedule_timezone)
 
     async def _payment_terms(self, *, service_date: date | None = None) -> PaymentTerms:
@@ -765,6 +767,48 @@ class PollPostingService:
         except Exception:
             logger.exception(log_label)
 
+    async def refresh_poll_notices(self, *, now: datetime | None = None) -> int:
+        """Re-render the route/payment notice of every upcoming day, in place.
+
+        The notice states the money rules, so a rule or price change must reach the
+        notices already posted — recreating the polls would throw away live votes.
+        A Telegram edit is silent, and an unchanged edit is a no-op, so this is
+        attempted once per day per process rather than on every tick.
+        """
+        if self._settings.telegram_target_chat_id is None:
+            return 0
+        today = (now or datetime.now(UTC)).astimezone(self._zone).date()
+        terms = await self._payment_terms()
+        async with self._session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(PollBatch.id, PollBatch.first_lift_location, PollMessage)
+                    .join(PollMessage, PollMessage.batch_id == PollBatch.id)
+                    .where(PollBatch.environment == self._settings.app_env)
+                    .where(PollBatch.chat_id == self._settings.telegram_target_chat_id)
+                    .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
+                    .where(PollBatch.status == "posted")
+                    .where(PollBatch.service_date >= today)
+                    .where(PollMessage.message_kind == "notice")
+                )
+            ).all()
+
+        updated = 0
+        for batch_id, location, message in rows:
+            if batch_id in self._reconciled_notice_batch_ids:
+                continue
+            self._reconciled_notice_batch_ids.add(batch_id)
+            if await self._telegram_client.edit_text(
+                chat_id=self._settings.telegram_target_chat_id,
+                message_id=message.telegram_message_id,
+                text=render_poll_notice(StartLocation(location), terms=terms),
+                parse_mode=PAYMENT_TERMS_PARSE_MODE,
+            ):
+                updated += 1
+        if updated:
+            logger.info("poll_notice_refreshed count=%s", updated, extra={"count": updated})
+        return updated
+
     async def evaluate_lift_signals(self, *, now: datetime | None = None) -> tuple[LiftEvent, ...]:
         """Announce lifts crossing the rider minimum and ping the day's opener.
 
@@ -817,7 +861,7 @@ class PollPostingService:
             render_deadline_reminder(
                 day.service_date,
                 signals,
-                deadline_time=self._settings.booking_deadline_time,
+                terms=await self._payment_terms(service_date=day.service_date),
             ),
             # Nobody is tagged: whoever is booked is already booked, and tagging
             # the whole group is exactly the spam this bot avoids.

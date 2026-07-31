@@ -204,16 +204,18 @@ def render_deadline_reminder(
     service_date: date,
     signals: Iterable[LiftSignal],
     *,
-    deadline_time: str,
+    terms: PaymentTerms,
 ) -> str:
     day = SHORT_DAY_LABELS.get(service_date.weekday(), "Lift day")
     month = EN_SHORT_MONTHS[service_date.month]
     lines = [
-        f"⏳ Tomorrow · {day}, {service_date.day} {month} — book and pay by {deadline_time}.",
+        f"⏳ Tomorrow · {day}, {service_date.day} {month} — book and pay by {terms.deadline_time}.",
         "",
     ]
     ordered = sorted(signals, key=lambda signal: lift_minutes(signal.lift_time))
     lines.extend(_reminder_line(signal) for signal in ordered)
+    if terms.link:
+        lines.extend(("", terms.rules()[-1]))
     return "\n".join(lines)
 
 
