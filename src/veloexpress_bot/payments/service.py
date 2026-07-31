@@ -42,6 +42,9 @@ MIN_SEATS_TEXT = "At least one seat."
 BOARD_GONE_TEXT = "This payments board is no longer active."
 PAYMENTS_DISABLED_TEXT = "Payments are not set up for this chat."
 
+CASH_METHOD = "cash"
+TRANSFER_METHOD = "transfer"
+
 
 @dataclass
 class DayBookings:
@@ -101,6 +104,7 @@ class PaymentsService:
         telegram_user_id: int,
         username: str | None,
         full_name: str,
+        method: str = TRANSFER_METHOD,
     ) -> str:
         if not self.enabled:
             return PAYMENTS_DISABLED_TEXT
@@ -129,6 +133,7 @@ class PaymentsService:
                     username=username,
                     full_name=full_name,
                     seats=len(lift_times),
+                    method=method,
                 )
             )
             await session.commit()
@@ -137,7 +142,8 @@ class PaymentsService:
         await self._refresh_board(day)
         # Name the lifts: the amount only makes sense once you can see that lifts
         # still short of the minimum are not charged for.
-        return f"Thanks! {', '.join(lift_times)} · {self._amount(len(lift_times))} GEL."
+        how = " in cash" if method == CASH_METHOD else ""
+        return f"Thanks! {', '.join(lift_times)} · {self._amount(len(lift_times))} GEL{how}."
 
     async def adjust_seats(
         self,
@@ -242,6 +248,8 @@ class PaymentsService:
                         username=username,
                         full_name=full_name,
                         seats=seats,
+                        # Left unset: an admin records money the bot never saw, and
+                        # guessing "cash" could send Misho hunting for a transfer.
                         verified_by_user_id=admin_user_id,
                         verified_at=datetime.now(UTC),
                     )
@@ -411,6 +419,7 @@ class PaymentsService:
                 return
             seats = claim.seats
             label = _rider_label(claim.username, claim.full_name)
+            cash = claim.method == CASH_METHOD
             posted_message_id = claim.posted_message_id
             self_posted = await self._posted_in_topic_since(
                 session=session,
@@ -428,6 +437,7 @@ class PaymentsService:
             seats=seats,
             amount_gel=self._amount(seats),
             user_id=telegram_user_id,
+            cash=cash,
         )
         if posted_message_id is not None:
             await self._telegram_client.edit_text(
@@ -524,6 +534,7 @@ class PaymentsService:
                     label=_rider_label(claim.username, claim.full_name),
                     seats=claim.seats,
                     amount_gel=self._amount(claim.seats),
+                    cash=claim.method == CASH_METHOD,
                 )
                 for claim in claims
             ),

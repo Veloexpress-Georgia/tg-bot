@@ -14,6 +14,7 @@ from veloexpress_bot.db.base import Base
 from veloexpress_bot.db.models import PaymentClaim, PaymentsBoard
 from veloexpress_bot.payments.service import (
     ALREADY_CLAIMED_TEXT,
+    CASH_METHOD,
     NOT_BOOKED_TEXT,
     NOT_CLAIMED_YET_TEXT,
     PAYMENTS_DISABLED_TEXT,
@@ -339,6 +340,53 @@ async def test_the_running_notice_links_to_that_days_board(db: SharedDatabase) -
     # A private supergroup link drops the -100 prefix: -100123 becomes 123.
     assert f'href="https://t.me/c/123/{PAYMENTS_THREAD}/{board.message_id}"' in running.text
     assert "Pay here" in running.text
+
+
+async def test_a_cash_tap_records_the_method_so_misho_can_reconcile(
+    db: SharedDatabase,
+) -> None:
+    """Cash needs its own tap: telling riders to press the transfer button anyway is a
+    rule 166 people will not follow, and Misho cannot otherwise tell which lines to
+    look for in his bank statement."""
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+    board = client.payments_sends()[-1]
+
+    notice = await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="konstantin",
+        full_name="Konstantin",
+        method=CASH_METHOD,
+    )
+
+    assert notice.endswith("15 GEL in cash.")
+    posted = client.payments_sends()[-1]
+    assert posted.text.startswith("💵 ")
+    assert posted.text.endswith("· cash")
+    board_edits = [text for message_id, text in client.edits if message_id == board.message_id]
+    assert "· cash" in board_edits[-1]
+    async with db.session() as session:
+        claim = await session.scalar(select(PaymentClaim))
+    assert claim is not None
+    assert claim.method == CASH_METHOD
+
+
+async def test_an_admin_mark_leaves_the_method_unknown(db: SharedDatabase) -> None:
+    """Guessing "cash" could send Misho hunting for a transfer that never existed."""
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+
+    await payments.toggle_admin_payment(
+        service_date=saturday, telegram_user_id=100, admin_user_id=1
+    )
+
+    async with db.session() as session:
+        claim = await session.scalar(select(PaymentClaim))
+    assert claim is not None
+    assert claim.method is None
 
 
 async def test_writing_in_the_payments_topic_marks_the_rider_paid(db: SharedDatabase) -> None:

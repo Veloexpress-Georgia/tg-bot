@@ -43,7 +43,7 @@ def test_render_poll_notice_states_the_money_rules_in_order() -> None:
         "A lift runs from 5 riders. Wait for the ✅ message, then pay — "
         "nothing to pay before that.",
         "Book, change or cancel free until 20:00 the day before.",
-        "💵 Cash is fine — settle with Misho, then tap 💸 I paid all the same.",
+        "💵 Cash is fine — settle with Misho and tap 💵 Cash on the payments board.",
         '🔗 <a href="https://pay.example">Where to pay</a>',
     ]
 

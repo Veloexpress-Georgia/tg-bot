@@ -22,7 +22,11 @@ from veloexpress_bot.bot.permissions import is_admin
 from veloexpress_bot.bot.states import ExtraDayStates
 from veloexpress_bot.config import Settings
 from veloexpress_bot.payments.render import decode_board_date
-from veloexpress_bot.payments.service import PaymentsService
+from veloexpress_bot.payments.service import (
+    CASH_METHOD,
+    TRANSFER_METHOD,
+    PaymentsService,
+)
 from veloexpress_bot.polls.autoposter import PollAutoScheduler
 from veloexpress_bot.polls.autoschedule import CardView
 from veloexpress_bot.polls.extraday import (
@@ -676,12 +680,13 @@ async def handle_payment_button(
         await callback.answer(STALE_BOARD_ALERT, show_alert=True)
         return
 
-    if action == "paid":
+    if action in {"paid", "cash"}:
         notice = await payments_service.claim(
             service_date=service_date,
             telegram_user_id=user.id,
             username=user.username,
             full_name=user.full_name,
+            method=CASH_METHOD if action == "cash" else TRANSFER_METHOD,
         )
     elif action == "guest":
         notice = await payments_service.adjust_seats(

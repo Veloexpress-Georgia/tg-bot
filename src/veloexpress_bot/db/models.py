@@ -253,6 +253,9 @@ class PaymentClaim(Base):
     username: Mapped[str | None] = mapped_column(String(128))
     full_name: Mapped[str] = mapped_column(Text)
     seats: Mapped[int] = mapped_column(Integer, default=1)
+    # "cash" | "transfer" | NULL when the bot never learned how the money arrived.
+    # Misho reconciles against his bank statement, so cash is the case worth naming.
+    method: Mapped[str | None] = mapped_column(String(16))
     claimed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

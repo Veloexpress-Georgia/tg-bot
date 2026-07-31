@@ -113,7 +113,7 @@ A message in the payments topic counts as a payment report on its own: the group
 
 The board tags whoever still owes rather than printing a count. Editing a message sends no Telegram notification, so the names show the gap without nagging anybody.
 
-The notice states plainly that cash is fine: settle with Misho and tap 💸 I paid anyway, because the bot records that a rider paid and not how the money arrived. This was the first thing riders asked about and the notice had said nothing about it.
+Cash has its own `💵 Cash` button beside `💸 I paid`. Telling riders to press the transfer button anyway is a rule most of a 166-person group will not follow, and the method is worth recording in its own right: Misho reconciles against his bank statement, so a cash line is the one he must *not* go hunting for. Cash is named on the board and in the posted line; a transfer is not, because its absence already means "expect it in the bank". An admin mark leaves the method unset — guessing "cash" there could send Misho looking for a transfer that never existed.
 
 Some riders pay cash or message Misho directly and never touch the bot at all. Tapping a rider in the monitor's lift detail records their payment; tapping again clears it. That admin mark posts nothing to the payments topic — whoever took the cash already knows — and the board shows it exactly like a rider's own claim, because who recorded a payment is bookkeeping the group does not need to read. There is no separate "verify a claim" step: with no enforcement behind it, a tap per rider would be work without a consequence.
 

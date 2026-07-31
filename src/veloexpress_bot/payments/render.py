@@ -13,6 +13,10 @@ PAYMENTS_PARSE_MODE = "HTML"
 # Riders tap these in the group, so the labels cannot be personal: one shared
 # keyboard serves everyone and the bot answers each tap with a private toast.
 PAID_BUTTON = "💸 I paid"
+# Cash gets its own button rather than a rule telling riders to press the transfer
+# one anyway. It also tells Misho which lines to look for in his bank statement and
+# which not to, which he cannot otherwise know.
+CASH_BUTTON = "💵 Cash"
 # Guests have no vote of their own, so they need a button. There is deliberately no
 # "one fewer seat": paying for fewer laps than you booked leaves a seat you still
 # occupy, which is the phantom booking the group keeps tripping over. Ride less and
@@ -27,6 +31,7 @@ class RiderPayment:
     label: str
     seats: int
     amount_gel: int
+    cash: bool = False
 
 
 @dataclass(frozen=True)
@@ -116,7 +121,7 @@ def render_payments_board(view: PaymentsBoardView) -> PaymentsBoardDraft:
         f"{view.price_gel} GEL per seat · pay by {view.deadline_time}",
     ]
     lines.append("")
-    lines.append("Bringing someone? ➕ Guest adds a seat.")
+    lines.append("💸 transfer · 💵 cash · ➕ Guest adds a seat")
     if view.payments:
         lines.extend(("", "Paid:"))
         lines.extend(_payment_line(payment) for payment in view.payments)
@@ -139,15 +144,19 @@ def render_payment_post(
     seats: int,
     amount_gel: int,
     user_id: int,
+    cash: bool = False,
 ) -> str:
     """The line the bot posts on a rider's behalf, tagged so Misho can see who."""
     mention = f'<a href="tg://user?id={user_id}">{html.escape(label)}</a>'
-    parts = [f"💸 {mention} — {amount_gel} GEL · {_long_day_label(service_date)}"]
+    marker = "💵" if cash else "💸"
+    parts = [f"{marker} {mention} — {amount_gel} GEL · {_long_day_label(service_date)}"]
     if lift_times:
         parts.append(", ".join(lift_times))
     guests = seats - len(lift_times)
     if guests > 0:
         parts.append(f"+{guests} guest" if guests == 1 else f"+{guests} guests")
+    if cash:
+        parts.append("cash")
     return " · ".join(parts)
 
 
@@ -165,9 +174,12 @@ def _keyboard(service_date: date) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text=PAID_BUTTON, callback_data=f"pay:paid:{encoded}"),
-                InlineKeyboardButton(text=GUEST_BUTTON, callback_data=f"pay:guest:{encoded}"),
+                InlineKeyboardButton(text=CASH_BUTTON, callback_data=f"pay:cash:{encoded}"),
             ],
-            [InlineKeyboardButton(text=UNDO_BUTTON, callback_data=f"pay:undo:{encoded}")],
+            [
+                InlineKeyboardButton(text=GUEST_BUTTON, callback_data=f"pay:guest:{encoded}"),
+                InlineKeyboardButton(text=UNDO_BUTTON, callback_data=f"pay:undo:{encoded}"),
+            ],
         ]
     )
 
@@ -177,10 +189,11 @@ def _mention(rider: OutstandingRider) -> str:
 
 
 def _payment_line(payment: RiderPayment) -> str:
-    # One state only. Whether the rider claimed it or an admin recorded a cash
-    # payment is bookkeeping, not something the group needs to read.
+    # Paid is paid — who recorded it is bookkeeping the group need not read. Cash is
+    # the one exception worth naming: it is the line Misho will not find in his bank.
     seats = f" · {payment.seats} seats" if payment.seats > 1 else ""
-    return f"✓ {payment.label} — {payment.amount_gel} GEL{seats}"
+    cash = " · cash" if payment.cash else ""
+    return f"✓ {payment.label} — {payment.amount_gel} GEL{seats}{cash}"
 
 
 def _long_day_label(service_date: date) -> str:

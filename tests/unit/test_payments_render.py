@@ -40,13 +40,15 @@ def test_board_lists_running_lifts_price_and_the_taps() -> None:
     assert "💸 Payments · Sat, 18 Jul" in draft.text
     assert "Running: 8:30, 10:00" in draft.text
     assert "15 GEL per seat · pay by 20:00" in draft.text
-    assert "Bringing someone? ➕ Guest adds a seat." in draft.text
+    assert "💸 transfer · 💵 cash · ➕ Guest adds a seat" in draft.text
     assert "Waiting on:" in draft.text
     assert draft.reply_markup is not None
-    # No "one fewer seat": underpaying while still holding the seat is the phantom
-    # booking the group keeps tripping over. Change your poll answer instead.
+    # Cash has its own button rather than a rule telling riders to press the
+    # transfer one anyway. No "one fewer seat": underpaying while still holding the
+    # seat is the phantom booking the group keeps tripping over.
     assert _buttons(draft.reply_markup) == {
         "pay:paid:20260718": "💸 I paid",
+        "pay:cash:20260718": "💵 Cash",
         "pay:guest:20260718": "➕ Guest",
         "pay:undo:20260718": "↩️ Undo",
     }
@@ -66,6 +68,36 @@ def test_board_lists_payments_and_counts_the_rest() -> None:
     assert "✓ @stas — 30 GEL · 2 seats" in draft.text
     assert "✓ Anna — 15 GEL" in draft.text
     assert "Waiting on:" in draft.text
+
+
+def test_cash_is_named_on_the_board_and_transfers_are_not() -> None:
+    """Cash is the line Misho will not find in his bank, so it is worth naming."""
+    draft = render_payments_board(
+        _view(
+            payments=(
+                RiderPayment(label="@stas", seats=1, amount_gel=15, cash=True),
+                RiderPayment(label="Anna", seats=1, amount_gel=15),
+            ),
+        )
+    )
+
+    assert "✓ @stas — 15 GEL · cash" in draft.text
+    assert "✓ Anna — 15 GEL" in draft.text
+
+
+def test_a_cash_post_is_marked_so_misho_does_not_hunt_for_a_transfer() -> None:
+    text = render_payment_post(
+        label="@konstantin",
+        service_date=SATURDAY,
+        lift_times=("10:00",),
+        seats=1,
+        amount_gel=15,
+        user_id=12,
+        cash=True,
+    )
+
+    assert text.startswith("💵 ")
+    assert text.endswith("· cash")
 
 
 def test_board_tags_who_still_owes() -> None:
