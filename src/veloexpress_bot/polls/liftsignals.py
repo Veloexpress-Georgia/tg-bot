@@ -205,13 +205,29 @@ def render_deadline_reminder(
     signals: Iterable[LiftSignal],
     *,
     terms: PaymentTerms,
+    deadline_passed: bool = False,
 ) -> str:
+    """Kept fresh, because this is the message people act on.
+
+    A one-shot snapshot goes stale within the hour — riders book after it — and a
+    stale count is worse than none. It stays live past the deadline too: nothing
+    actually stops a late booking, so only the call to action changes.
+    """
     day = SHORT_DAY_LABELS.get(service_date.weekday(), "Lift day")
     month = EN_SHORT_MONTHS[service_date.month]
-    lines = [
-        f"⏳ Tomorrow · {day}, {service_date.day} {month} — book and pay by {terms.deadline_time}.",
-        "",
-    ]
+    if deadline_passed:
+        # Not "closed": the poll is still open and the bot enforces nothing. What
+        # changed is that late changes are now Misho's call, not an entitlement.
+        headline = (
+            f"🚐 {day}, {service_date.day} {month} — "
+            f"{terms.deadline_time} deadline has passed. Late changes are up to Misho."
+        )
+    else:
+        headline = (
+            f"⏳ Tomorrow · {day}, {service_date.day} {month} — "
+            f"book and pay by {terms.deadline_time}."
+        )
+    lines = [headline, ""]
     ordered = sorted(signals, key=lambda signal: lift_minutes(signal.lift_time))
     lines.extend(_reminder_line(signal) for signal in ordered)
     if terms.link:
@@ -223,6 +239,8 @@ def _reminder_line(signal: LiftSignal) -> str:
     if signal.cancelled:
         return f"{signal.lift_time} — ❌ cancelled"
     if signal.seats < MINIMUM_RIDERS:
+        # Still "needs N more" after the deadline: it is literally true, and a late
+        # rider can still save the lift if Misho allows it.
         missing = MINIMUM_RIDERS - signal.seats
         return f"{signal.lift_time} — {signal.seats}/{MINIMUM_RIDERS} · needs {missing} more"
     return f"{signal.lift_time} — {signal.seats} riders · running"

@@ -215,6 +215,7 @@ class PollPostingService:
         self._availability_locks: dict[str, Lock] = {}
         # Notices already reconciled in this process; see refresh_poll_notices.
         self._reconciled_notice_batch_ids: set[int] = set()
+        self._deadline_reminder_texts: dict[date, str] = {}
         self._zone = ZoneInfo(settings.schedule_timezone)
 
     async def _payment_terms(self, *, service_date: date | None = None) -> PaymentTerms:
@@ -755,14 +756,14 @@ class PollPostingService:
         mentions: dict[int, str],
         *,
         log_label: str,
-    ) -> None:
+    ) -> int | None:
         """Post one group message and tag the riders it concerns.
 
         Tagging beats a DM: most riders never pressed /start, so Telegram will
         not let the bot message them at all.
         """
         if self._settings.telegram_target_chat_id is None:
-            return
+            return None
         text = notice
         if mentions:
             tags = " ".join(
@@ -771,7 +772,7 @@ class PollPostingService:
             )
             text = f"{text}\n\n{tags}"
         try:
-            await self._telegram_client.send_text(
+            sent = await self._telegram_client.send_text(
                 chat_id=self._settings.telegram_target_chat_id,
                 message_thread_id=self._settings.telegram_target_thread_id,
                 text=text,
@@ -779,6 +780,8 @@ class PollPostingService:
             )
         except Exception:
             logger.exception(log_label)
+            return None
+        return sent.message_id
 
     async def refresh_poll_notices(self, *, now: datetime | None = None) -> int:
         """Re-render the route/payment notice of every upcoming day, in place.
@@ -843,21 +846,55 @@ class PollPostingService:
         return tuple(events)
 
     async def _remind_booking_deadline(self, day: BookingMonitorDay, *, now: datetime) -> None:
-        """Nudge the group once, the evening before, while a lift can still fill."""
+        """Nudge the group once, then keep that message honest until the deadline.
+
+        A one-shot snapshot is stale within the hour, and this is the message people
+        act on. After the deadline it stops moving and stands as the final list.
+        """
         signals = _day_signals(day)
+        deadline_at = booking_deadline_at(
+            day.service_date,
+            self._settings.booking_deadline_time,
+            zone=self._zone,
+        )
         async with self._session_factory() as session:
             notice = await self._service_day_notice(session=session, service_date=day.service_date)
-            if not decide_deadline_reminder(
+            already_reminded = notice is not None and notice.deadline_reminded_at is not None
+            message_id = notice.deadline_message_id if notice is not None else None
+            if not already_reminded and not decide_deadline_reminder(
                 signals,
                 now=now,
-                deadline_at=booking_deadline_at(
-                    day.service_date,
-                    self._settings.booking_deadline_time,
-                    zone=self._zone,
-                ),
-                already_reminded=notice is not None and notice.deadline_reminded_at is not None,
+                deadline_at=deadline_at,
+                already_reminded=False,
             ):
                 return
+
+        terms = await self._payment_terms(service_date=day.service_date)
+        deadline_passed = now > deadline_at
+        text = render_deadline_reminder(
+            day.service_date,
+            signals,
+            terms=terms,
+            deadline_passed=deadline_passed,
+        )
+
+        if already_reminded:
+            await self._refresh_deadline_reminder(
+                message_id=message_id,
+                text=text,
+                service_date=day.service_date,
+            )
+            return
+
+        # Nobody is tagged: whoever is booked is already booked, and tagging the
+        # whole group is exactly the spam this bot avoids.
+        sent_message_id = await self._send_tagged_notice(
+            text,
+            {},
+            log_label="booking_deadline_reminder_failed",
+        )
+        async with self._session_factory() as session:
+            notice = await self._service_day_notice(session=session, service_date=day.service_date)
             if notice is None:
                 notice = ServiceDayNotice(
                     environment=self._settings.app_env,
@@ -867,24 +904,37 @@ class PollPostingService:
                 )
                 session.add(notice)
             notice.deadline_reminded_at = now.astimezone(UTC)
+            notice.deadline_message_id = sent_message_id
             notice.updated_at = now.astimezone(UTC)
             await session.commit()
-
-        await self._send_tagged_notice(
-            render_deadline_reminder(
-                day.service_date,
-                signals,
-                terms=await self._payment_terms(service_date=day.service_date),
-            ),
-            # Nobody is tagged: whoever is booked is already booked, and tagging
-            # the whole group is exactly the spam this bot avoids.
-            {},
-            log_label="booking_deadline_reminder_failed",
-        )
         logger.info(
             "booking_deadline_reminded service_date=%s",
             day.service_date.isoformat(),
             extra={"service_date": day.service_date.isoformat()},
+        )
+
+    async def _refresh_deadline_reminder(
+        self,
+        *,
+        message_id: int | None,
+        text: str,
+        service_date: date,
+    ) -> None:
+        """Edit the reminder in place, and only when the text actually moved.
+
+        The last text is kept in memory rather than the database: a redundant edit
+        after a restart costs one silent no-op, and a column would cost a migration.
+        """
+        if message_id is None:
+            return
+        if self._deadline_reminder_texts.get(service_date) == text:
+            return
+        self._deadline_reminder_texts[service_date] = text
+        await self._telegram_client.edit_text(
+            chat_id=self._require_target_chat_id(),
+            message_id=message_id,
+            text=text,
+            parse_mode="HTML",
         )
 
     async def _service_day_notice(

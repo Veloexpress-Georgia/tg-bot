@@ -230,6 +230,9 @@ class ServiceDayNotice(Base):
     thread_id: Mapped[int | None] = mapped_column(BigInteger)
     service_date: Mapped[date] = mapped_column(Date)
     deadline_reminded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Kept so the reminder can be refreshed in place until the deadline, after which
+    # it stops moving and stands as the final list.
+    deadline_message_id: Mapped[int | None] = mapped_column(BigInteger)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

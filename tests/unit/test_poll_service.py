@@ -634,6 +634,48 @@ async def test_the_deadline_reminder_goes_out_once_and_names_no_one(db: SharedDa
     assert len([text for text in client.sent_texts if "⏳ Tomorrow" in text]) == 1
 
 
+async def test_the_deadline_reminder_stays_fresh_and_never_claims_booking_is_shut(
+    db: SharedDatabase,
+) -> None:
+    """People book after the reminder lands, and this is the message they act on.
+
+    Nothing actually closes at the deadline — the Telegram poll stays open and the
+    bot enforces nothing — so past it only the call to action changes.
+    """
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    poll = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
+        pin_after_send=False,
+    )
+    poll_id = poll.poll_id or ""
+    await _fill_lift(service, poll_id, riders=3)
+
+    deadline = booking_deadline_at(saturday, "20:00", zone=ZoneInfo("Asia/Tbilisi"))
+    reminder_id = client.next_message_id
+    await service.evaluate_lift_signals(now=deadline - timedelta(hours=1))
+    reminders = [text for text in client.sent_texts if "⏳ Tomorrow" in text]
+    assert len(reminders) == 1
+    assert "8:30 — 3/5 · needs 2 more" in reminders[0]
+
+    # Two more riders arrive before the deadline: the message must follow.
+    await _fill_lift(service, poll_id, riders=5)
+    await service.evaluate_lift_signals(now=deadline - timedelta(minutes=30))
+    edits = [text for message_id, text in client.edited_texts if message_id == reminder_id]
+    assert "8:30 — 5 riders · running" in edits[-1]
+    assert len([text for text in client.sent_texts if "⏳ Tomorrow" in text]) == 1
+
+    await service.evaluate_lift_signals(now=deadline + timedelta(minutes=5))
+    edits = [text for message_id, text in client.edited_texts if message_id == reminder_id]
+    assert "deadline has passed. Late changes are up to Misho." in edits[-1]
+    assert "closed" not in edits[-1]
+
+
 async def test_no_deadline_reminder_when_every_lift_is_already_running(
     db: SharedDatabase,
 ) -> None:
