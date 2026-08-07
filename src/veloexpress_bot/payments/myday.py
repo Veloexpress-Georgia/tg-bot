@@ -1,10 +1,12 @@
-"""The guest form, shown in the bot's private chat.
+"""One rider's day, shown in the bot's private chat.
 
-Guests live here rather than on the public payments board for two reasons: a form
-can show how many seats are actually left on each lift, and a shared group
-keyboard cannot hold one row per lift per rider. The board links here instead,
-and the link doubles as onboarding — tapping a deep link is pressing Start, so it
-reaches riders who never opened the bot.
+Anything that depends on who is asking lives here rather than on the public
+payments board: a form can show how many seats a lift has left and what this
+rider owes, while a shared group keyboard cannot hold a row per lift per person.
+The board links here, and the link doubles as onboarding — tapping a deep link is
+pressing Start, so it reaches riders who never opened the bot.
+
+The board keeps the one-tap common case. This is where the nuance goes.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from veloexpress_bot.polls.render import EN_SHORT_MONTHS, SHORT_DAY_LABELS
 
-GUEST_CARD_PARSE_MODE = "HTML"
+MY_DAY_PARSE_MODE = "HTML"
 DEEP_LINK_PREFIX = "guests-"
 
 
@@ -28,10 +30,15 @@ class GuestLiftRow:
 
 
 @dataclass(frozen=True)
-class GuestCardView:
+class MyDayView:
     service_date: date
     price_gel: int
     rows: tuple[GuestLiftRow, ...] = ()
+    # Lifts the rider booked that have not reached the minimum yet. Paying for these
+    # is optional, which is why the whole-day button only appears when some exist.
+    pending_lift_times: tuple[str, ...] = ()
+    due_now_gel: int = 0
+    due_all_gel: int = 0
 
     @property
     def total_guests(self) -> int:
@@ -39,18 +46,18 @@ class GuestCardView:
 
 
 @dataclass(frozen=True)
-class GuestCardDraft:
+class MyDayDraft:
     text: str
     reply_markup: InlineKeyboardMarkup | None
 
 
-def render_guest_card(view: GuestCardView) -> GuestCardDraft:
-    header = f"👤 Guests · {_long_day_label(view.service_date)}"
+def render_my_day_card(view: MyDayView) -> MyDayDraft:
+    header = f"🚲 My day · {_long_day_label(view.service_date)}"
     if not view.rows:
-        return GuestCardDraft(
+        return MyDayDraft(
             text=(
                 f"{header}\n\nYou are not booked on any running lift that day, "
-                "so there is nothing to bring a guest to yet."
+                "so there is nothing to settle or bring a guest to yet."
             ),
             reply_markup=None,
         )
@@ -58,15 +65,25 @@ def render_guest_card(view: GuestCardView) -> GuestCardDraft:
     lines = [
         header,
         "",
-        f"Someone riding with you? Add a seat. {view.price_gel} GEL each.",
+        f"{view.price_gel} GEL per seat. Someone riding with you? Add a seat.",
         "",
     ]
     lines.extend(_row_line(row) for row in view.rows)
-    if view.total_guests:
-        due = view.total_guests * view.price_gel
-        lines.extend(("", f"Guests add {due} GEL to your total."))
+    if view.pending_lift_times:
+        # Naming them is the point: "15 GEL" alone looks wrong to somebody who booked
+        # three lifts, and cash cannot easily be topped up later.
+        pending = ", ".join(view.pending_lift_times)
+        lines.extend(
+            (
+                "",
+                f"Not filled yet: {pending}.",
+                f"Due now {view.due_now_gel} GEL · whole day {view.due_all_gel} GEL.",
+            )
+        )
+    elif view.due_all_gel:
+        lines.extend(("", f"Your total: {view.due_all_gel} GEL."))
 
-    return GuestCardDraft(text="\n".join(lines), reply_markup=_keyboard(view))
+    return MyDayDraft(text="\n".join(lines), reply_markup=_keyboard(view))
 
 
 def _row_line(row: GuestLiftRow) -> str:
@@ -76,9 +93,25 @@ def _row_line(row: GuestLiftRow) -> str:
     return f"{row.lift_time} — {guests} · {row.seats_left} seats left"
 
 
-def _keyboard(view: GuestCardView) -> InlineKeyboardMarkup:
+def _keyboard(view: MyDayView) -> InlineKeyboardMarkup:
     encoded_date = encode_guest_date(view.service_date)
     rows: list[list[InlineKeyboardButton]] = []
+
+    # Settling the whole day up front only makes sense while something is unfilled.
+    # It matters most for cash: handing money over twice means finding Misho twice.
+    if view.pending_lift_times:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"💸 Pay all · {view.due_all_gel}",
+                    callback_data=f"guest:payall:{encoded_date}",
+                ),
+                InlineKeyboardButton(
+                    text=f"💵 Cash all · {view.due_all_gel}",
+                    callback_data=f"guest:cashall:{encoded_date}",
+                ),
+            ]
+        )
 
     # The common case is one guest riding the whole day with their host, so that is
     # one tap. Per-lift rows exist for the rarer guest who only does some laps, and
@@ -92,7 +125,7 @@ def _keyboard(view: GuestCardView) -> InlineKeyboardMarkup:
 
 
 def _all_lifts_row(
-    view: GuestCardView,
+    view: MyDayView,
     *,
     encoded_date: str,
 ) -> list[InlineKeyboardButton]:

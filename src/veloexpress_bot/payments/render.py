@@ -32,6 +32,9 @@ class RiderPayment:
     amount_gel: int
     due_gel: int = 0
     cash: bool = False
+    # True when the rider still holds a booking that has not filled. Paying ahead and
+    # overpaying are the same arithmetic but opposite meanings.
+    prepaid: bool = False
 
     @property
     def gap_gel(self) -> int:
@@ -208,7 +211,8 @@ def _payment_line(payment: RiderPayment) -> str:
     if payment.gap_gel > 0:
         gap = f" · +{payment.gap_gel} due"
     elif payment.gap_gel < 0:
-        gap = f" · {-payment.gap_gel} back"
+        # "back" would call a deliberate prepayment a mistake.
+        gap = f" · {-payment.gap_gel} {'prepaid' if payment.prepaid else 'back'}"
     return f"✓ {payment.label} — {payment.amount_gel} GEL{seats}{cash}{gap}"
 
 

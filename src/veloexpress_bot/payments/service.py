@@ -20,12 +20,12 @@ from veloexpress_bot.db.models import (
     PollOptionSnapshot,
     PollVote,
 )
-from veloexpress_bot.payments.guests import (
-    GuestCardDraft,
-    GuestCardView,
+from veloexpress_bot.payments.myday import (
     GuestLiftRow,
+    MyDayDraft,
+    MyDayView,
     deep_link,
-    render_guest_card,
+    render_my_day_card,
 )
 from veloexpress_bot.payments.render import (
     PAYMENTS_PARSE_MODE,
@@ -58,6 +58,19 @@ WAITLIST_WARNING_TEXT = (
     "Tap again to pay anyway; you get a refund if you do not ride."
 )
 
+
+@dataclass(frozen=True)
+class ClaimOutcome:
+    """A warning the rider must acknowledge, or the result of settling up.
+
+    Returned instead of a bare string so the caller never has to recognise a warning
+    by comparing text — the partial-booking one names lifts and so is not a constant.
+    """
+
+    text: str
+    needs_confirmation: bool = False
+
+
 CASH_METHOD = "cash"
 TRANSFER_METHOD = "transfer"
 
@@ -80,6 +93,15 @@ class DayBookings:
     # Riders holding a real seat on each lift, in booking order. Everyone booked
     # beyond this is on the waitlist.
     seat_holders_by_lift: dict[str, tuple[int, ...]] = field(default_factory=dict)
+
+    def pending_lift_times(self, telegram_user_id: int) -> tuple[str, ...]:
+        """Lifts the rider booked that have not reached the minimum yet."""
+        running = self.lift_times_by_user.get(telegram_user_id, ())
+        return tuple(
+            lift_time
+            for lift_time in self.booked_lift_times_by_user.get(telegram_user_id, ())
+            if lift_time not in running
+        )
 
     def is_waitlisted(self, telegram_user_id: int) -> bool:
         """True when the rider holds no actual seat on any lift they booked."""
@@ -151,16 +173,25 @@ class PaymentsService:
         username: str | None,
         full_name: str,
         method: str = TRANSFER_METHOD,
-        acknowledged_waitlist: bool = False,
-    ) -> str:
+        acknowledged: bool = False,
+        include_pending: bool = False,
+    ) -> ClaimOutcome:
+        """Settle up to what the rider owes right now, or to their whole day.
+
+        `include_pending` covers lifts still short of the minimum. Nobody is pushed
+        into it — the rule is that you need not pay before five — but one transfer
+        beats two, and cash cannot be topped up without finding Misho again.
+        """
         if not self.enabled:
-            return PAYMENTS_DISABLED_TEXT
+            return ClaimOutcome(PAYMENTS_DISABLED_TEXT)
         day = await self._day(service_date)
         if day is None:
-            return BOARD_GONE_TEXT
+            return ClaimOutcome(BOARD_GONE_TEXT)
         lift_times = day.lift_times_by_user.get(telegram_user_id)
         if not lift_times:
-            return NOT_BOOKED_TEXT
+            return ClaimOutcome(NOT_BOOKED_TEXT)
+        pending = day.pending_lift_times(telegram_user_id)
+        paying_for = (*lift_times, *pending) if include_pending else lift_times
 
         async with self._session_factory() as session:
             claim = await self._claim_row(
@@ -169,11 +200,24 @@ class PaymentsService:
                 telegram_user_id=telegram_user_id,
             )
             guests = day.guest_seats(telegram_user_id)
-            owed = len(lift_times) + guests
+            owed = len(paying_for) + guests
             if claim is not None and claim.seats >= owed:
-                return ALREADY_SETTLED_TEXT
-            if not acknowledged_waitlist and day.is_waitlisted(telegram_user_id):
-                return WAITLIST_WARNING_TEXT
+                return ClaimOutcome(ALREADY_SETTLED_TEXT)
+            if not acknowledged:
+                if day.is_waitlisted(telegram_user_id):
+                    return ClaimOutcome(WAITLIST_WARNING_TEXT, needs_confirmation=True)
+                if pending and not include_pending:
+                    # Charging for part of a booking without saying so is the silent
+                    # 15 GEL that reads as a bug. One warning at a time, worst first.
+                    return ClaimOutcome(
+                        _partial_booking_warning(
+                            confirmed=lift_times,
+                            pending=pending,
+                            due_now=self._amount(len(lift_times) + guests),
+                            due_later=self._amount(len(pending)),
+                        ),
+                        needs_confirmation=True,
+                    )
             # The button means "I have paid everything I owe right now", so tapping it
             # again after re-voting or adding a guest settles the difference.
             if claim is None:
@@ -200,26 +244,39 @@ class PaymentsService:
         # still short of the minimum are not charged for.
         how = " in cash" if method == CASH_METHOD else ""
         guest_note = f" +{guests} guest(s)" if guests else ""
-        return f"Thanks! {', '.join(lift_times)}{guest_note} · {self._amount(owed)} GEL{how}."
+        return ClaimOutcome(
+            f"Thanks! {', '.join(paying_for)}{guest_note} · {self._amount(owed)} GEL{how}."
+        )
 
-    async def guest_card(self, *, service_date: date, telegram_user_id: int) -> GuestCardDraft:
-        """The private guest form: the rider's running lifts, their guests, seats left."""
+    async def my_day_card(self, *, service_date: date, telegram_user_id: int) -> MyDayDraft:
+        """The rider's own day: their lifts, guests, seats left, and what they owe."""
         day = await self._day(service_date) if self.enabled else None
         rows: tuple[GuestLiftRow, ...] = ()
+        pending: tuple[str, ...] = ()
+        due_now = 0
+        due_all = 0
         if day is not None and not day.cancelled:
+            running = day.lift_times_by_user.get(telegram_user_id, ())
             rows = tuple(
                 GuestLiftRow(
                     lift_time=lift_time,
                     guests=day.guests_by_user_lift.get((telegram_user_id, lift_time), 0),
                     seats_left=day.seats_left(lift_time),
                 )
-                for lift_time in day.lift_times_by_user.get(telegram_user_id, ())
+                for lift_time in running
             )
-        return render_guest_card(
-            GuestCardView(
+            pending = day.pending_lift_times(telegram_user_id)
+            guests = day.guest_seats(telegram_user_id)
+            due_now = self._amount(len(running) + guests)
+            due_all = self._amount(len(running) + len(pending) + guests)
+        return render_my_day_card(
+            MyDayView(
                 service_date=service_date,
                 price_gel=self._settings.payment_price_gel,
                 rows=rows,
+                pending_lift_times=pending,
+                due_now_gel=due_now,
+                due_all_gel=due_all,
             )
         )
 
@@ -648,6 +705,7 @@ class PaymentsService:
                     amount_gel=self._amount(claim.seats),
                     due_gel=self._amount(self._owed_seats(day, claim)),
                     cash=claim.method == CASH_METHOD,
+                    prepaid=bool(day.pending_lift_times(claim.telegram_user_id)),
                 )
                 for claim in claims
             ),
@@ -854,6 +912,21 @@ class PaymentsService:
             msg = "TELEGRAM_TARGET_CHAT_ID is required for payments."
             raise ValueError(msg)
         return chat_id
+
+
+def _partial_booking_warning(
+    *,
+    confirmed: tuple[str, ...],
+    pending: tuple[str, ...],
+    due_now: int,
+    due_later: int,
+) -> str:
+    """Telegram caps a callback answer at 200 characters, so this stays terse."""
+    return (
+        f"⚠️ Only {', '.join(confirmed)} filled — {due_now} GEL now. "
+        f"{', '.join(pending)} still short (+{due_later} later). "
+        "Tap again to pay now, or wait and pay once."
+    )
 
 
 def _rider_label(username: str | None, full_name: str) -> str:

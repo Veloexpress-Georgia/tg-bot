@@ -246,12 +246,14 @@ async def test_a_claim_posts_the_rider_line_with_the_amount(db: SharedDatabase) 
     await _vote(poll_service, poll_id, 100, 0, 1)
     await payments.sync_boards()
 
-    notice = await payments.claim(
-        service_date=saturday,
-        telegram_user_id=100,
-        username="stas",
-        full_name="Stas",
-    )
+    notice = (
+        await payments.claim(
+            service_date=saturday,
+            telegram_user_id=100,
+            username="stas",
+            full_name="Stas",
+        )
+    ).text
 
     # The toast names the lifts so the amount explains itself; the posted receipt
     # does not, because re-voting would make a lift list stale.
@@ -281,7 +283,7 @@ async def test_a_rider_who_is_not_booked_cannot_claim(db: SharedDatabase) -> Non
         full_name="Stranger",
     )
 
-    assert notice == NOT_BOOKED_TEXT
+    assert notice.text == NOT_BOOKED_TEXT
     assert len(client.payments_sends()) == before
     async with db.session() as session:
         assert await session.scalar(select(PaymentClaim)) is None
@@ -296,11 +298,11 @@ async def test_claiming_twice_says_so_instead_of_posting_again(db: SharedDatabas
         service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
     )
     after_first = len(client.payments_sends())
-    notice = await payments.claim(
+    outcome = await payments.claim(
         service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
     )
 
-    assert notice == ALREADY_SETTLED_TEXT
+    assert outcome.text == ALREADY_SETTLED_TEXT
     assert len(client.payments_sends()) == after_first
 
 
@@ -369,9 +371,11 @@ async def test_re_voting_after_paying_moves_the_bill_not_the_payment(
 
     # Settling again clears the gap without a second receipt in the topic.
     sends_before = len(client.payments_sends())
-    notice = await payments.claim(
-        service_date=saturday, telegram_user_id=100, username="rider100", full_name="R100"
-    )
+    notice = (
+        await payments.claim(
+            service_date=saturday, telegram_user_id=100, username="rider100", full_name="R100"
+        )
+    ).text
     assert "45 GEL" in notice
     assert len(client.payments_sends()) == sends_before
     await payments.sync_boards()
@@ -390,11 +394,11 @@ async def test_paying_twice_without_changes_says_you_are_already_settled(
         service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
     )
 
-    notice = await payments.claim(
+    outcome = await payments.claim(
         service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
     )
 
-    assert notice == ALREADY_SETTLED_TEXT
+    assert outcome.text == ALREADY_SETTLED_TEXT
 
 
 async def test_the_waitlist_is_not_billed_and_is_warned_before_paying(
@@ -418,7 +422,8 @@ async def test_the_waitlist_is_not_billed_and_is_warned_before_paying(
     first = await payments.claim(
         service_date=saturday, telegram_user_id=110, username="last", full_name="Last"
     )
-    assert first == WAITLIST_WARNING_TEXT
+    assert first.text == WAITLIST_WARNING_TEXT
+    assert first.needs_confirmation is True
     async with db.session() as session:
         assert await session.scalar(select(PaymentClaim)) is None
 
@@ -427,9 +432,9 @@ async def test_the_waitlist_is_not_billed_and_is_warned_before_paying(
         telegram_user_id=110,
         username="last",
         full_name="Last",
-        acknowledged_waitlist=True,
+        acknowledged=True,
     )
-    assert "15 GEL" in second
+    assert "15 GEL" in second.text
     async with db.session() as session:
         assert await session.scalar(select(PaymentClaim)) is not None
 
@@ -447,15 +452,78 @@ async def test_manual_bookings_take_seats_before_telegram_voters(db: SharedDatab
         )
 
     # 9 voters + 2 manual = 11 for ten seats, so the last voter loses their place.
-    assert (
-        await payments.claim(
-            service_date=saturday, telegram_user_id=108, username="ninth", full_name="Ninth"
-        )
-        == WAITLIST_WARNING_TEXT
+    ninth = await payments.claim(
+        service_date=saturday, telegram_user_id=108, username="ninth", full_name="Ninth"
     )
-    assert "15 GEL" in await payments.claim(
+    assert ninth.text == WAITLIST_WARNING_TEXT
+    first = await payments.claim(
         service_date=saturday, telegram_user_id=100, username="first", full_name="First"
     )
+    assert "15 GEL" in first.text
+
+
+async def test_partial_booking_warns_before_charging_for_only_the_filled_lift(
+    db: SharedDatabase,
+) -> None:
+    """Charging 15 when the rider booked three lifts reads as a bug, not a rule.
+
+    The warning names what filled and what did not, and the same tap again means
+    "yes, charge me for the filled one now".
+    """
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    # 8:30 fills; 10:00 stays short, and the rider holds both.
+    await _fill(poll_service, poll_id, 0, riders=4)
+    await _vote(poll_service, poll_id, 104, 0, 1)
+    await payments.sync_boards()
+
+    first = await payments.claim(
+        service_date=saturday, telegram_user_id=104, username="stas", full_name="Stas"
+    )
+
+    assert first.needs_confirmation is True
+    assert "Only 8:30 filled — 15 GEL now" in first.text
+    assert "10:00 still short (+15 later)" in first.text
+    assert len(first.text) <= 200, "Telegram truncates a callback answer past 200 characters"
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentClaim)) is None
+
+    second = await payments.claim(
+        service_date=saturday,
+        telegram_user_id=104,
+        username="stas",
+        full_name="Stas",
+        acknowledged=True,
+    )
+    assert "15 GEL" in second.text
+
+
+async def test_a_rider_can_settle_the_whole_day_including_unfilled_lifts(
+    db: SharedDatabase,
+) -> None:
+    """One transfer beats two, and cash cannot be topped up without finding Misho."""
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=4)
+    await _vote(poll_service, poll_id, 104, 0, 1)
+    await payments.sync_boards()
+    board = client.payments_sends()[-1]
+
+    outcome = await payments.claim(
+        service_date=saturday,
+        telegram_user_id=104,
+        username="stas",
+        full_name="Stas",
+        method=CASH_METHOD,
+        acknowledged=True,
+        include_pending=True,
+    )
+
+    assert "8:30, 10:00" in outcome.text
+    assert "30 GEL in cash" in outcome.text
+    await payments.sync_boards()
+    board_edits = [text for message_id, text in client.edits if message_id == board.message_id]
+    # Paid 30, owes 15 right now — that is a prepayment, not an overpayment.
+    assert "· 15 prepaid" in board_edits[-1]
+    assert "back" not in board_edits[-1]
 
 
 async def test_a_cash_tap_records_the_method_so_misho_can_reconcile(
@@ -469,13 +537,15 @@ async def test_a_cash_tap_records_the_method_so_misho_can_reconcile(
     await payments.sync_boards()
     board = client.payments_sends()[-1]
 
-    notice = await payments.claim(
-        service_date=saturday,
-        telegram_user_id=100,
-        username="konstantin",
-        full_name="Konstantin",
-        method=CASH_METHOD,
-    )
+    notice = (
+        await payments.claim(
+            service_date=saturday,
+            telegram_user_id=100,
+            username="konstantin",
+            full_name="Konstantin",
+            method=CASH_METHOD,
+        )
+    ).text
 
     assert notice.endswith("15 GEL in cash.")
     posted = client.payments_sends()[-1]
@@ -756,8 +826,14 @@ async def test_cancelling_one_lift_separates_refunds_from_riders_who_stay(
     for user_id in range(101, 105):
         await _vote(poll_service, poll_id, user_id, 0)
     await payments.sync_boards()
+    # @rider100 holds 10:00 too, which has not filled, so the bot warns before
+    # charging for part of a booking. Acknowledge and settle what is due.
     await payments.claim(
-        service_date=saturday, telegram_user_id=100, username="rider100", full_name="R100"
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="R100",
+        acknowledged=True,
     )
     await payments.claim(
         service_date=saturday, telegram_user_id=101, username="rider101", full_name="R101"

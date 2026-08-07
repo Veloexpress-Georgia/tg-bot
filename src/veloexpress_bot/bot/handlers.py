@@ -21,9 +21,9 @@ from veloexpress_bot.bot.keyboards import start_menu_keyboard
 from veloexpress_bot.bot.permissions import is_admin
 from veloexpress_bot.bot.states import ExtraDayStates
 from veloexpress_bot.config import Settings
-from veloexpress_bot.payments.guests import (
-    GUEST_CARD_PARSE_MODE,
-    GuestCardDraft,
+from veloexpress_bot.payments.myday import (
+    MY_DAY_PARSE_MODE,
+    MyDayDraft,
     decode_guest_date,
     decode_guest_time,
     parse_deep_link,
@@ -32,7 +32,6 @@ from veloexpress_bot.payments.render import decode_board_date
 from veloexpress_bot.payments.service import (
     CASH_METHOD,
     TRANSFER_METHOD,
-    WAITLIST_WARNING_TEXT,
     PaymentsService,
 )
 from veloexpress_bot.polls.autoposter import PollAutoScheduler
@@ -80,8 +79,10 @@ ALREADY_POSTED_ALERT = "Polls for this weekend are already posted."
 # Only non-admins see this. Admins get live state instead of a greeting.
 START_TEXT = "🚐 Veloexpress Bot"
 
-# Riders who have seen the waitlist warning for one day and payment method.
-_waitlist_warned: set[tuple[int, date, str]] = set()
+# Riders who have already seen a payment warning for one day and method. The second
+# tap on the same button is the acknowledgement. Kept in memory rather than the
+# database: losing it on restart only shows one warning again.
+_payment_warned: set[tuple[int, date, str]] = set()
 
 PLAN_VIEWS: set[str] = {"main", "first", "last", "recreate"}
 EXTRA_VIEWS: set[str] = {"date", "main", "first", "last"}
@@ -102,14 +103,14 @@ async def open_guest_form(
     if service_date is None:
         await message.answer(STALE_BOARD_ALERT)
         return
-    card = await payments_service.guest_card(
+    card = await payments_service.my_day_card(
         service_date=service_date,
         telegram_user_id=message.from_user.id if message.from_user else 0,
     )
     await message.answer(
         card.text,
         reply_markup=card.reply_markup,
-        parse_mode=GUEST_CARD_PARSE_MODE,
+        parse_mode=MY_DAY_PARSE_MODE,
     )
 
 
@@ -131,12 +132,20 @@ async def handle_guest_form(
         return
 
     user_id = callback.from_user.id
+    if action in {"payall", "cashall"}:
+        await _settle_whole_day(
+            callback,
+            payments_service,
+            service_date=service_date,
+            method=CASH_METHOD if action == "cashall" else TRANSFER_METHOD,
+        )
+        return
     if action in {"all", "allsub"}:
-        card = await payments_service.guest_card(
+        card = await payments_service.my_day_card(
             service_date=service_date,
             telegram_user_id=user_id,
         )
-        lift_times = _guest_card_lift_times(card)
+        lift_times = _my_day_lift_times(card)
     else:
         lift_times = (decode_guest_time(parts[1]),)
 
@@ -146,14 +155,46 @@ async def handle_guest_form(
         lift_times=lift_times,
         delta=-1 if action in {"sub", "allsub"} else 1,
     )
-    card = await payments_service.guest_card(service_date=service_date, telegram_user_id=user_id)
+    card = await payments_service.my_day_card(service_date=service_date, telegram_user_id=user_id)
     message = _accessible_message(callback)
     if message is not None:
-        await _edit_card(message, card.text, card.reply_markup, parse_mode=GUEST_CARD_PARSE_MODE)
+        await _edit_card(message, card.text, card.reply_markup, parse_mode=MY_DAY_PARSE_MODE)
     await callback.answer(notice)
 
 
-def _guest_card_lift_times(card: GuestCardDraft) -> tuple[str, ...]:
+async def _settle_whole_day(
+    callback: CallbackQuery,
+    payments_service: PaymentsService,
+    *,
+    service_date: date,
+    method: str,
+) -> None:
+    """Settle lifts that have not filled yet as well as the ones that have.
+
+    Nobody is pushed here — the rule stays "you need not pay before five" — but the
+    rider asked for it, so no warning about a partial booking applies.
+    """
+    user = callback.from_user
+    outcome = await payments_service.claim(
+        service_date=service_date,
+        telegram_user_id=user.id,
+        username=user.username,
+        full_name=user.full_name,
+        method=method,
+        acknowledged=True,
+        include_pending=True,
+    )
+    card = await payments_service.my_day_card(
+        service_date=service_date,
+        telegram_user_id=user.id,
+    )
+    message = _accessible_message(callback)
+    if message is not None:
+        await _edit_card(message, card.text, card.reply_markup, parse_mode=MY_DAY_PARSE_MODE)
+    await callback.answer(outcome.text)
+
+
+def _my_day_lift_times(card: MyDayDraft) -> tuple[str, ...]:
     """Read the lifts back off the rendered form, so "with me" means what it shows."""
     if card.reply_markup is None:
         return ()
@@ -771,23 +812,21 @@ async def handle_payment_button(
         return
 
     if action in {"paid", "cash"}:
-        # The warning is shown once; the same tap again is the rider saying "I know".
-        # Kept in memory rather than the database: it is a two-tap gesture, and losing
-        # it on restart only means the warning appears one more time.
         gesture = (user.id, service_date, action)
-        notice = await payments_service.claim(
+        outcome = await payments_service.claim(
             service_date=service_date,
             telegram_user_id=user.id,
             username=user.username,
             full_name=user.full_name,
             method=CASH_METHOD if action == "cash" else TRANSFER_METHOD,
-            acknowledged_waitlist=gesture in _waitlist_warned,
+            acknowledged=gesture in _payment_warned,
         )
-        if notice == WAITLIST_WARNING_TEXT:
-            _waitlist_warned.add(gesture)
-            await callback.answer(notice, show_alert=True)
+        if outcome.needs_confirmation:
+            _payment_warned.add(gesture)
+            await callback.answer(outcome.text, show_alert=True)
             return
-        _waitlist_warned.discard(gesture)
+        _payment_warned.discard(gesture)
+        notice = outcome.text
     elif action == "undo":
         notice = await payments_service.undo(
             service_date=service_date,
