@@ -1211,3 +1211,19 @@ async def test_the_chase_is_sent_once(db: SharedDatabase) -> None:
     await payments.capture_deadline_rosters(now=_after_deadline(saturday) + timedelta(hours=1))
 
     assert len(_unpaid_notices(client)) == 1
+
+
+async def test_a_missed_deadline_is_not_caught_up_on_the_lift_day(db: SharedDatabase) -> None:
+    """A snapshot taken at Saturday lunchtime is not a snapshot of Friday 20:00."""
+    saturday = _future_saturday()
+    poll_service, payments, client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+
+    # The bot was down over the deadline and comes back on the lift day itself.
+    lunchtime = _after_deadline(saturday) + timedelta(hours=16)
+    await payments.capture_deadline_rosters(now=lunchtime)
+
+    async with db.session() as session:
+        assert (await session.scalars(select(DeadlineRoster))).all() == []
+    # And nobody is chased about a van that has already left.
+    assert _unpaid_notices(client) == []

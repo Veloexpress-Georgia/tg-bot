@@ -1051,6 +1051,14 @@ class PaymentsService:
         lift that reached five stays reached. Run from the worker tick, so the
         exact moment is "the first tick after 20:00" rather than a scheduled job
         that a restart could miss entirely.
+
+        A missed deadline is not caught up. The deadline sits on the evening
+        before, so once the lift day itself has started the moment is gone: a
+        snapshot taken at Saturday lunchtime records who is booked at lunchtime,
+        which is precisely the number the freeze exists to stop trusting. It
+        would also chase people about a van that has already left. Missing it
+        degrades to live behaviour — how the bot worked before any of this —
+        which is the honest failure and the one that surprises nobody.
         """
         if not self.enabled:
             return
@@ -1065,6 +1073,10 @@ class PaymentsService:
                 zone=self._zone,
             )
             if moment < deadline_at:
+                continue
+            if moment.date() >= day.service_date:
+                # The evening before is over — a bot restart, or a deploy landing
+                # mid-weekend. Too late to be a snapshot of the deadline.
                 continue
             if day.polls_created_at > deadline_at:
                 # A day added after its own deadline never had one. Freezing it at
