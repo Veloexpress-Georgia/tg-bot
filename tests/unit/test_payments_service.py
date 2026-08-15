@@ -164,6 +164,7 @@ async def _setup(
     *,
     payments_thread: int | None = PAYMENTS_THREAD,
     service_date: date | None = None,
+    bot_username: str = "",
 ) -> tuple[PollPostingService, PaymentsService, FakeTelegramClient, str, date]:
     client = FakeTelegramClient()
     resolved = settings(payments_thread=payments_thread)
@@ -171,11 +172,13 @@ async def _setup(
         settings=resolved,
         session_factory=db.session,
         telegram_client=client,
+        bot_username=bot_username,
     )
     payments_service = PaymentsService(
         settings=resolved,
         session_factory=db.session,
         telegram_client=client,
+        bot_username=bot_username,
     )
     saturday = service_date or _saturday()
     poll = await poll_service.create_poll(
@@ -344,9 +347,32 @@ async def test_the_running_notice_links_to_that_days_board(db: SharedDatabase) -
     await poll_service.evaluate_lift_signals()
 
     running = next(record for record in client.sent if "pay to lock it in" in record.text)
-    # A private supergroup link drops the -100 prefix: -100123 becomes 123.
+    # Fallback with no bot username: a private supergroup link, which drops the
+    # -100 prefix so -100123 becomes 123.
     assert f'href="https://t.me/c/123/{PAYMENTS_THREAD}/{board.message_id}"' in running.text
     assert "💸 Pay" in running.text
+
+
+async def test_the_pay_link_is_a_deep_link_into_the_riders_own_chat(
+    db: SharedDatabase,
+) -> None:
+    """The most-tapped link in the bot, spent on onboarding rather than a group jump.
+
+    Tapping a deep link is pressing Start, so it both shows the rider their own
+    day and leaves the bot able to message them afterwards — which is the only
+    route to the members who never opened the bot.
+    """
+    poll_service, payments, client, poll_id, saturday = await _setup(
+        db, bot_username="veloexpress_bot"
+    )
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+
+    await poll_service.evaluate_lift_signals()
+
+    running = next(record for record in client.sent if "pay to lock it in" in record.text)
+    encoded = saturday.strftime("%Y%m%d")
+    assert f'href="https://t.me/veloexpress_bot?start=guests-{encoded}"' in running.text
 
 
 async def test_re_voting_after_paying_moves_the_bill_not_the_payment(

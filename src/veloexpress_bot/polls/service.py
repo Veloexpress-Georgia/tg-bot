@@ -41,6 +41,11 @@ from veloexpress_bot.db.models import (
     ServiceDayNotice,
 )
 from veloexpress_bot.deeplinks import message_link, topic_link
+
+# Safe despite payments importing polls: `myday` reaches only `polls.render`, and
+# `payments/__init__` pulls in `render`, never `service`. Kept next to its parser
+# rather than moved into `deeplinks`, which is about t.me/c group links.
+from veloexpress_bot.payments.myday import deep_link
 from veloexpress_bot.polls.defaults import (
     DEFAULT_CANCELLED_LIFT_TIMES,
     DEFAULT_LIFTS,
@@ -208,10 +213,12 @@ class PollPostingService:
         settings: Settings,
         session_factory: SessionFactory,
         telegram_client: TelegramPollClient,
+        bot_username: str = "",
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
         self._telegram_client = telegram_client
+        self._bot_username = bot_username
         self._availability_locks: dict[str, Lock] = {}
         # Notices already reconciled in this process; see refresh_poll_notices.
         self._reconciled_notice_batch_ids: set[int] = set()
@@ -226,11 +233,22 @@ class PollPostingService:
         )
 
     async def _payments_link(self, service_date: date | None) -> str:
-        """The day's payments board when it exists, else the payments topic.
+        """Where "pay" sends a rider: their own private card, when that is possible.
 
-        At poll-creation time no lift is running yet, so there is no board to point
-        at and the topic is the best the bot can offer.
+        This is the most-tapped link the bot has, and pointing it at a group
+        message wastes it. A deep link is pressing Start, so tapping it both
+        shows the rider their own day — their lifts, their amount, no scrolling
+        a shared board looking for themselves — and leaves the bot able to
+        message them ever after. Most of the 166 members never opened the bot,
+        and nothing else in the group converts them.
+
+        It never settles anything by itself: tapping a link is not paying.
+
+        Falls back to the day's board, then the payments topic, when the bot's
+        username is unknown or the link has no day to point at.
         """
+        if self._bot_username and service_date is not None:
+            return deep_link(bot_username=self._bot_username, service_date=service_date)
         chat_id = self._settings.telegram_target_chat_id
         thread_id = self._settings.telegram_payments_thread_id
         if chat_id is None or thread_id is None:
