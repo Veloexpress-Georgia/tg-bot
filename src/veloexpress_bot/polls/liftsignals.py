@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, tzinfo
+from html import escape
 from typing import Literal
 
 from veloexpress_bot.polls.defaults import MINIMUM_RIDERS, PaymentTerms
@@ -327,6 +328,51 @@ def _departure_notice(events: list[LiftEvent]) -> str:
     lines = ["🚐 First lift of the day, leaving soon — please be on time.", ""]
     lines.extend(_lift_label(event) for event in events)
     return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class SeatPromotion:
+    """Riders who moved off a lift's waitlist because a seat came free."""
+
+    service_date: date
+    lift_time: str
+    riders: tuple[tuple[int, str], ...]
+
+
+def render_seat_promotions(promotions: Iterable[SeatPromotion]) -> str:
+    """Say a seat opened, and tag the person it opened for.
+
+    Tagged inline rather than in a block at the end: with two lifts freeing
+    seats, a list of names underneath does not say who got which. This is also
+    one of the few messages that must actually reach somebody — the availability
+    board already shows the new order, but editing it notifies nobody.
+    """
+    ordered = sorted(
+        promotions,
+        key=lambda promotion: (promotion.service_date, lift_minutes(promotion.lift_time)),
+    )
+    if len(ordered) == 1:
+        promotion = ordered[0]
+        return (
+            f"🎟 A seat opened on {_promotion_label(promotion)} — "
+            f"you are off the waitlist: {_mentions(promotion)}"
+        )
+    lines = ["🎟 Seats opened — you are off the waitlist:", ""]
+    lines.extend(f"{_promotion_label(p)} — {_mentions(p)}" for p in ordered)
+    return "\n".join(lines)
+
+
+def _promotion_label(promotion: SeatPromotion) -> str:
+    day = SHORT_DAY_LABELS.get(promotion.service_date.weekday(), "Lift day")
+    month = EN_SHORT_MONTHS[promotion.service_date.month]
+    return f"{promotion.lift_time} · {day}, {promotion.service_date.day} {month}"
+
+
+def _mentions(promotion: SeatPromotion) -> str:
+    return " ".join(
+        f'<a href="tg://user?id={user_id}">{escape(label)}</a>'
+        for user_id, label in promotion.riders
+    )
 
 
 def _needs_phrase(seats: int) -> str:

@@ -241,6 +241,30 @@ class ServiceDayNotice(Base):
     )
 
 
+class LiftSeatState(Base):
+    """The seat allocation the bot last saw for one lift.
+
+    Kept for one purpose: telling a rider they came off the waitlist. The board
+    shows the current allocation, but a Telegram edit sends no notification, so
+    the one person the change matters to would never learn about it. Ids are
+    stored comma-separated because nothing ever queries inside them.
+    """
+
+    __tablename__ = "lift_seat_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    lift_time: Mapped[str] = mapped_column(String(16))
+    holder_ids: Mapped[str] = mapped_column(Text, default="")
+    waitlist_ids: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
 class DeadlineRoster(Base):
     """Who held which seat when booking closed.
 
@@ -458,6 +482,17 @@ Index(
     ServiceDayNotice.chat_id,
     func.coalesce(ServiceDayNotice.thread_id, 0),
     ServiceDayNotice.service_date,
+    unique=True,
+)
+
+
+Index(
+    "uq_lift_seat_state_scope_date_time",
+    LiftSeatState.environment,
+    LiftSeatState.chat_id,
+    func.coalesce(LiftSeatState.thread_id, 0),
+    LiftSeatState.service_date,
+    LiftSeatState.lift_time,
     unique=True,
 )
 

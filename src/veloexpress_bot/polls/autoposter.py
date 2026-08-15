@@ -103,6 +103,13 @@ class PollAutoScheduler:
             except Exception:
                 logger.exception("deadline_roster_capture_failed")
 
+            # A freed seat is good news for whoever was waiting, but only if they
+            # hear it — the board that shows the new order is edited silently.
+            try:
+                await self._payments_service.announce_seat_promotions(now=now_local)
+            except Exception:
+                logger.exception("seat_promotion_announce_failed")
+
             # Boards next: the "lift is running" notice links to that day's board,
             # and on the tick a lift crosses the minimum the board is created here.
             # Synced from current bookings rather than from events, so a restart

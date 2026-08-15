@@ -1070,3 +1070,68 @@ async def test_nothing_is_frozen_before_the_deadline(db: SharedDatabase) -> None
 
     async with db.session() as session:
         assert (await session.scalars(select(DeadlineRoster))).all() == []
+
+
+async def _lift_sends(client: FakeTelegramClient) -> list[SentRecord]:
+    """Promotion notices only; the lift topic also carries the availability board."""
+    return [
+        record
+        for record in client.sent
+        if record.thread_id == LIFT_THREAD and "waitlist" in record.text
+    ]
+
+
+async def test_a_freed_seat_tags_whoever_was_waiting(db: SharedDatabase) -> None:
+    poll_service, payments, client, poll_id, _ = await _setup(db)
+    # Eleven riders for ten seats, so rider 110 is on the waitlist.
+    await _fill(poll_service, poll_id, 0, riders=11)
+    await payments.announce_seat_promotions()
+    before = len(await _lift_sends(client))
+
+    await _vote(poll_service, poll_id, 100)
+    await payments.announce_seat_promotions()
+
+    notices = await _lift_sends(client)
+    assert len(notices) == before + 1
+    assert "off the waitlist" in notices[-1].text
+    assert "tg://user?id=110" in notices[-1].text
+    # And only that rider: the ten who never moved are not tagged.
+    assert "tg://user?id=101" not in notices[-1].text
+
+
+async def test_a_freed_seat_still_tags_after_the_deadline(db: SharedDatabase) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=11)
+    await payments.announce_seat_promotions()
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+    before = len(await _lift_sends(client))
+
+    await _vote(poll_service, poll_id, 100)
+    await payments.announce_seat_promotions(now=_after_deadline(saturday))
+
+    notices = await _lift_sends(client)
+    assert len(notices) == before + 1
+    assert "tg://user?id=110" in notices[-1].text
+
+
+async def test_a_new_booking_into_a_free_seat_is_not_a_promotion(db: SharedDatabase) -> None:
+    poll_service, payments, client, poll_id, _ = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.announce_seat_promotions()
+    before = len(await _lift_sends(client))
+
+    # Booking into an empty seat is not news to the person who just booked.
+    await _vote(poll_service, poll_id, 300, 0)
+    await payments.announce_seat_promotions()
+
+    assert len(await _lift_sends(client)) == before
+
+
+async def test_the_first_sight_of_a_lift_announces_nothing(db: SharedDatabase) -> None:
+    poll_service, payments, client, poll_id, _ = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=11)
+
+    await payments.announce_seat_promotions()
+
+    assert await _lift_sends(client) == []
