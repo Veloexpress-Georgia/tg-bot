@@ -818,12 +818,23 @@ class PaymentsService:
                     .where(DeadlineRoster.service_date.in_(service_dates))
                 )
             ).all()
+            claim_keys = (
+                await session.execute(
+                    select(PaymentClaim.service_date, PaymentClaim.telegram_user_id)
+                    .where(PaymentClaim.environment == self._settings.app_env)
+                    .where(PaymentClaim.chat_id == chat_id)
+                    .where(PaymentClaim.service_date.in_(service_dates))
+                )
+            ).all()
 
         votes_by_poll: dict[str, list[PollVote]] = {}
         for vote in votes:
             votes_by_poll.setdefault(vote.poll_id, []).append(vote)
         manual_by_date_time = {(row.service_date, row.lift_time): row.count for row in manual}
         cancelled_date_time = {(row.service_date, row.lift_time) for row in cancelled_lifts}
+        paid_by_date: dict[date, set[int]] = {}
+        for claim_date, claim_user_id in claim_keys:
+            paid_by_date.setdefault(claim_date, set()).add(claim_user_id)
         frozen_by_date: dict[date, DeadlineSnapshot] = {}
         for roster_row in roster_rows:
             previous = frozen_by_date.get(roster_row.service_date, DeadlineSnapshot(rows=()))
@@ -916,6 +927,7 @@ class PaymentsService:
                         )
                     ),
                     capacity_by_time=capacity_by_time,
+                    paid_user_ids=paid_by_date.get(service_date, set()),
                 )
             days.append(day)
         return days
@@ -1098,24 +1110,34 @@ def _apply_snapshot(
     snapshot: DeadlineSnapshot,
     *,
     capacity_by_time: dict[str, int],
+    paid_user_ids: set[int],
 ) -> None:
-    """Overlay the frozen roster on the live day. Seats grow, never shrink.
+    """Overlay the frozen roster on the live day, holding two things still.
 
-    Growing keeps a late booking chargeable — nothing stops one, and Misho may
-    well allow it. Not shrinking is the whole point: the group agreed the money
-    is spent once five riders are in by the deadline.
+    A lift that reached the minimum by the deadline stays running, so the board
+    cannot walk back a trip the group treats as settled. And a rider who *paid*
+    stays on the hook for what they paid for, so a late cancellation no longer
+    reads as `15 back`.
+
+    Nothing else is held. Booking and cancelling stay free after the deadline —
+    the poll is open and the bot enforces nothing — and a rider who never paid
+    owes nothing by leaving. The group agreed that a prepayment is not
+    refundable; it never agreed that forgetting to come is a debt. Somebody who
+    walks out late shows up in the admin monitor for Misho to judge, not on the
+    public board as owing money.
+
+    Seats freed by a late cancellation really are free: the waitlist moves up.
     """
-    totals = snapshot.lift_totals()
     running = list(day.running_lift_times)
     for lift_time in snapshot.running_lift_times():
         if lift_time not in running:
             running.append(lift_time)
-        day.seats_by_lift[lift_time] = max(day.seats_by_lift.get(lift_time, 0), totals[lift_time])
         day.capacity_by_lift.setdefault(lift_time, capacity_by_time.get(lift_time, 10))
     for row in snapshot.running_rows():
         user_id = row.telegram_user_id
-        if user_id == MANUAL_USER_ID:
-            # Counted in the lift total above; there is no button for them to tap.
+        if user_id == MANUAL_USER_ID or user_id not in paid_user_ids:
+            # Manual bookings have no button to tap, and an unpaid rider is free
+            # to leave. Only money already handed over is frozen here.
             continue
         day.lift_times_by_user[user_id] = _with_lift(
             day.lift_times_by_user.get(user_id, ()), row.lift_time

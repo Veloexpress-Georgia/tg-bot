@@ -918,20 +918,43 @@ def _after_deadline(service_date: date) -> datetime:
     return deadline + timedelta(minutes=1)
 
 
-async def test_dropping_out_after_the_deadline_still_owes(db: SharedDatabase) -> None:
+async def test_a_paid_seat_stays_paid_after_a_late_cancellation(db: SharedDatabase) -> None:
     saturday = _future_saturday()
     poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
     await _fill(poll_service, poll_id, 0, riders=5)
     await payments.sync_boards()
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
 
     await payments.capture_deadline_rosters(now=_after_deadline(saturday))
-    # Rider 100 retracts their vote once booking has closed.
+    # Rider 100 retracts their vote once booking has closed. The money is spent.
     await _vote(poll_service, poll_id, 100)
 
     notice = await payments.claim(
         service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
     )
-    assert notice.text.endswith("15 GEL.")
+    assert notice.text == ALREADY_SETTLED_TEXT
+
+
+async def test_leaving_unpaid_after_the_deadline_owes_nothing(db: SharedDatabase) -> None:
+    """A prepayment is not refundable; forgetting to come was never made a debt."""
+    saturday = _future_saturday()
+    poll_service, payments, client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=6)
+    await payments.sync_boards()
+    board = client.payments_sends()[0]
+
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+    await _vote(poll_service, poll_id, 105)
+    await payments.sync_boards()
+
+    notice = await payments.claim(
+        service_date=saturday, telegram_user_id=105, username="rider105", full_name="Rider 105"
+    )
+    assert notice.text == NOT_BOOKED_TEXT
+    board_text = [text for message_id, text in client.edits if message_id == board.message_id][-1]
+    assert "@rider105" not in board_text
 
 
 async def test_a_late_drop_out_is_not_offered_money_back(db: SharedDatabase) -> None:
@@ -1003,19 +1026,25 @@ async def test_a_seat_booked_after_the_deadline_is_still_charged(db: SharedDatab
 
 async def test_cancelling_a_lift_after_the_deadline_still_refunds(db: SharedDatabase) -> None:
     saturday = _future_saturday()
-    poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    poll_service, payments, client, poll_id, _ = await _setup(db, service_date=saturday)
     await _fill(poll_service, poll_id, 0, riders=5)
+    await _fill(poll_service, poll_id, 1, riders=5, first_user_id=200)
+    # Rider 100 pays for both lifts, so losing one leaves a real difference.
+    await _vote(poll_service, poll_id, 100, 0, 1)
     await payments.sync_boards()
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
+    board = client.payments_sends()[0]
 
     await payments.capture_deadline_rosters(now=_after_deadline(saturday))
     await poll_service.cancel_lift(service_date=saturday, lift_time="8:30", admin_user_id=1)
+    await payments.sync_boards()
 
-    # The frozen roster holds riders to their booking; it cannot hold them to a
-    # lift Misho called off.
-    notice = await payments.claim(
-        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
-    )
-    assert notice.text == NOT_BOOKED_TEXT
+    # The roster holds a rider to what they paid for; it cannot hold them to a
+    # lift Misho called off. That is the one refund the group does recognise.
+    board_text = [text for message_id, text in client.edits if message_id == board.message_id][-1]
+    assert "15 back" in board_text
 
 
 async def test_the_roster_is_frozen_once_and_never_updated(db: SharedDatabase) -> None:
