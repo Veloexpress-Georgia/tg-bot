@@ -103,14 +103,10 @@ async def open_guest_form(
     if service_date is None:
         await message.answer(STALE_BOARD_ALERT)
         return
-    card = await payments_service.my_day_card(
-        service_date=service_date,
+    await payments_service.open_rider_card(
         telegram_user_id=message.from_user.id if message.from_user else 0,
-    )
-    await message.answer(
-        card.text,
-        reply_markup=card.reply_markup,
-        parse_mode=MY_DAY_PARSE_MODE,
+        private_chat_id=message.chat.id,
+        service_date=service_date,
     )
 
 
@@ -132,13 +128,27 @@ async def handle_guest_form(
         return
 
     user_id = callback.from_user.id
-    if action in {"payall", "cashall"}:
-        await _settle_whole_day(
+    if action == "day":
+        # Tab switch: nothing changes but which day the card is showing.
+        await _refresh_rider_card(callback, payments_service, service_date=service_date)
+        await callback.answer()
+        return
+    if action in {"payall", "cashall", "pay", "cash"}:
+        await _settle_from_card(
             callback,
             payments_service,
             service_date=service_date,
-            method=CASH_METHOD if action == "cashall" else TRANSFER_METHOD,
+            method=CASH_METHOD if action in {"cashall", "cash"} else TRANSFER_METHOD,
+            include_pending=action in {"payall", "cashall"},
         )
+        return
+    if action == "undo":
+        notice = await payments_service.undo(
+            service_date=service_date,
+            telegram_user_id=user_id,
+        )
+        await _refresh_rider_card(callback, payments_service, service_date=service_date)
+        await callback.answer(notice)
         return
     if action in {"all", "allsub"}:
         card = await payments_service.my_day_card(
@@ -155,24 +165,24 @@ async def handle_guest_form(
         lift_times=lift_times,
         delta=-1 if action in {"sub", "allsub"} else 1,
     )
-    card = await payments_service.my_day_card(service_date=service_date, telegram_user_id=user_id)
-    message = _accessible_message(callback)
-    if message is not None:
-        await _edit_card(message, card.text, card.reply_markup, parse_mode=MY_DAY_PARSE_MODE)
+    await _refresh_rider_card(callback, payments_service, service_date=service_date)
     await callback.answer(notice)
 
 
-async def _settle_whole_day(
+async def _settle_from_card(
     callback: CallbackQuery,
     payments_service: PaymentsService,
     *,
     service_date: date,
     method: str,
+    include_pending: bool,
 ) -> None:
-    """Settle lifts that have not filled yet as well as the ones that have.
+    """Settle from the private card, where the breakdown is already on screen.
 
-    Nobody is pushed here — the rule stays "you need not pay before five" — but the
-    rider asked for it, so no warning about a partial booking applies.
+    No two-tap warning applies here. The board's warnings exist because a group
+    button charges an amount the rider cannot see the working for; the card is
+    that working — it names the unfilled lifts and the waitlist above the
+    button, so the tap is already informed.
     """
     user = callback.from_user
     outcome = await payments_service.claim(
@@ -182,16 +192,25 @@ async def _settle_whole_day(
         full_name=user.full_name,
         method=method,
         acknowledged=True,
-        include_pending=True,
+        include_pending=include_pending,
     )
+    await _refresh_rider_card(callback, payments_service, service_date=service_date)
+    await callback.answer(outcome.text)
+
+
+async def _refresh_rider_card(
+    callback: CallbackQuery,
+    payments_service: PaymentsService,
+    *,
+    service_date: date,
+) -> None:
     card = await payments_service.my_day_card(
         service_date=service_date,
-        telegram_user_id=user.id,
+        telegram_user_id=callback.from_user.id,
     )
     message = _accessible_message(callback)
     if message is not None:
         await _edit_card(message, card.text, card.reply_markup, parse_mode=MY_DAY_PARSE_MODE)
-    await callback.answer(outcome.text)
 
 
 def _my_day_lift_times(card: MyDayDraft) -> tuple[str, ...]:

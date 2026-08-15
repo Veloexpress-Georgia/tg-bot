@@ -21,14 +21,17 @@ from veloexpress_bot.db.models import (
     PollBatch,
     PollOptionSnapshot,
     PollVote,
+    RiderCard,
     ServiceDayNotice,
 )
 from veloexpress_bot.payments.myday import (
-    GuestLiftRow,
+    MY_DAY_PARSE_MODE,
     MyDayDraft,
-    MyDayView,
+    RiderCardView,
+    RiderDayView,
+    RiderLiftRow,
     deep_link,
-    render_my_day_card,
+    render_rider_card,
 )
 from veloexpress_bot.payments.render import (
     PAYMENTS_PARSE_MODE,
@@ -111,6 +114,7 @@ class DayBookings:
     # beyond this is on the waitlist.
     seat_holders_by_lift: dict[str, tuple[int, ...]] = field(default_factory=dict)
     waitlist_by_lift: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    paid_seats_by_user: dict[int, int] = field(default_factory=dict)
 
     def pending_lift_times(self, telegram_user_id: int) -> tuple[str, ...]:
         """Lifts the rider booked that have not reached the minimum yet."""
@@ -266,36 +270,128 @@ class PaymentsService:
             f"Thanks! {', '.join(paying_for)}{guest_note} · {self._amount(owed)} GEL{how}."
         )
 
-    async def my_day_card(self, *, service_date: date, telegram_user_id: int) -> MyDayDraft:
-        """The rider's own day: their lifts, guests, seats left, and what they owe."""
-        day = await self._day(service_date) if self.enabled else None
-        rows: tuple[GuestLiftRow, ...] = ()
-        pending: tuple[str, ...] = ()
-        due_now = 0
-        due_all = 0
-        if day is not None and not day.cancelled:
-            running = day.lift_times_by_user.get(telegram_user_id, ())
-            rows = tuple(
-                GuestLiftRow(
-                    lift_time=lift_time,
-                    guests=day.guests_by_user_lift.get((telegram_user_id, lift_time), 0),
-                    seats_left=day.seats_left(lift_time),
-                )
-                for lift_time in running
-            )
-            pending = day.pending_lift_times(telegram_user_id)
-            guests = day.guest_seats(telegram_user_id)
-            due_now = self._amount(len(running) + guests)
-            due_all = self._amount(len(running) + len(pending) + guests)
-        return render_my_day_card(
-            MyDayView(
-                service_date=service_date,
+    async def my_day_card(
+        self,
+        *,
+        service_date: date,
+        telegram_user_id: int,
+        today: date | None = None,
+    ) -> MyDayDraft:
+        """The rider's own weekend, with `service_date` as the open tab.
+
+        Every upcoming day is included rather than only the one the link named:
+        a rider who came here from Saturday's board usually also rides Sunday,
+        and a second card for it would go stale in their chat the moment either
+        day moved.
+        """
+        days: list[RiderDayView] = []
+        if self.enabled:
+            moment = today or datetime.now(UTC).astimezone(self._zone).date()
+            for day in await self._active_days(today=moment):
+                if day.cancelled:
+                    continue
+                view = self._rider_day_view(day, telegram_user_id)
+                if view is not None:
+                    days.append(view)
+        return render_rider_card(
+            RiderCardView(
+                days=tuple(days),
                 price_gel=self._settings.payment_price_gel,
-                rows=rows,
-                pending_lift_times=pending,
-                due_now_gel=due_now,
-                due_all_gel=due_all,
+                selected_service_date=service_date,
             )
+        )
+
+    async def open_rider_card(
+        self,
+        *,
+        telegram_user_id: int,
+        private_chat_id: int,
+        service_date: date,
+    ) -> None:
+        """Show the rider their card, replacing the one they were shown before.
+
+        A new message each time would leave the chat full of old cards, each
+        still carrying live buttons over amounts that have since moved. Posted
+        before the old one is removed, so there is never a moment with no card —
+        and posted rather than edited in place because the rider has just sent
+        `/start`, and a silent edit far above their own message reads as nothing
+        having happened.
+        """
+        card = await self.my_day_card(
+            service_date=service_date,
+            telegram_user_id=telegram_user_id,
+        )
+        async with self._session_factory() as session:
+            row = await self._rider_card_row(session=session, telegram_user_id=telegram_user_id)
+            previous = (
+                row.telegram_message_id
+                if row is not None and row.private_chat_id == private_chat_id
+                else None
+            )
+
+        sent = await self._telegram_client.send_text(
+            chat_id=private_chat_id,
+            message_thread_id=None,
+            text=card.text,
+            reply_markup=card.reply_markup,
+            parse_mode=MY_DAY_PARSE_MODE,
+        )
+        if previous is not None:
+            await self._telegram_client.delete_message(
+                chat_id=private_chat_id,
+                message_id=previous,
+            )
+        async with self._session_factory() as session:
+            row = await self._rider_card_row(session=session, telegram_user_id=telegram_user_id)
+            if row is None:
+                row = RiderCard(
+                    environment=self._settings.app_env,
+                    telegram_user_id=telegram_user_id,
+                    private_chat_id=private_chat_id,
+                    telegram_message_id=sent.message_id,
+                )
+                session.add(row)
+            row.private_chat_id = private_chat_id
+            row.telegram_message_id = sent.message_id
+            row.updated_at = datetime.now(UTC)
+            await session.commit()
+
+    async def _rider_card_row(
+        self,
+        *,
+        session: AsyncSession,
+        telegram_user_id: int,
+    ) -> RiderCard | None:
+        return await session.scalar(
+            select(RiderCard)
+            .where(RiderCard.environment == self._settings.app_env)
+            .where(RiderCard.telegram_user_id == telegram_user_id)
+        )
+
+    def _rider_day_view(self, day: DayBookings, telegram_user_id: int) -> RiderDayView | None:
+        booked = day.booked_lift_times_by_user.get(telegram_user_id, ())
+        if not booked:
+            return None
+        running = day.lift_times_by_user.get(telegram_user_id, ())
+        rows = tuple(
+            RiderLiftRow(
+                lift_time=lift_time,
+                guests=day.guests_by_user_lift.get((telegram_user_id, lift_time), 0),
+                seats_left=day.seats_left(lift_time),
+                waitlist_position=_waitlist_position(day, lift_time, telegram_user_id),
+                running=lift_time in running,
+            )
+            for lift_time in booked
+        )
+        pending = day.pending_lift_times(telegram_user_id)
+        guests = day.guest_seats(telegram_user_id)
+        return RiderDayView(
+            service_date=day.service_date,
+            rows=rows,
+            pending_lift_times=pending,
+            due_now_gel=self._amount(len(running) + guests),
+            due_all_gel=self._amount(len(running) + len(pending) + guests),
+            paid_gel=self._amount(day.paid_seats_by_user.get(telegram_user_id, 0)),
         )
 
     async def adjust_guest_seats(
@@ -829,7 +925,11 @@ class PaymentsService:
             ).all()
             claim_keys = (
                 await session.execute(
-                    select(PaymentClaim.service_date, PaymentClaim.telegram_user_id)
+                    select(
+                        PaymentClaim.service_date,
+                        PaymentClaim.telegram_user_id,
+                        PaymentClaim.seats,
+                    )
                     .where(PaymentClaim.environment == self._settings.app_env)
                     .where(PaymentClaim.chat_id == chat_id)
                     .where(PaymentClaim.service_date.in_(service_dates))
@@ -842,8 +942,10 @@ class PaymentsService:
         manual_by_date_time = {(row.service_date, row.lift_time): row.count for row in manual}
         cancelled_date_time = {(row.service_date, row.lift_time) for row in cancelled_lifts}
         paid_by_date: dict[date, set[int]] = {}
-        for claim_date, claim_user_id in claim_keys:
+        paid_seats_by_date: dict[date, dict[int, int]] = {}
+        for claim_date, claim_user_id, claim_seats in claim_keys:
             paid_by_date.setdefault(claim_date, set()).add(claim_user_id)
+            paid_seats_by_date.setdefault(claim_date, {})[claim_user_id] = claim_seats
         frozen_by_date: dict[date, DeadlineSnapshot] = {}
         for roster_row in roster_rows:
             previous = frozen_by_date.get(roster_row.service_date, DeadlineSnapshot(rows=()))
@@ -868,6 +970,7 @@ class PaymentsService:
                 running_lift_times=(),
                 cancelled=batch.status == "cancelled",
                 polls_created_at=_as_utc(batch.created_at),
+                paid_seats_by_user=dict(paid_seats_by_date.get(service_date, {})),
             )
             running: list[str] = []
             for snapshot in (s for s in snapshots if s.batch_id == batch.id):
@@ -1375,6 +1478,18 @@ def _partial_booking_warning(
 
 def _rider_label(username: str | None, full_name: str) -> str:
     return f"@{username}" if username else full_name
+
+
+def _waitlist_position(day: DayBookings, lift_time: str, telegram_user_id: int) -> int:
+    """Their place in the queue, 1-based. 0 when they hold a real seat.
+
+    Nowhere else can tell a rider this: the public board names the waitlist but
+    not the order, and the order is the only part they actually want.
+    """
+    waitlist = day.waitlist_by_lift.get(lift_time, ())
+    if telegram_user_id not in waitlist:
+        return 0
+    return waitlist.index(telegram_user_id) + 1
 
 
 def _encode_ids(user_ids: tuple[int, ...]) -> str:

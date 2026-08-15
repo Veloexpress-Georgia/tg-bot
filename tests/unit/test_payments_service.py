@@ -12,7 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.base import Base
-from veloexpress_bot.db.models import DeadlineRoster, PaymentClaim, PaymentsBoard
+from veloexpress_bot.db.models import (
+    DeadlineRoster,
+    PaymentClaim,
+    PaymentsBoard,
+    RiderCard,
+)
 from veloexpress_bot.payments.service import (
     ALREADY_SETTLED_TEXT,
     CASH_METHOD,
@@ -1253,3 +1258,62 @@ async def test_a_missed_deadline_is_not_caught_up_on_the_lift_day(db: SharedData
         assert (await session.scalars(select(DeadlineRoster))).all() == []
     # And nobody is chased about a van that has already left.
     assert _unpaid_notices(client) == []
+
+
+def _private_sends(client: FakeTelegramClient) -> list[SentRecord]:
+    return [record for record in client.sent if record.thread_id is None]
+
+
+async def test_the_rider_card_replaces_itself_instead_of_piling_up(
+    db: SharedDatabase,
+) -> None:
+    """Old cards keep live buttons over amounts that have moved, so only one exists."""
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+
+    await payments.open_rider_card(
+        telegram_user_id=100, private_chat_id=5000, service_date=saturday
+    )
+    first = _private_sends(client)[-1]
+    await payments.open_rider_card(
+        telegram_user_id=100, private_chat_id=5000, service_date=saturday
+    )
+
+    assert len(_private_sends(client)) == 2
+    assert first.message_id in client.deleted
+    async with db.session() as session:
+        rows = (await session.scalars(select(RiderCard))).all()
+    assert len(rows) == 1
+    assert rows[0].telegram_message_id == _private_sends(client)[-1].message_id
+
+
+async def test_the_card_covers_the_whole_weekend_not_one_day(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    sunday = saturday + timedelta(days=1)
+    second = await poll_service.create_poll(
+        PollSetup(service_date=sunday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
+        pin_after_send=False,
+    )
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await _fill(poll_service, second.poll_id or "", 1, riders=5)
+
+    card = await payments.my_day_card(service_date=sunday, telegram_user_id=100)
+
+    assert "10:00 — riding" in card.text
+    assert card.reply_markup is not None
+    tabs = [button.callback_data for button in card.reply_markup.inline_keyboard[-1]]
+    assert tabs == [
+        f"guest:day:{saturday.strftime('%Y%m%d')}",
+        f"guest:day:{sunday.strftime('%Y%m%d')}",
+    ]
+
+
+async def test_the_card_tells_a_waitlisted_rider_their_place(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    # Twelve riders for ten seats: 110 is first in the queue, 111 second.
+    await _fill(poll_service, poll_id, 0, riders=12)
+
+    card = await payments.my_day_card(service_date=saturday, telegram_user_id=111)
+
+    assert "8:30 — ⏳ waitlist, 2nd in line" in card.text
+    assert "nothing to pay until one frees up" in card.text

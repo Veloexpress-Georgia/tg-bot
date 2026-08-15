@@ -241,6 +241,27 @@ class ServiceDayNotice(Base):
     )
 
 
+class RiderCard(Base):
+    """One rider's private card: where it lives, so it can be replaced not repeated.
+
+    Without this every tap of a pay link would drop another snapshot into the
+    rider's chat, and the older ones would go on showing stale amounts with live
+    buttons. Kept per rider rather than per rider and day, because the card
+    itself covers the whole weekend through day tabs.
+    """
+
+    __tablename__ = "rider_card"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger)
+    private_chat_id: Mapped[int] = mapped_column(BigInteger)
+    telegram_message_id: Mapped[int] = mapped_column(BigInteger)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
 class LiftSeatState(Base):
     """The seat allocation the bot last saw for one lift.
 
@@ -482,6 +503,14 @@ Index(
     ServiceDayNotice.chat_id,
     func.coalesce(ServiceDayNotice.thread_id, 0),
     ServiceDayNotice.service_date,
+    unique=True,
+)
+
+
+Index(
+    "uq_rider_card_scope_user",
+    RiderCard.environment,
+    RiderCard.telegram_user_id,
     unique=True,
 )
 
