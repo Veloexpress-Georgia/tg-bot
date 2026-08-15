@@ -1387,3 +1387,38 @@ async def test_a_link_that_needs_explaining_records_nothing(db: SharedDatabase) 
     assert outcome.needs_confirmation is True
     async with db.session() as session:
         assert await session.scalar(select(PaymentClaim)) is None
+
+
+async def test_a_rider_who_stayed_still_owes_when_others_dropped_out(
+    db: SharedDatabase,
+) -> None:
+    """The lift filled by the deadline and ran; overnight leavers do not change that.
+
+    Reported from production: several riders showed `prepaid` for a 10:00 lift
+    that actually ran, because the poll had fallen to four by morning. Money for
+    a trip that happened is spent, not credit towards the next one.
+    """
+    saturday = _future_saturday()
+    poll_service, payments, client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+    await payments.claim(
+        service_date=saturday, telegram_user_id=104, username="egor", full_name="Egor"
+    )
+    board = client.payments_sends()[0]
+
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+    # Overnight two riders retract, leaving three in the poll.
+    await _vote(poll_service, poll_id, 100)
+    await _vote(poll_service, poll_id, 101)
+    await payments.sync_boards()
+
+    board_text = [text for message_id, text in client.edits if message_id == board.message_id][-1]
+    # Egor paid for a ride he took: spent, not held for next week.
+    assert "prepaid" not in board_text
+    assert "back" not in board_text
+    # And rider 102, who stayed but never paid, is still asked for the money.
+    outcome = await payments.claim(
+        service_date=saturday, telegram_user_id=102, username="rider102", full_name="Rider 102"
+    )
+    assert outcome.text.endswith("15 GEL.")

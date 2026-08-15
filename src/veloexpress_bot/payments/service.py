@@ -1424,16 +1424,18 @@ def _apply_snapshot(
     """Overlay the frozen roster on the live day, holding two things still.
 
     A lift that reached the minimum by the deadline stays running, so the board
-    cannot walk back a trip the group treats as settled. And a rider who *paid*
-    stays on the hook for what they paid for, so a late cancellation no longer
-    reads as `15 back`.
+    cannot walk back a trip the group treats as settled — and money paid for it
+    stays spent rather than turning into `prepaid` credit for a trip that has
+    already happened. And a rider who still holds their booking, or who paid,
+    stays on the hook for it.
 
-    Nothing else is held. Booking and cancelling stay free after the deadline —
-    the poll is open and the bot enforces nothing — and a rider who never paid
-    owes nothing by leaving. The group agreed that a prepayment is not
-    refundable; it never agreed that forgetting to come is a debt. Somebody who
-    walks out late shows up in the admin monitor for Misho to judge, not on the
-    public board as owing money.
+    The one exemption is walking away unpaid. Booking and cancelling stay free
+    after the deadline — the poll is open and the bot enforces nothing — and the
+    group agreed that a prepayment is not refundable, never that forgetting to
+    come is a debt. Somebody who leaves late shows up in the admin monitor for
+    Misho to judge, not on the public board as owing money. Staying is not
+    leaving, though: a rider still booked on a lift that filled by the deadline
+    owes for it however many other people dropped out overnight.
 
     Seats freed by a late cancellation really are free: the waitlist moves up.
     """
@@ -1444,9 +1446,12 @@ def _apply_snapshot(
         day.capacity_by_lift.setdefault(lift_time, capacity_by_time.get(lift_time, 10))
     for row in snapshot.running_rows():
         user_id = row.telegram_user_id
-        if user_id == MANUAL_USER_ID or user_id not in paid_user_ids:
-            # Manual bookings have no button to tap, and an unpaid rider is free
-            # to leave. Only money already handed over is frozen here.
+        if user_id == MANUAL_USER_ID:
+            # Counted in the lift total; there is no button for them to tap.
+            continue
+        still_booked = row.lift_time in day.booked_lift_times_by_user.get(user_id, ())
+        if not still_booked and user_id not in paid_user_ids:
+            # Left, and never paid: nothing was taken, so nothing is owed.
             continue
         day.lift_times_by_user[user_id] = _with_lift(
             day.lift_times_by_user.get(user_id, ()), row.lift_time
