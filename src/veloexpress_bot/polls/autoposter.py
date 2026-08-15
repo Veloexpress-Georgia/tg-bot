@@ -96,7 +96,14 @@ class PollAutoScheduler:
             return None
         now_local = (now or datetime.now(UTC)).astimezone(self._zone)
         if self._payments_service is not None:
-            # Boards first: the "lift is running" notice links to that day's board,
+            # Freeze first: everything below reads the day's seats, and after the
+            # deadline the frozen roster is what those seats are.
+            try:
+                await self._payments_service.capture_deadline_rosters(now=now_local)
+            except Exception:
+                logger.exception("deadline_roster_capture_failed")
+
+            # Boards next: the "lift is running" notice links to that day's board,
             # and on the tick a lift crosses the minimum the board is created here.
             # Synced from current bookings rather than from events, so a restart
             # mid-weekend just catches up on the next tick.

@@ -286,13 +286,16 @@ def render_lift_signal_notice(
 
 
 def _confirmed_notice(events: list[LiftEvent], *, terms: PaymentTerms) -> str:
+    # Not "is running": five bookings only mean the money is now due. What the
+    # group agreed actually settles a lift is five prepayments by the deadline,
+    # so this asks for them instead of promising a van that nobody has paid for.
     if len(events) == 1:
         event = events[0]
-        headline = f"✅ {_lift_label(event)} is running — {event.seats} riders booked."
+        headline = f"✅ {_lift_label(event)} has {event.seats} riders — pay to lock it in."
     else:
         headline = "\n".join(
             (
-                "✅ These lifts are running:",
+                "✅ These lifts have enough riders — pay to lock them in:",
                 "",
                 *(f"{_lift_label(event)} — {event.seats} riders" for event in events),
             )

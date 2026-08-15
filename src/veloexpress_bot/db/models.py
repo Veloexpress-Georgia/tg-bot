@@ -220,7 +220,7 @@ class LiftSignalState(Base):
 
 
 class ServiceDayNotice(Base):
-    """Day-level notices the bot has already sent, so it never repeats one."""
+    """Day-level things the bot does once, so it never repeats one."""
 
     __tablename__ = "service_day_notice"
 
@@ -233,7 +233,39 @@ class ServiceDayNotice(Base):
     # Kept so the reminder can be refreshed in place until the deadline, after which
     # it stops moving and stands as the final list.
     deadline_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    # When the roster below was frozen. Set even for a day nobody booked, so an
+    # empty roster is "nobody was on it" rather than "not captured yet".
+    roster_captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class DeadlineRoster(Base):
+    """Who held which seat when booking closed.
+
+    Money stops moving at the deadline: a lift that had five riders then is
+    running whatever happens later, and whoever was on it owes for it even if
+    they drop out afterwards. Live votes cannot answer that — they only ever
+    describe now — so the roster is written once and never updated.
+    """
+
+    __tablename__ = "deadline_roster"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    lift_time: Mapped[str] = mapped_column(String(16))
+    # 0 for manual bookings: they occupy seats but have no Telegram identity, so
+    # they count towards the lift running and are billed by Misho directly.
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger)
+    label: Mapped[str] = mapped_column(Text, default="")
+    # Total seats this row held, own seat plus guests; `guests` of that total.
+    seats: Mapped[int] = mapped_column(Integer, default=1)
+    guests: Mapped[int] = mapped_column(Integer, default=0)
+    captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
 
@@ -426,6 +458,18 @@ Index(
     ServiceDayNotice.chat_id,
     func.coalesce(ServiceDayNotice.thread_id, 0),
     ServiceDayNotice.service_date,
+    unique=True,
+)
+
+
+Index(
+    "uq_deadline_roster_scope_date_time_user",
+    DeadlineRoster.environment,
+    DeadlineRoster.chat_id,
+    func.coalesce(DeadlineRoster.thread_id, 0),
+    DeadlineRoster.service_date,
+    DeadlineRoster.lift_time,
+    DeadlineRoster.telegram_user_id,
     unique=True,
 )
 

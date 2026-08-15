@@ -214,7 +214,7 @@ async def test_tick_runs_lift_signals_even_without_a_configured_schedule(
     # Threshold notices are not part of auto-posting, so an admin who never set
     # up a schedule must still get them.
     assert await scheduler.tick(datetime.now(UTC)) is None
-    assert any("is running" in text for text in client.sent_texts)
+    assert any("pay to lock it in" in text for text in client.sent_texts)
 
 
 async def test_tick_announces_once_then_creates_weekend_polls(db: SharedDatabase) -> None:

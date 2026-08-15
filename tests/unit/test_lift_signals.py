@@ -176,8 +176,10 @@ def test_notices_read_naturally_for_one_lift_and_for_many() -> None:
     )
     # One line, not the rulebook: the rules live in the pinned notice and the amount
     # lives on the board this links to. Three lines per confirmed lift read as spam.
+    # "pay to lock it in", not "is running": the group's rule is that five
+    # prepayments by the deadline settle a lift, and five bookings are not that.
     assert confirmed == (
-        "✅ 8:30 · Sat, 18 Jul is running — 5 riders booked. "
+        "✅ 8:30 · Sat, 18 Jul has 5 riders — pay to lock it in. "
         '<a href="https://pay.example">💸 Pay</a>'
     )
 
@@ -189,7 +191,7 @@ def test_notices_read_naturally_for_one_lift_and_for_many() -> None:
             LiftEvent("confirmed", SATURDAY, "8:30", 5),
         ),
     )
-    assert batched.splitlines()[0] == "✅ These lifts are running:"
+    assert batched.splitlines()[0] == "✅ These lifts have enough riders — pay to lock them in:"
     # Batched into one message, earliest first, so a busy tick is not a burst.
     assert batched.splitlines()[2].startswith("8:30 · Sat, 18 Jul — 5 riders")
     assert "10:00 · Sat, 18 Jul — 6 riders" in batched

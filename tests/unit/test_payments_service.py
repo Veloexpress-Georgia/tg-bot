@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
+from zoneinfo import ZoneInfo
 
 import pytest
 from aiogram.types import InlineKeyboardMarkup
@@ -11,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.base import Base
-from veloexpress_bot.db.models import PaymentClaim, PaymentsBoard
+from veloexpress_bot.db.models import DeadlineRoster, PaymentClaim, PaymentsBoard
 from veloexpress_bot.payments.service import (
     ALREADY_SETTLED_TEXT,
     CASH_METHOD,
@@ -20,6 +21,7 @@ from veloexpress_bot.payments.service import (
     WAITLIST_WARNING_TEXT,
     PaymentsService,
 )
+from veloexpress_bot.polls.liftsignals import booking_deadline_at
 from veloexpress_bot.polls.render import PollDraft
 from veloexpress_bot.polls.service import (
     PollPostingService,
@@ -161,6 +163,7 @@ async def _setup(
     db: SharedDatabase,
     *,
     payments_thread: int | None = PAYMENTS_THREAD,
+    service_date: date | None = None,
 ) -> tuple[PollPostingService, PaymentsService, FakeTelegramClient, str, date]:
     client = FakeTelegramClient()
     resolved = settings(payments_thread=payments_thread)
@@ -174,7 +177,7 @@ async def _setup(
         session_factory=db.session,
         telegram_client=client,
     )
-    saturday = _saturday()
+    saturday = service_date or _saturday()
     poll = await poll_service.create_poll(
         PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
         pin_after_send=False,
@@ -340,7 +343,7 @@ async def test_the_running_notice_links_to_that_days_board(db: SharedDatabase) -
     board = client.payments_sends()[-1]
     await poll_service.evaluate_lift_signals()
 
-    running = next(record for record in client.sent if "is running" in record.text)
+    running = next(record for record in client.sent if "pay to lock it in" in record.text)
     # A private supergroup link drops the -100 prefix: -100123 becomes 123.
     assert f'href="https://t.me/c/123/{PAYMENTS_THREAD}/{board.message_id}"' in running.text
     assert "💸 Pay" in running.text
@@ -903,3 +906,138 @@ async def test_payments_stay_off_without_a_configured_topic(db: SharedDatabase) 
     assert payments.enabled is False
     await payments.sync_boards()
     assert client.payments_sends() == []
+
+
+def _future_saturday() -> date:
+    """Far enough out that the poll is always created before its own deadline."""
+    return _saturday() + timedelta(days=14)
+
+
+def _after_deadline(service_date: date) -> datetime:
+    deadline = booking_deadline_at(service_date, "20:00", zone=ZoneInfo("Asia/Tbilisi"))
+    return deadline + timedelta(minutes=1)
+
+
+async def test_dropping_out_after_the_deadline_still_owes(db: SharedDatabase) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+    # Rider 100 retracts their vote once booking has closed.
+    await _vote(poll_service, poll_id, 100)
+
+    notice = await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
+    assert notice.text.endswith("15 GEL.")
+
+
+async def test_a_late_drop_out_is_not_offered_money_back(db: SharedDatabase) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
+    board = client.payments_sends()[0]
+
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+    await _vote(poll_service, poll_id, 100)
+    await payments.sync_boards()
+
+    board_text = [text for message_id, text in client.edits if message_id == board.message_id][-1]
+    assert "back" not in board_text
+    assert "@stas" in board_text
+
+
+async def test_a_lift_that_filled_by_the_deadline_keeps_running(db: SharedDatabase) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+    board = client.payments_sends()[0]
+
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+    # Two riders leave, which live votes would read as "needs 2 more".
+    await _vote(poll_service, poll_id, 100)
+    await _vote(poll_service, poll_id, 101)
+    await payments.sync_boards()
+
+    board_text = [text for message_id, text in client.edits if message_id == board.message_id][-1]
+    assert "Running: 8:30" in board_text
+
+
+async def test_a_lift_short_at_the_deadline_owes_nothing(db: SharedDatabase) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=4)
+
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+    await _vote(poll_service, poll_id, 100)
+
+    notice = await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
+    assert notice.text == NOT_BOOKED_TEXT
+
+
+async def test_a_seat_booked_after_the_deadline_is_still_charged(db: SharedDatabase) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await _fill(poll_service, poll_id, 1, riders=5, first_user_id=200)
+    await payments.sync_boards()
+
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+    # Rider 100 adds the second lift late. Nothing stops that, so it must be billed.
+    await _vote(poll_service, poll_id, 100, 0, 1)
+
+    notice = await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
+    assert "8:30, 10:00 · 30 GEL" in notice.text
+
+
+async def test_cancelling_a_lift_after_the_deadline_still_refunds(db: SharedDatabase) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+    await poll_service.cancel_lift(service_date=saturday, lift_time="8:30", admin_user_id=1)
+
+    # The frozen roster holds riders to their booking; it cannot hold them to a
+    # lift Misho called off.
+    notice = await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
+    assert notice.text == NOT_BOOKED_TEXT
+
+
+async def test_the_roster_is_frozen_once_and_never_updated(db: SharedDatabase) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+    await _vote(poll_service, poll_id, 300, 0)
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday) + timedelta(hours=1))
+
+    async with db.session() as session:
+        rows = (await session.scalars(select(DeadlineRoster))).all()
+    assert sorted(row.telegram_user_id for row in rows) == [100, 101, 102, 103, 104]
+
+
+async def test_nothing_is_frozen_before_the_deadline(db: SharedDatabase) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday) - timedelta(minutes=2))
+
+    async with db.session() as session:
+        assert (await session.scalars(select(DeadlineRoster))).all() == []

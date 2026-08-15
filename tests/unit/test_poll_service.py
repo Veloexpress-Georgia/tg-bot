@@ -526,7 +526,7 @@ async def test_lift_signals_announce_the_threshold_once_and_tag_the_riders(
 
     notice = client.sent_texts[-1]
     assert "8:30" in notice
-    assert "is running — 5 riders booked." in notice
+    assert "has 5 riders — pay to lock it in." in notice
     assert "tg://user?id=104" in notice
 
     # A second tick must not repeat the announcement.

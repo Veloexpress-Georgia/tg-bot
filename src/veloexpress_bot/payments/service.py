@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.models import (
     CancelledLift,
+    DeadlineRoster,
     GuestSeat,
     ManualBookingCount,
     PaymentClaim,
@@ -19,6 +20,7 @@ from veloexpress_bot.db.models import (
     PollBatch,
     PollOptionSnapshot,
     PollVote,
+    ServiceDayNotice,
 )
 from veloexpress_bot.payments.myday import (
     GuestLiftRow,
@@ -37,7 +39,13 @@ from veloexpress_bot.payments.render import (
     render_payment_post,
     render_payments_board,
 )
+from veloexpress_bot.payments.roster import (
+    MANUAL_USER_ID,
+    DeadlineSnapshot,
+    RosterSeat,
+)
 from veloexpress_bot.polls.defaults import DEFAULT_LIFTS, MINIMUM_RIDERS
+from veloexpress_bot.polls.liftsignals import booking_deadline_at, lift_minutes
 from veloexpress_bot.polls.seating import SeatCandidate, allocate_seats
 from veloexpress_bot.polls.service import SessionFactory, TelegramPollClient, decode_option_ids
 
@@ -89,6 +97,7 @@ class DayBookings:
     # Occupied seats and capacity per lift, so the guest form can say what is left.
     seats_by_lift: dict[str, int] = field(default_factory=dict)
     capacity_by_lift: dict[str, int] = field(default_factory=dict)
+    manual_by_lift: dict[str, int] = field(default_factory=dict)
     guests_by_user_lift: dict[tuple[int, str], int] = field(default_factory=dict)
     # Riders holding a real seat on each lift, in booking order. Everyone booked
     # beyond this is on the waitlist.
@@ -727,9 +736,11 @@ class PaymentsService:
         )
 
     def _owed_seats(self, day: DayBookings, claim: PaymentClaim) -> int:
-        """What the rider owes right now: the lifts they hold, plus their guests.
+        """What the rider owes: the lifts they hold, plus their guests.
 
-        Derived rather than stored, because re-voting is allowed until the deadline.
+        Derived rather than stored, because re-voting is allowed until the
+        deadline — after which the day carries its frozen roster and the figure
+        stops falling. See `veloexpress_bot.payments.roster`.
         """
         return len(day.lift_times_by_user.get(claim.telegram_user_id, ())) + day.guest_seats(
             claim.telegram_user_id
@@ -798,12 +809,36 @@ class PaymentsService:
                     .where(CancelledLift.service_date.in_(service_dates))
                 )
             ).all()
+            roster_rows = (
+                await session.scalars(
+                    select(DeadlineRoster)
+                    .where(DeadlineRoster.environment == self._settings.app_env)
+                    .where(DeadlineRoster.chat_id == chat_id)
+                    .where(DeadlineRoster.thread_id == self._settings.telegram_target_thread_id)
+                    .where(DeadlineRoster.service_date.in_(service_dates))
+                )
+            ).all()
 
         votes_by_poll: dict[str, list[PollVote]] = {}
         for vote in votes:
             votes_by_poll.setdefault(vote.poll_id, []).append(vote)
         manual_by_date_time = {(row.service_date, row.lift_time): row.count for row in manual}
         cancelled_date_time = {(row.service_date, row.lift_time) for row in cancelled_lifts}
+        frozen_by_date: dict[date, DeadlineSnapshot] = {}
+        for roster_row in roster_rows:
+            previous = frozen_by_date.get(roster_row.service_date, DeadlineSnapshot(rows=()))
+            frozen_by_date[roster_row.service_date] = DeadlineSnapshot(
+                rows=(
+                    *previous.rows,
+                    RosterSeat(
+                        lift_time=roster_row.lift_time,
+                        telegram_user_id=roster_row.telegram_user_id,
+                        label=roster_row.label,
+                        seats=roster_row.seats,
+                        guests=roster_row.guests,
+                    ),
+                )
+            )
 
         capacity_by_time = {lift.time: lift.capacity for lift in DEFAULT_LIFTS}
         days: list[DayBookings] = []
@@ -837,6 +872,7 @@ class PaymentsService:
                 capacity = capacity_by_time.get(lift_time, 10)
                 day.seats_by_lift[lift_time] = seats
                 day.capacity_by_lift[lift_time] = capacity
+                day.manual_by_lift[lift_time] = manual_total
                 day.seat_holders_by_lift[lift_time] = tuple(
                     candidate.telegram_user_id
                     for candidate in allocate_seats(
@@ -868,8 +904,108 @@ class PaymentsService:
                     )
                     day.labels_by_user[vote.telegram_user_id] = (vote.username, vote.full_name)
             day.running_lift_times = tuple(running)
+            frozen = frozen_by_date.get(service_date)
+            if frozen is not None:
+                _apply_snapshot(
+                    day,
+                    frozen.without_lifts(
+                        frozenset(
+                            lift_time
+                            for date_key, lift_time in cancelled_date_time
+                            if date_key == service_date
+                        )
+                    ),
+                    capacity_by_time=capacity_by_time,
+                )
             days.append(day)
         return days
+
+    async def capture_deadline_rosters(self, *, now: datetime | None = None) -> None:
+        """Freeze each day's roster once its booking deadline passes.
+
+        This is what stops the money moving. Until it runs, every figure comes
+        from live votes; after it, dropping out no longer reduces the bill and a
+        lift that reached five stays reached. Run from the worker tick, so the
+        exact moment is "the first tick after 20:00" rather than a scheduled job
+        that a restart could miss entirely.
+        """
+        if not self.enabled:
+            return
+        moment = (now or datetime.now(UTC)).astimezone(self._zone)
+        for day in await self._active_days(today=moment.date()):
+            if day.cancelled:
+                # A cancelled day is being refunded, so there is nothing to owe.
+                continue
+            deadline_at = booking_deadline_at(
+                day.service_date,
+                self._settings.booking_deadline_time,
+                zone=self._zone,
+            )
+            if moment < deadline_at:
+                continue
+            if day.polls_created_at > deadline_at:
+                # A day added after its own deadline never had one. Freezing it at
+                # creation would bill the first voter for an empty lift.
+                continue
+            await self._capture_roster(day, now=moment, deadline_at=deadline_at)
+
+    async def _capture_roster(
+        self,
+        day: DayBookings,
+        *,
+        now: datetime,
+        deadline_at: datetime,
+    ) -> None:
+        async with self._session_factory() as session:
+            notice = await self._service_day_notice(session=session, service_date=day.service_date)
+            if notice is not None and notice.roster_captured_at is not None:
+                return
+            rows = _roster_rows(day)
+            for row in rows:
+                session.add(
+                    DeadlineRoster(
+                        environment=self._settings.app_env,
+                        chat_id=self._require_chat_id(),
+                        thread_id=self._settings.telegram_target_thread_id,
+                        service_date=day.service_date,
+                        lift_time=row.lift_time,
+                        telegram_user_id=row.telegram_user_id,
+                        label=row.label,
+                        seats=row.seats,
+                        guests=row.guests,
+                    )
+                )
+            if notice is None:
+                notice = ServiceDayNotice(
+                    environment=self._settings.app_env,
+                    chat_id=self._require_chat_id(),
+                    thread_id=self._settings.telegram_target_thread_id,
+                    service_date=day.service_date,
+                )
+                session.add(notice)
+            notice.roster_captured_at = deadline_at.astimezone(UTC)
+            notice.updated_at = now.astimezone(UTC)
+            await session.commit()
+        logger.info(
+            "deadline_roster_captured service_date=%s rows=%s",
+            day.service_date.isoformat(),
+            len(rows),
+            extra={"service_date": day.service_date.isoformat(), "rows": len(rows)},
+        )
+
+    async def _service_day_notice(
+        self,
+        *,
+        session: AsyncSession,
+        service_date: date,
+    ) -> ServiceDayNotice | None:
+        return await session.scalar(
+            select(ServiceDayNotice)
+            .where(ServiceDayNotice.environment == self._settings.app_env)
+            .where(ServiceDayNotice.chat_id == self._require_chat_id())
+            .where(ServiceDayNotice.thread_id == self._settings.telegram_target_thread_id)
+            .where(ServiceDayNotice.service_date == service_date)
+        )
 
     async def _claim_row(
         self,
@@ -912,6 +1048,96 @@ class PaymentsService:
             msg = "TELEGRAM_TARGET_CHAT_ID is required for payments."
             raise ValueError(msg)
         return chat_id
+
+
+MANUAL_LABEL = "Manual bookings"
+
+
+def _roster_rows(day: DayBookings) -> tuple[RosterSeat, ...]:
+    """The day's seats as they stand, ready to be frozen.
+
+    Waitlisted riders are left out on purpose: they were never charged, so there
+    is nothing to hold them to. Manual bookings are in, because they decide
+    whether a lift reached five.
+    """
+    rows: list[RosterSeat] = []
+    for lift_time in sorted(day.seats_by_lift, key=lift_minutes):
+        manual = day.manual_by_lift.get(lift_time, 0)
+        if manual:
+            rows.append(
+                RosterSeat(
+                    lift_time=lift_time,
+                    telegram_user_id=MANUAL_USER_ID,
+                    label=MANUAL_LABEL,
+                    seats=manual,
+                )
+            )
+        holders = day.seat_holders_by_lift.get(lift_time, ())
+        hosts = tuple(
+            user_id
+            for (user_id, time_), count in day.guests_by_user_lift.items()
+            if time_ == lift_time and count > 0 and user_id not in holders
+        )
+        for user_id in (*holders, *hosts):
+            guests = day.guests_by_user_lift.get((user_id, lift_time), 0)
+            own_seat = 1 if user_id in holders else 0
+            rows.append(
+                RosterSeat(
+                    lift_time=lift_time,
+                    telegram_user_id=user_id,
+                    label=_rider_label(*day.labels_by_user.get(user_id, (None, "Rider"))),
+                    seats=own_seat + guests,
+                    guests=guests,
+                )
+            )
+    return tuple(rows)
+
+
+def _apply_snapshot(
+    day: DayBookings,
+    snapshot: DeadlineSnapshot,
+    *,
+    capacity_by_time: dict[str, int],
+) -> None:
+    """Overlay the frozen roster on the live day. Seats grow, never shrink.
+
+    Growing keeps a late booking chargeable — nothing stops one, and Misho may
+    well allow it. Not shrinking is the whole point: the group agreed the money
+    is spent once five riders are in by the deadline.
+    """
+    totals = snapshot.lift_totals()
+    running = list(day.running_lift_times)
+    for lift_time in snapshot.running_lift_times():
+        if lift_time not in running:
+            running.append(lift_time)
+        day.seats_by_lift[lift_time] = max(day.seats_by_lift.get(lift_time, 0), totals[lift_time])
+        day.capacity_by_lift.setdefault(lift_time, capacity_by_time.get(lift_time, 10))
+    for row in snapshot.running_rows():
+        user_id = row.telegram_user_id
+        if user_id == MANUAL_USER_ID:
+            # Counted in the lift total above; there is no button for them to tap.
+            continue
+        day.lift_times_by_user[user_id] = _with_lift(
+            day.lift_times_by_user.get(user_id, ()), row.lift_time
+        )
+        day.booked_lift_times_by_user[user_id] = _with_lift(
+            day.booked_lift_times_by_user.get(user_id, ()), row.lift_time
+        )
+        day.labels_by_user.setdefault(user_id, (None, row.label))
+        seat_key = (user_id, row.lift_time)
+        day.guests_by_user_lift[seat_key] = max(
+            day.guests_by_user_lift.get(seat_key, 0), row.guests
+        )
+        holders = day.seat_holders_by_lift.get(row.lift_time, ())
+        if row.seats > row.guests and user_id not in holders:
+            day.seat_holders_by_lift[row.lift_time] = (*holders, user_id)
+    day.running_lift_times = tuple(sorted(running, key=lift_minutes))
+
+
+def _with_lift(lift_times: tuple[str, ...], lift_time: str) -> tuple[str, ...]:
+    if lift_time in lift_times:
+        return lift_times
+    return tuple(sorted((*lift_times, lift_time), key=lift_minutes))
 
 
 def _partial_booking_warning(
