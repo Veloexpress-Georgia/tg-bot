@@ -99,14 +99,29 @@ async def open_guest_form(
     Tapping the deep link is pressing Start, which is how a rider who never opened
     the bot ends up with a private chat the bot may write to.
     """
-    service_date = parse_deep_link(command.args or "")
-    if service_date is None:
+    intent = parse_deep_link(command.args or "")
+    if intent is None:
         await message.answer(STALE_BOARD_ALERT)
         return
+    user = message.from_user
+    if intent.method and user is not None:
+        # "I paid" and "Cash" mean the money has moved, so arriving here settles
+        # up — unless something needs saying first. A warning gets the card
+        # instead of a claim: the board has to squeeze its warnings into a
+        # 200-character toast and a second tap, while here there is room to lay
+        # out which lifts filled, what is due now and what the whole day costs,
+        # with the buttons underneath. Explaining beats charging quietly.
+        await payments_service.claim(
+            service_date=intent.service_date,
+            telegram_user_id=user.id,
+            username=user.username,
+            full_name=user.full_name,
+            method=intent.method,
+        )
     await payments_service.open_rider_card(
-        telegram_user_id=message.from_user.id if message.from_user else 0,
+        telegram_user_id=user.id if user else 0,
         private_chat_id=message.chat.id,
-        service_date=service_date,
+        service_date=intent.service_date,
     )
 
 

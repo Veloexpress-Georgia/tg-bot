@@ -29,6 +29,11 @@ MY_DAY_PARSE_MODE = "HTML"
 # baked into board buttons already posted in the group, so they outlive the
 # rename from "guest form" to "rider card".
 DEEP_LINK_PREFIX = "guests-"
+# "I paid" and "Cash" carry their meaning through the link. Unlike "Pay", which
+# only invites somebody to go and pay, these are the rider asserting that money
+# has moved — so acting on arrival is the same promise the button already made.
+PAID_LINK_PREFIX = "paid-"
+CASH_LINK_PREFIX = "cash-"
 
 
 @dataclass(frozen=True)
@@ -281,18 +286,36 @@ def _lift_row(row: RiderLiftRow, *, encoded_date: str) -> list[InlineKeyboardBut
     return buttons
 
 
-def deep_link(*, bot_username: str, service_date: date) -> str:
+@dataclass(frozen=True)
+class DeepLinkIntent:
+    """What a rider asked for by tapping a link into the bot's private chat."""
+
+    service_date: date
+    # "" to just look; otherwise the payment method they are asserting.
+    method: str = ""
+
+
+def deep_link(*, bot_username: str, service_date: date, prefix: str = DEEP_LINK_PREFIX) -> str:
     """Tapping this is pressing Start, so it also reaches riders with no bot chat."""
-    return f"https://t.me/{bot_username}?start={DEEP_LINK_PREFIX}{encode_guest_date(service_date)}"
+    return f"https://t.me/{bot_username}?start={prefix}{encode_guest_date(service_date)}"
 
 
-def parse_deep_link(payload: str) -> date | None:
-    if not payload.startswith(DEEP_LINK_PREFIX):
-        return None
-    try:
-        return decode_guest_date(payload.removeprefix(DEEP_LINK_PREFIX))
-    except ValueError:
-        return None
+def parse_deep_link(payload: str) -> DeepLinkIntent | None:
+    for prefix, method in (
+        (DEEP_LINK_PREFIX, ""),
+        (PAID_LINK_PREFIX, "transfer"),
+        (CASH_LINK_PREFIX, "cash"),
+    ):
+        if not payload.startswith(prefix):
+            continue
+        try:
+            return DeepLinkIntent(
+                service_date=decode_guest_date(payload.removeprefix(prefix)),
+                method=method,
+            )
+        except ValueError:
+            return None
+    return None
 
 
 def encode_guest_date(service_date: date) -> str:

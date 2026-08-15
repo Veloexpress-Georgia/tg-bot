@@ -1,6 +1,9 @@
 from datetime import date
 
 from veloexpress_bot.payments.myday import (
+    CASH_LINK_PREFIX,
+    PAID_LINK_PREFIX,
+    DeepLinkIntent,
     RiderCardView,
     RiderDayView,
     RiderLiftRow,
@@ -201,9 +204,22 @@ def test_the_deep_link_round_trips_through_the_start_payload() -> None:
     link = deep_link(bot_username="veloexpress_bot", service_date=SATURDAY)
 
     assert link == "https://t.me/veloexpress_bot?start=guests-20260801"
-    assert parse_deep_link(link.split("start=")[1]) == SATURDAY
+    assert parse_deep_link(link.split("start=")[1]) == DeepLinkIntent(SATURDAY)
     assert parse_deep_link("nonsense") is None
     assert parse_deep_link("guests-notadate") is None
+
+
+def test_the_payment_links_carry_the_method_through_the_payload() -> None:
+    """ "I paid" is the rider asserting money moved, so the link says which kind."""
+    paid = deep_link(bot_username="veloexpress_bot", service_date=SATURDAY, prefix=PAID_LINK_PREFIX)
+    cash = deep_link(bot_username="veloexpress_bot", service_date=SATURDAY, prefix=CASH_LINK_PREFIX)
+
+    assert paid.endswith("start=paid-20260801")
+    assert cash.endswith("start=cash-20260801")
+    assert parse_deep_link("paid-20260801") == DeepLinkIntent(SATURDAY, method="transfer")
+    assert parse_deep_link("cash-20260801") == DeepLinkIntent(SATURDAY, method="cash")
+    # Looking is not paying: the plain link carries no method at all.
+    assert parse_deep_link("guests-20260801") == DeepLinkIntent(SATURDAY, method="")
 
 
 def test_callback_encodings_round_trip() -> None:

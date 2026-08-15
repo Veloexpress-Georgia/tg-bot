@@ -25,7 +25,10 @@ from veloexpress_bot.db.models import (
     ServiceDayNotice,
 )
 from veloexpress_bot.payments.myday import (
+    CASH_LINK_PREFIX,
+    DEEP_LINK_PREFIX,
     MY_DAY_PARSE_MODE,
+    PAID_LINK_PREFIX,
     MyDayDraft,
     RiderCardView,
     RiderDayView,
@@ -831,11 +834,9 @@ class PaymentsService:
                 for user_id in day.lift_times_by_user
                 if user_id not in paid_user_ids and not day.is_waitlisted(user_id)
             ),
-            guests_url=(
-                deep_link(bot_username=self._bot_username, service_date=day.service_date)
-                if self._bot_username
-                else ""
-            ),
+            guests_url=self._deep_link(day.service_date, DEEP_LINK_PREFIX),
+            paid_url=self._deep_link(day.service_date, PAID_LINK_PREFIX),
+            cash_url=self._deep_link(day.service_date, CASH_LINK_PREFIX),
             deadline_time=self._settings.booking_deadline_time,
             cancelled=day.cancelled,
         )
@@ -1349,6 +1350,15 @@ class PaymentsService:
         if last_posted_at is None:
             return False
         return _as_utc(last_posted_at) >= since
+
+    def _deep_link(self, service_date: date, prefix: str) -> str:
+        if not self._bot_username:
+            return ""
+        return deep_link(
+            bot_username=self._bot_username,
+            service_date=service_date,
+            prefix=prefix,
+        )
 
     def _amount(self, seats: int) -> int:
         return seats * self._settings.payment_price_gel

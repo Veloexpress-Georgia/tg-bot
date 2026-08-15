@@ -1317,3 +1317,73 @@ async def test_the_card_tells_a_waitlisted_rider_their_place(db: SharedDatabase)
 
     assert "8:30 — ⏳ waitlist, 2nd in line" in card.text
     assert "nothing to pay until one frees up" in card.text
+
+
+async def test_the_board_pay_buttons_are_deep_links_when_the_username_is_known(
+    db: SharedDatabase,
+) -> None:
+    """Paying is the most frequent action, so it is also the best onboarding route."""
+    poll_service, payments, client, poll_id, saturday = await _setup(
+        db, bot_username="veloexpress_bot"
+    )
+    await _fill(poll_service, poll_id, 0, riders=5)
+
+    await payments.sync_boards()
+
+    board = client.payments_sends()[0]
+    assert board.markup is not None
+    encoded = saturday.strftime("%Y%m%d")
+    urls = [button.url for button in board.markup.inline_keyboard[0]]
+    assert urls == [
+        f"https://t.me/veloexpress_bot?start=paid-{encoded}",
+        f"https://t.me/veloexpress_bot?start=cash-{encoded}",
+    ]
+
+
+async def test_the_board_falls_back_to_callbacks_without_a_username(
+    db: SharedDatabase,
+) -> None:
+    """A missing username must not leave the board with no way to pay at all."""
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+
+    await payments.sync_boards()
+
+    board = client.payments_sends()[0]
+    assert board.markup is not None
+    encoded = saturday.strftime("%Y%m%d")
+    data = [button.callback_data for button in board.markup.inline_keyboard[0]]
+    assert data == [f"pay:paid:{encoded}", f"pay:cash:{encoded}"]
+
+
+async def test_arriving_by_a_warning_free_pay_link_settles_up(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+
+    outcome = await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
+
+    assert outcome.needs_confirmation is False
+    async with db.session() as session:
+        claim = await session.scalar(select(PaymentClaim))
+    assert claim is not None
+    assert claim.seats == 1
+
+
+async def test_a_link_that_needs_explaining_records_nothing(db: SharedDatabase) -> None:
+    """The card gets to explain instead; charging quietly is what the toast did badly."""
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    # Rider 100 also holds 10:00, which has not filled — the partial-booking case.
+    await _vote(poll_service, poll_id, 100, 0, 1)
+    await payments.sync_boards()
+
+    outcome = await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
+
+    assert outcome.needs_confirmation is True
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentClaim)) is None
