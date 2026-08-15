@@ -36,9 +36,11 @@ from veloexpress_bot.payments.render import (
     PaymentsBoardView,
     RefundRow,
     RiderPayment,
+    UnpaidLift,
     render_cancellation_report,
     render_payment_post,
     render_payments_board,
+    render_unpaid_deadline_notice,
 )
 from veloexpress_bot.payments.roster import (
     MANUAL_USER_ID,
@@ -1068,7 +1070,78 @@ class PaymentsService:
                 # A day added after its own deadline never had one. Freezing it at
                 # creation would bill the first voter for an empty lift.
                 continue
-            await self._capture_roster(day, now=moment, deadline_at=deadline_at)
+            rows = await self._capture_roster(day, now=moment, deadline_at=deadline_at)
+            if rows is not None:
+                await self._chase_unpaid_lifts(day, rows)
+
+    async def _chase_unpaid_lifts(
+        self,
+        day: DayBookings,
+        rows: tuple[RosterSeat, ...],
+    ) -> None:
+        """Booking closed with a lift underfunded: ask, never cancel.
+
+        The group settles a lift at five prepayments, but somebody forgetting to
+        tap a button is not a reason to call off a van — so the bot names the
+        shortfall, tags whoever is missing from it, and leaves the decision with
+        Misho. Sent once, at the freeze, because the roster is captured once.
+        """
+        async with self._session_factory() as session:
+            paid_user_ids = set(
+                (
+                    await session.scalars(
+                        select(PaymentClaim.telegram_user_id)
+                        .where(PaymentClaim.environment == self._settings.app_env)
+                        .where(PaymentClaim.chat_id == self._require_chat_id())
+                        .where(PaymentClaim.service_date == day.service_date)
+                    )
+                ).all()
+            )
+
+        short: list[UnpaidLift] = []
+        unpaid: dict[int, str] = {}
+        for lift_time in sorted({row.lift_time for row in rows}, key=lift_minutes):
+            lift_rows = [row for row in rows if row.lift_time == lift_time]
+            if sum(row.seats for row in lift_rows) < MINIMUM_RIDERS:
+                # Never reached the minimum, so nothing was due on it in the first
+                # place. Chasing money for a lift that is not happening is noise.
+                continue
+            # Manual bookings count as paid: Misho took them himself and settles
+            # them himself, and there is no button for them to tap.
+            paid_seats = sum(
+                row.seats
+                for row in lift_rows
+                if row.telegram_user_id == MANUAL_USER_ID or row.telegram_user_id in paid_user_ids
+            )
+            if paid_seats >= MINIMUM_RIDERS:
+                continue
+            short.append(UnpaidLift(lift_time=lift_time, paid_seats=paid_seats))
+            for row in lift_rows:
+                if row.telegram_user_id != MANUAL_USER_ID and (
+                    row.telegram_user_id not in paid_user_ids
+                ):
+                    unpaid[row.telegram_user_id] = row.label
+        if not short:
+            return
+
+        text = render_unpaid_deadline_notice(
+            service_date=day.service_date,
+            lifts=tuple(short),
+            riders=tuple(
+                OutstandingRider(telegram_user_id=user_id, label=label)
+                for user_id, label in unpaid.items()
+            ),
+            minimum=MINIMUM_RIDERS,
+        )
+        try:
+            await self._telegram_client.send_text(
+                chat_id=self._require_chat_id(),
+                message_thread_id=self._settings.telegram_payments_thread_id,
+                text=text,
+                parse_mode=PAYMENTS_PARSE_MODE,
+            )
+        except Exception:
+            logger.exception("unpaid_deadline_notice_failed")
 
     async def _capture_roster(
         self,
@@ -1076,11 +1149,12 @@ class PaymentsService:
         *,
         now: datetime,
         deadline_at: datetime,
-    ) -> None:
+    ) -> tuple[RosterSeat, ...] | None:
+        """Returns the frozen rows, or None when the day was already frozen."""
         async with self._session_factory() as session:
             notice = await self._service_day_notice(session=session, service_date=day.service_date)
             if notice is not None and notice.roster_captured_at is not None:
-                return
+                return None
             rows = _roster_rows(day)
             for row in rows:
                 session.add(
@@ -1113,6 +1187,7 @@ class PaymentsService:
             len(rows),
             extra={"service_date": day.service_date.isoformat(), "rows": len(rows)},
         )
+        return rows
 
     async def _service_day_notice(
         self,

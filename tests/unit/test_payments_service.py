@@ -1135,3 +1135,79 @@ async def test_the_first_sight_of_a_lift_announces_nothing(db: SharedDatabase) -
     await payments.announce_seat_promotions()
 
     assert await _lift_sends(client) == []
+
+
+def _unpaid_notices(client: FakeTelegramClient) -> list[SentRecord]:
+    return [record for record in client.payments_sends() if "not paid up yet" in record.text]
+
+
+async def test_an_underfunded_lift_is_chased_not_cancelled(db: SharedDatabase) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
+    # Cash counts the same as a transfer.
+    await payments.claim(
+        service_date=saturday,
+        telegram_user_id=101,
+        username="anna",
+        full_name="Anna",
+        method=CASH_METHOD,
+    )
+
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+
+    notices = _unpaid_notices(client)
+    assert len(notices) == 1
+    assert "8:30 — 2/5 paid" in notices[0].text
+    assert "Misho decides" in notices[0].text
+    # The three who have not paid are tagged; the two who have are not.
+    assert "tg://user?id=102" in notices[0].text
+    assert "tg://user?id=100" not in notices[0].text
+    # And the lift is still running: nobody's forgotten tap calls off a van.
+    board = client.payments_sends()[0]
+    board_text = [text for message_id, text in client.edits if message_id == board.message_id][-1]
+    assert "Running: 8:30" in board_text
+
+
+async def test_a_fully_paid_lift_is_not_chased(db: SharedDatabase) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+    for user_id in range(100, 105):
+        await payments.claim(
+            service_date=saturday,
+            telegram_user_id=user_id,
+            username=f"rider{user_id}",
+            full_name=f"Rider {user_id}",
+        )
+
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+
+    assert _unpaid_notices(client) == []
+
+
+async def test_a_lift_that_never_filled_is_not_chased(db: SharedDatabase) -> None:
+    """Nothing was due on it, so asking for money would be noise."""
+    saturday = _future_saturday()
+    poll_service, payments, client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=3)
+
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+
+    assert _unpaid_notices(client) == []
+
+
+async def test_the_chase_is_sent_once(db: SharedDatabase) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday) + timedelta(hours=1))
+
+    assert len(_unpaid_notices(client)) == 1

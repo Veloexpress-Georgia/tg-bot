@@ -145,6 +145,44 @@ def render_payments_board(view: PaymentsBoardView) -> PaymentsBoardDraft:
     )
 
 
+@dataclass(frozen=True)
+class UnpaidLift:
+    lift_time: str
+    paid_seats: int
+
+
+def render_unpaid_deadline_notice(
+    *,
+    service_date: date,
+    lifts: tuple[UnpaidLift, ...],
+    riders: tuple[OutstandingRider, ...],
+    minimum: int,
+) -> str:
+    """Booking closed with the trip underfunded — ask, do not cancel.
+
+    Somebody forgetting to tap a button is not a reason to call off a van, so
+    this names the shortfall and tags whoever is missing from it. Whether the
+    lift actually runs is Misho's decision, and the bot does not pre-empt it.
+    """
+    lines = [
+        f"⏳ {_long_day_label(service_date)} — booking is closed and these lifts "
+        "are not paid up yet:",
+        "",
+    ]
+    lines.extend(f"{lift.lift_time} — {lift.paid_seats}/{minimum} paid" for lift in lifts)
+    lines.extend(
+        (
+            "",
+            f"A lift is settled once {minimum} seats are paid for, so these are still "
+            "open questions — Misho decides.",
+            "💵 Already paid in cash? Tap 💵 Cash on the board so it counts.",
+        )
+    )
+    if riders:
+        lines.extend(("", " ".join(_mention(rider) for rider in riders)))
+    return "\n".join(lines)
+
+
 def render_payment_post(
     *,
     label: str,
