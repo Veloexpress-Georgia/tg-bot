@@ -2139,11 +2139,18 @@ class PollPostingService:
                     )
                 )
             day_claims = [claim for claim in claims if claim.service_date == batch.service_date]
+            # Riders holding a seat on a lift that is still on — not "anyone who
+            # answered the poll". The poll also carries "👀 Check answers", so the
+            # loose version counted people who only peeked at the results, and
+            # people whose only lift was cancelled. `paid 9/26` then read as
+            # seventeen debtors when most of them were never coming.
             booked_user_ids = {
                 vote.telegram_user_id
                 for snapshot in batch_snapshots
+                if snapshot.lift_time is not None
+                and (batch.service_date, snapshot.lift_time) not in cancelled_date_time
                 for vote in votes_by_poll.get(snapshot.poll_id, [])
-                if decode_option_ids(vote.option_ids)
+                if snapshot.option_index in decode_option_ids(vote.option_ids)
             }
             days.append(
                 BookingMonitorDay(

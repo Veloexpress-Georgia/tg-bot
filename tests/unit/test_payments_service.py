@@ -16,6 +16,7 @@ from veloexpress_bot.db.models import (
     DeadlineRoster,
     PaymentClaim,
     PaymentsBoard,
+    PollOptionSnapshot,
     RiderCard,
 )
 from veloexpress_bot.payments.service import (
@@ -1422,3 +1423,21 @@ async def test_a_rider_who_stayed_still_owes_when_others_dropped_out(
         service_date=saturday, telegram_user_id=102, username="rider102", full_name="Rider 102"
     )
     assert outcome.text.endswith("15 GEL.")
+
+
+async def test_peeking_at_the_results_is_not_a_booking(db: SharedDatabase) -> None:
+    """The poll's "👀 Check answers" option is not a seat, so it is not a debtor."""
+    poll_service, _payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    # The last option is "Check answers"; four riders only tapped that.
+    async with db.session() as session:
+        options = (await session.scalars(select(PollOptionSnapshot))).all()
+    peek_index = max(option.option_index for option in options)
+    for user_id in range(200, 204):
+        await _vote(poll_service, poll_id, user_id, peek_index)
+
+    days = await poll_service.status_days()
+
+    day = next(item for item in days if item.service_date == saturday)
+    assert day.booked_rider_count == 5
+    assert day.seat_count == 5
