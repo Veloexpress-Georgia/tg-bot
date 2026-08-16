@@ -38,6 +38,7 @@ from veloexpress_bot.db.models import (
     PollScheduleHistory,
     PollVote,
     PollVoteEvent,
+    RefundReport,
     ServiceDayNotice,
 )
 from veloexpress_bot.deeplinks import message_link, topic_link
@@ -49,6 +50,7 @@ from veloexpress_bot.payments.myday import deep_link
 from veloexpress_bot.polls.defaults import (
     DEFAULT_CANCELLED_LIFT_TIMES,
     DEFAULT_LIFTS,
+    MINIMUM_RIDERS,
     PAYMENT_TERMS_PARSE_MODE,
     PaymentTerms,
     StartLocation,
@@ -2080,6 +2082,23 @@ class PollPostingService:
                     .where(PaymentClaim.service_date.in_(selected_dates))
                 )
             ).all()
+            guest_seats = (
+                await session.scalars(
+                    select(GuestSeat)
+                    .where(GuestSeat.environment == self._settings.app_env)
+                    .where(GuestSeat.chat_id == self._settings.telegram_target_chat_id)
+                    .where(GuestSeat.thread_id == self._settings.telegram_target_thread_id)
+                    .where(GuestSeat.service_date.in_(selected_dates))
+                )
+            ).all()
+            has_refund_reports = (
+                await session.scalar(
+                    select(RefundReport.id)
+                    .where(RefundReport.environment == self._settings.app_env)
+                    .where(RefundReport.chat_id == self._settings.telegram_target_chat_id)
+                    .limit(1)
+                )
+            ) is not None
 
         votes_by_poll: dict[str, list[PollVote]] = {}
         for vote in votes:
@@ -2088,7 +2107,12 @@ class PollPostingService:
             (booking.service_date, booking.lift_time): booking.count for booking in manual_bookings
         }
         cancelled_date_time = {(row.service_date, row.lift_time) for row in cancelled}
+        guests_by_date_time: dict[tuple[date, str], int] = {}
+        for guest in guest_seats:
+            key = (guest.service_date, guest.lift_time)
+            guests_by_date_time[key] = guests_by_date_time.get(key, 0) + guest.count
         capacity_by_time = {lift.time: lift.capacity for lift in DEFAULT_LIFTS}
+        today = datetime.now(UTC).astimezone(self._zone).date()
         days: list[BookingMonitorDay] = []
         for batch in selected_batches:
             batch_snapshots = [snapshot for snapshot in snapshots if snapshot.batch_id == batch.id]
@@ -2105,6 +2129,9 @@ class PollPostingService:
                         time=snapshot.lift_time,
                         vote_count=vote_count,
                         manual_count=manual_by_date_time.get(
+                            (batch.service_date, snapshot.lift_time), 0
+                        ),
+                        guest_count=guests_by_date_time.get(
                             (batch.service_date, snapshot.lift_time), 0
                         ),
                         capacity=capacity_by_time.get(snapshot.lift_time, 10),
@@ -2126,6 +2153,16 @@ class PollPostingService:
                     booked_rider_count=len(booked_user_ids),
                     expected_gel=sum(claim.seats for claim in day_claims)
                     * self._settings.payment_price_gel,
+                    # Seats on lifts that are actually running, capped at capacity:
+                    # nobody on a waitlist is billed, so nobody on one is owed for.
+                    owed_gel=sum(
+                        min(lift.total_count, lift.capacity)
+                        for lift in lifts
+                        if not lift.cancelled and lift.total_count >= MINIMUM_RIDERS
+                    )
+                    * self._settings.payment_price_gel,
+                    past=batch.service_date < today,
+                    has_refund_reports=has_refund_reports,
                 )
             )
         return tuple(days)

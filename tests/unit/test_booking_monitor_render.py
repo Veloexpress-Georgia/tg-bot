@@ -28,6 +28,7 @@ def test_booking_monitor_renders_day_tabs_counts_and_controls() -> None:
                 paid_rider_count=3,
                 booked_rider_count=9,
                 expected_gel=60,
+                owed_gel=240,
             ),
             BookingMonitorDay(
                 service_date=date(2026, 7, 19),
@@ -38,7 +39,9 @@ def test_booking_monitor_renders_day_tabs_counts_and_controls() -> None:
     )
 
     assert "📊 Booking monitor · Sat, 18 Jul" in draft.text
-    assert "Running 2 of 2 · 16 seats · paid 3/9 · 60 GEL in" in draft.text
+    # Paid of owed, never a bare total: on its own the money figure sat next to a
+    # seat count built from different rules and read as a contradiction.
+    assert "Running 2 of 2 · 16 seats · paid 3/9 · 60 of 240 GEL" in draft.text
     assert "8:30 — 7/10 · 3 left · 1 manual" in draft.text
     assert "10:00 — 9/10 · 1 left" in draft.text
     assert draft.reply_markup is not None
@@ -165,3 +168,55 @@ def test_booking_monitor_empty_state_and_callback_decoding() -> None:
     assert decode_monitor_date("20260718") == date(2026, 7, 18)
     assert decode_monitor_time("0830") == "8:30"
     assert decode_monitor_time("1000") == "10:00"
+
+
+def test_guests_are_counted_like_any_other_seat() -> None:
+    """The public board counted them and the monitor did not, so the two disagreed."""
+    draft = render_booking_monitor(
+        (
+            BookingMonitorDay(
+                service_date=date(2026, 7, 18),
+                lifts=(
+                    BookingLiftStatus(time="8:30", vote_count=7, manual_count=1, guest_count=2),
+                ),
+            ),
+        ),
+        selected_service_date=date(2026, 7, 18),
+    )
+
+    assert "8:30 — 10/10 · full · 1 manual · 2 guests" in draft.text
+
+
+def test_a_day_that_already_ran_cannot_be_cancelled() -> None:
+    """Refunding a trip people took is not a cancellation, it is a mistake."""
+    draft = render_booking_monitor(
+        (
+            BookingMonitorDay(
+                service_date=date(2026, 7, 18),
+                lifts=(BookingLiftStatus(time="8:30", vote_count=7, manual_count=0),),
+                past=True,
+            ),
+        ),
+        selected_service_date=date(2026, 7, 18),
+    )
+
+    assert draft.reply_markup is not None
+    assert "cancelday" not in str(_button_map(draft.reply_markup))
+    # Still readable, and payments can still be marked: that is why it is here.
+    assert "8:30" in draft.text
+
+
+def test_past_refunds_are_reachable_once_any_exist() -> None:
+    draft = render_booking_monitor(
+        (
+            BookingMonitorDay(
+                service_date=date(2026, 7, 18),
+                lifts=(BookingLiftStatus(time="8:30", vote_count=7, manual_count=0),),
+                has_refund_reports=True,
+            ),
+        ),
+        selected_service_date=date(2026, 7, 18),
+    )
+
+    assert draft.reply_markup is not None
+    assert _button_map(draft.reply_markup)["mon:refunds"] == "🧾 Past refunds"

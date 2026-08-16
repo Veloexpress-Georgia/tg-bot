@@ -241,6 +241,30 @@ class ServiceDayNotice(Base):
     )
 
 
+class RefundReport(Base):
+    """Who had paid at the moment something was cancelled, kept as a record.
+
+    The report used to exist only as a message in the admin's private chat, and
+    cancelling clears the day's claims — so deleting that message destroyed the
+    only surviving list of who was owed money. Stored rendered rather than as
+    rows because it is a snapshot: it must keep saying what Misho was shown, not
+    re-derive itself from a world that has since moved on.
+    """
+
+    __tablename__ = "refund_report"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    # None when the whole day went; otherwise the single lift that was called off.
+    lift_time: Mapped[str | None] = mapped_column(String(16))
+    text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
 class RiderCard(Base):
     """One rider's private card: where it lives, so it can be replaced not repeated.
 

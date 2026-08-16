@@ -21,6 +21,7 @@ from veloexpress_bot.db.models import (
     PollBatch,
     PollOptionSnapshot,
     PollVote,
+    RefundReport,
     RiderCard,
     ServiceDayNotice,
 )
@@ -586,11 +587,43 @@ class PaymentsService:
             )
             for claim in claims
         )
-        return render_cancellation_report(
+        report = render_cancellation_report(
             service_date=service_date,
             cancelled_lift_time=cancelled_lift_time,
             rows=rows,
         )
+        if report is not None:
+            # Kept, because cancelling clears the day's claims: without this the
+            # admin's chat message is the only list of who is owed money, and a
+            # stray delete takes it with them.
+            async with self._session_factory() as session:
+                session.add(
+                    RefundReport(
+                        environment=self._settings.app_env,
+                        chat_id=self._require_chat_id(),
+                        service_date=service_date,
+                        lift_time=cancelled_lift_time,
+                        text=report,
+                    )
+                )
+                await session.commit()
+        return report
+
+    async def recent_refund_reports(self, *, limit: int = 5) -> tuple[str, ...]:
+        """The last few refund lists, newest first, so a deleted message is not lost."""
+        if not self.enabled:
+            return ()
+        async with self._session_factory() as session:
+            rows = (
+                await session.scalars(
+                    select(RefundReport)
+                    .where(RefundReport.environment == self._settings.app_env)
+                    .where(RefundReport.chat_id == self._require_chat_id())
+                    .order_by(RefundReport.created_at.desc(), RefundReport.id.desc())
+                    .limit(limit)
+                )
+            ).all()
+        return tuple(row.text for row in rows)
 
     async def forget_day(self, *, service_date: date) -> None:
         """Drop the day's payments once the refunds have been reported.

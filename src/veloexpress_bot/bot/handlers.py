@@ -440,6 +440,25 @@ async def toggle_rider_payment(
     await _show_monitor(message, poll_service, callback.from_user.id, service_date)
 
 
+@router.callback_query(F.data == "mon:refunds")
+async def show_past_refunds(
+    callback: CallbackQuery,
+    settings: Settings,
+    payments_service: PaymentsService,
+) -> None:
+    """Re-send the refund lists, because the originals can be deleted."""
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+    reports = await payments_service.recent_refund_reports()
+    await callback.answer()
+    if not reports:
+        await message.answer("No cancellations with money in them yet.")
+        return
+    for report in reports:
+        await message.answer(report, parse_mode="HTML")
+
+
 @router.callback_query(
     F.data.startswith("mon:cancel:")
     | F.data.startswith("mon:restore:")

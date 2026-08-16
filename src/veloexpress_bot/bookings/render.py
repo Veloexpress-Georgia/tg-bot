@@ -26,12 +26,15 @@ class BookingLiftStatus:
     time: str
     vote_count: int
     manual_count: int
+    # Guests hold seats like anybody else. Left out of this count, the monitor
+    # showed an admin free space the public board knew was gone.
+    guest_count: int = 0
     capacity: int = 10
     cancelled: bool = False
 
     @property
     def total_count(self) -> int:
-        return self.vote_count + self.manual_count
+        return self.vote_count + self.manual_count + self.guest_count
 
 
 @dataclass(frozen=True)
@@ -47,7 +50,14 @@ class BookingMonitorDay:
     lifts: tuple[BookingLiftStatus, ...]
     paid_rider_count: int = 0
     booked_rider_count: int = 0
+    # Money in, and money the running lifts should bring. Two figures rather than
+    # one, because either alone invites the wrong conclusion.
     expected_gel: int = 0
+    owed_gel: int = 0
+    # A day that has already happened stays visible for late bookkeeping, but
+    # cancelling it would refund a trip people took.
+    past: bool = False
+    has_refund_reports: bool = False
 
     @property
     def running_count(self) -> int:
@@ -129,7 +139,17 @@ def render_booking_monitor(
             ]
         )
 
-    if any(not lift.cancelled for lift in selected_day.lifts):
+    if selected_day.has_refund_reports:
+        # Cancelling clears the day's claims, so the report the admin was sent is
+        # the only surviving list of who is owed. One deleted message should not
+        # be the end of it.
+        rows.append([InlineKeyboardButton(text="🧾 Past refunds", callback_data="mon:refunds")])
+
+    # Never on a day that has already run: cancelling retires the day and reports
+    # every payment as a refund, which for a trip people actually took is the bot
+    # handing back money that was earned. The day stays readable, and payments can
+    # still be marked on it — late bookkeeping is the reason it is still here.
+    if not selected_day.past and any(not lift.cancelled for lift in selected_day.lifts):
         rows.append(
             [
                 InlineKeyboardButton(
@@ -185,6 +205,9 @@ def render_lift_detail(
         lines.append("")
     lines.append(f"Telegram: {lift.vote_count}")
     lines.append(f"Manual: {lift.manual_count}")
+    if lift.guest_count:
+        # Only when there are any: an always-zero line is noise on most lifts.
+        lines.append(f"Guests: {lift.guest_count}")
     lines.append(f"Total: {lift.total_count}/{lift.capacity}")
     if riders:
         paid = sum(rider.paid for rider in riders)
@@ -235,7 +258,13 @@ def decode_monitor_time(value: str) -> str:
 
 
 def _summary_line(day: BookingMonitorDay) -> str:
-    """The day at a glance: what runs, how many seats, and how much money is in."""
+    """The day at a glance: what runs, how many seats, and how the money stands.
+
+    Money is stated as paid-of-owed rather than a bare total. On its own,
+    `300 GEL in` sat next to a seat count computed from a different universe —
+    claims cover guests and lifts paid ahead, seats did not — and the two read
+    as a contradiction that needed the source to explain.
+    """
     active = sum(not lift.cancelled for lift in day.lifts)
     parts = [
         f"Running {day.running_count} of {active}",
@@ -243,15 +272,22 @@ def _summary_line(day: BookingMonitorDay) -> str:
     ]
     if day.booked_rider_count:
         parts.append(f"paid {day.paid_rider_count}/{day.booked_rider_count}")
-    if day.expected_gel:
-        parts.append(f"{day.expected_gel} GEL in")
+    if day.expected_gel or day.owed_gel:
+        parts.append(f"{day.expected_gel} of {day.owed_gel} GEL")
     return " · ".join(parts)
 
 
 def _lift_line(lift: BookingLiftStatus) -> str:
     if lift.cancelled:
         return f"{lift.time} — ❌ cancelled"
-    suffix = f" · {lift.manual_count} manual" if lift.manual_count else ""
+    extra = []
+    if lift.manual_count:
+        extra.append(f"{lift.manual_count} manual")
+    if lift.guest_count:
+        extra.append(
+            f"{lift.guest_count} guest" if lift.guest_count == 1 else f"{lift.guest_count} guests"
+        )
+    suffix = f" · {' · '.join(extra)}" if extra else ""
     return f"{lift.time} — {lift.total_count}/{lift.capacity} · {_lift_state(lift)}{suffix}"
 
 
