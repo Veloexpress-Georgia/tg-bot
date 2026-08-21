@@ -1559,13 +1559,14 @@ class PollPostingService:
             availability = tuple(
                 LiftAvailability(
                     time=snapshot.lift_time,
-                    voter_count=(
+                    seat_count=(
                         counts.get(snapshot.option_index, 0)
                         + manual_by_time.get(snapshot.lift_time, 0)
                         + guests_by_time.get(snapshot.lift_time, 0)
                     ),
                     capacity=capacity_by_time.get(snapshot.lift_time, 10),
                     manual_count=manual_by_time.get(snapshot.lift_time, 0),
+                    guest_count=guests_by_time.get(snapshot.lift_time, 0),
                     cancelled=snapshot.lift_time in cancelled_times,
                     waitlist=(
                         ()
@@ -2579,7 +2580,7 @@ def _initial_lift_availability(
     return tuple(
         LiftAvailability(
             time=lift.time,
-            voter_count=manual_by_time.get(lift.time, 0),
+            seat_count=manual_by_time.get(lift.time, 0),
             capacity=lift.capacity,
             manual_count=manual_by_time.get(lift.time, 0),
         )

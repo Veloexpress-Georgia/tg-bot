@@ -89,11 +89,19 @@ class WaitlistRider:
 @dataclass(frozen=True)
 class LiftAvailability:
     time: str
-    voter_count: int
+    # Every seat held, not just the poll's: manual bookings and guests ride too.
+    # It was called `voter_count`, which made the board look wrong next to a poll
+    # counting only voters.
+    seat_count: int
     capacity: int = 10
     manual_count: int = 0
+    guest_count: int = 0
     cancelled: bool = False
     waitlist: tuple[WaitlistRider, ...] = ()
+
+    @property
+    def off_poll_count(self) -> int:
+        return self.manual_count + self.guest_count
 
 
 def render_poll(render_input: PollRenderInput) -> PollDraft:
@@ -137,7 +145,24 @@ def render_availability_status(
             # riddle. The board is edited in place and a Telegram edit sends no
             # notification, so this informs without pinging anyone.
             lines.append(f"    ⏳ {' '.join(_waitlist_mention(r) for r in lift.waitlist)}")
+    off_poll = _off_poll_note(lifts)
+    if off_poll:
+        lines.extend(("", off_poll))
     return "\n".join(lines)
+
+
+def _off_poll_note(lifts: tuple[LiftAvailability, ...]) -> str:
+    """Seats the poll cannot show: guests and manual bookings do not vote.
+
+    The board counts them, the poll does not, so the two disagree and the board
+    looks broken. One footer line explains the gap without putting a number on
+    every lift line — most days it is absent entirely.
+    """
+    held = [lift for lift in lifts if not lift.cancelled and lift.off_poll_count]
+    if not held:
+        return ""
+    seats = ", ".join(f"+{lift.off_poll_count} at {lift.time}" for lift in held)
+    return f"🎟 Booked outside the poll: {seats}"
 
 
 def _waitlist_mention(rider: WaitlistRider) -> str:
@@ -147,18 +172,18 @@ def _waitlist_mention(rider: WaitlistRider) -> str:
 def _availability_line(lift: LiftAvailability) -> str:
     if lift.cancelled:
         return f"{lift.time} — ❌ cancelled"
-    return f"{lift.time} — <b>{lift.voter_count}/{lift.capacity}</b> · {_availability_tag(lift)}"
+    return f"{lift.time} — <b>{lift.seat_count}/{lift.capacity}</b> · {_availability_tag(lift)}"
 
 
 def _availability_tag(lift: LiftAvailability) -> str:
-    over = lift.voter_count - lift.capacity
+    over = lift.seat_count - lift.capacity
     if over > 0:
         return f"waitlist +{over}"
-    if lift.voter_count >= lift.capacity:
+    if lift.seat_count >= lift.capacity:
         return "full"
-    if lift.voter_count < MINIMUM_RIDERS:
-        return f"needs {MINIMUM_RIDERS - lift.voter_count} more"
-    return f"{lift.capacity - lift.voter_count} left"
+    if lift.seat_count < MINIMUM_RIDERS:
+        return f"needs {MINIMUM_RIDERS - lift.seat_count} more"
+    return f"{lift.capacity - lift.seat_count} left"
 
 
 def _active_lifts(cancelled_lift_times: tuple[str, ...]) -> list[LiftTemplate]:

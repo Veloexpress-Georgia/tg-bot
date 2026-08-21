@@ -67,13 +67,13 @@ def test_availability_names_the_waitlist_where_the_seats_are_counted() -> None:
         (
             LiftAvailability(
                 time="8:30",
-                voter_count=12,
+                seat_count=12,
                 waitlist=(
                     WaitlistRider(telegram_user_id=11, label="@konstantin"),
                     WaitlistRider(telegram_user_id=12, label="Ivan"),
                 ),
             ),
-            LiftAvailability(time="10:00", voter_count=6),
+            LiftAvailability(time="10:00", seat_count=6),
         ),
     )
 
@@ -90,10 +90,10 @@ def test_render_availability_status_shows_counts_and_state_tags() -> None:
     status = render_availability_status(
         date(2026, 5, 16),
         (
-            LiftAvailability(time="8:30", voter_count=3),
-            LiftAvailability(time="10:00", voter_count=6),
-            LiftAvailability(time="11:45", voter_count=10),
-            LiftAvailability(time="15:30", voter_count=12),
+            LiftAvailability(time="8:30", seat_count=3),
+            LiftAvailability(time="10:00", seat_count=6),
+            LiftAvailability(time="11:45", seat_count=10),
+            LiftAvailability(time="15:30", seat_count=12),
         ),
     )
 
@@ -130,3 +130,37 @@ def test_render_poll_requires_at_least_one_lift() -> None:
                 cancelled_lift_times=("8:30", "10:00", "11:45", "13:30", "15:30"),
             )
         )
+
+
+def test_availability_explains_seats_the_poll_cannot_show() -> None:
+    """Guests and manual bookings hold seats but cast no vote, so the board reads
+    higher than the poll. One footer line says why, instead of a number on every
+    lift line."""
+    status = render_availability_status(
+        date(2026, 8, 23),
+        (
+            LiftAvailability(time="8:30", seat_count=0),
+            LiftAvailability(time="10:00", seat_count=9, guest_count=1),
+            LiftAvailability(time="11:45", seat_count=11, manual_count=1, guest_count=1),
+            LiftAvailability(time="13:30", seat_count=7, cancelled=True, guest_count=1),
+        ),
+    )
+
+    lines = status.splitlines()
+    assert lines[-1] == "🎟 Booked outside the poll: +1 at 10:00, +2 at 11:45"
+    assert lines[-2] == ""
+    # The lift lines themselves stay untouched.
+    assert "10:00 — <b>9/10</b> · 1 left" in status
+
+
+def test_availability_has_no_off_poll_note_when_everyone_voted() -> None:
+    status = render_availability_status(
+        date(2026, 8, 23),
+        (
+            LiftAvailability(time="8:30", seat_count=3),
+            LiftAvailability(time="10:00", seat_count=6),
+        ),
+    )
+
+    assert "🎟" not in status
+    assert status.splitlines()[-1] == "10:00 — <b>6/10</b> · 4 left"
