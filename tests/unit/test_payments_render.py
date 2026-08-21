@@ -177,27 +177,29 @@ def test_payment_post_tags_the_rider_with_the_amount() -> None:
     assert text == '💸 <a href="tg://user?id=10">@stas</a> — 30 GEL · Sat, 18 Jul'
 
 
-def test_payment_post_reports_declared_guests() -> None:
-    """Guests are declared, not inferred from the seat total: re-voting moves the
-    lift count, and inferring would silently turn a new lift into a guest."""
+def test_payment_post_counts_guest_seats_not_guest_people() -> None:
+    """Guests are declared per lift, so one guest riding three lifts is three
+    seats. Reported as "+3 guests" it had the group looking for three visitors."""
     text = render_payment_post(
         label="Anna",
         service_date=SATURDAY,
-        amount_gel=45,
+        amount_gel=90,
         user_id=11,
-        guests=2,
+        seats=6,
+        guests=3,
     )
 
-    assert text.endswith("+2 guests")
+    assert text.endswith("6 seats · 3 for guests")
 
     single = render_payment_post(
         label="Anna",
         service_date=SATURDAY,
         amount_gel=30,
         user_id=11,
+        seats=2,
         guests=1,
     )
-    assert single.endswith("+1 guest")
+    assert single.endswith("2 seats · 1 for guests")
 
 
 def test_board_date_survives_the_callback_round_trip() -> None:

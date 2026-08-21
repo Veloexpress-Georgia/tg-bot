@@ -190,6 +190,7 @@ def render_payment_post(
     service_date: date,
     amount_gel: int,
     user_id: int,
+    seats: int = 1,
     guests: int = 0,
     cash: bool = False,
 ) -> str:
@@ -203,7 +204,9 @@ def render_payment_post(
     marker = "💵" if cash else "💸"
     parts = [f"{marker} {mention} — {amount_gel} GEL · {_long_day_label(service_date)}"]
     if guests > 0:
-        parts.append(f"+{guests} guest" if guests == 1 else f"+{guests} guests")
+        # Seats, not people: one guest riding three lifts is three seats, and
+        # "+3 guests" had the group counting three visitors who did not exist.
+        parts.append(f"{seats} seats · {guests} for guests")
     if cash:
         parts.append("cash")
     return " · ".join(parts)

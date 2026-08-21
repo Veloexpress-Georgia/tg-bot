@@ -747,6 +747,7 @@ class PaymentsService:
         text = render_payment_post(
             label=label,
             service_date=day.service_date,
+            seats=seats,
             guests=guests,
             amount_gel=self._amount(seats),
             user_id=telegram_user_id,

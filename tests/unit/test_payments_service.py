@@ -706,7 +706,8 @@ async def test_a_guest_seat_edits_the_posted_line_instead_of_adding_one(
     assert notice == "Guests updated."
     assert len(client.payments_sends()) == sends_before
     edits = [text for message_id, text in client.edits if message_id == posted.message_id]
-    assert "+1 guest" in edits[-1]
+    # Seats, not heads: the rider now holds their own seat plus the guest's.
+    assert "1 for guests" in edits[-1]
 
 
 async def test_a_guest_seat_can_be_taken_before_paying(db: SharedDatabase) -> None:
