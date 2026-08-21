@@ -69,6 +69,10 @@ logger = logging.getLogger(__name__)
 NOT_BOOKED_TEXT = "You are not booked for this day."
 ALREADY_SETTLED_TEXT = "You are already settled up for this day."
 NOTHING_TO_UNDO_TEXT = "You have not marked a payment for this day."
+# Undo erases the only record that money arrived, so it stops where the money
+# stops being the rider's to take back: an admin recorded it, or booking closed.
+UNDO_VERIFIED_TEXT = "Misho recorded this payment. Ask him if it needs undoing."
+UNDO_AFTER_DEADLINE_TEXT = "Booking closed for this day. Ask Misho about a refund."
 NOT_CLAIMED_YET_TEXT = "Tap 💸 I paid or 💵 Cash first."
 BOARD_GONE_TEXT = "This payments board is no longer active."
 PAYMENTS_DISABLED_TEXT = "Payments are not set up for this chat."
