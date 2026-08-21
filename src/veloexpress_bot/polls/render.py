@@ -87,6 +87,15 @@ class WaitlistRider:
 
 
 @dataclass(frozen=True)
+class GuestParty:
+    """Seats one rider took for people who have no Telegram vote of their own."""
+
+    telegram_user_id: int
+    label: str
+    count: int
+
+
+@dataclass(frozen=True)
 class LiftAvailability:
     time: str
     # Every seat held, not just the poll's: manual bookings and guests ride too.
@@ -95,9 +104,13 @@ class LiftAvailability:
     seat_count: int
     capacity: int = 10
     manual_count: int = 0
-    guest_count: int = 0
+    guests: tuple[GuestParty, ...] = ()
     cancelled: bool = False
     waitlist: tuple[WaitlistRider, ...] = ()
+
+    @property
+    def guest_count(self) -> int:
+        return sum(party.count for party in self.guests)
 
     @property
     def off_poll_count(self) -> int:
@@ -140,29 +153,34 @@ def render_availability_status(
     lines = [header, ""]
     for lift in lifts:
         lines.append(_availability_line(lift))
+        off_poll = _off_poll_line(lift)
+        if off_poll:
+            lines.append(off_poll)
         if lift.waitlist:
             # Named right where the seats are counted, so "waitlist +2" stops being a
             # riddle. The board is edited in place and a Telegram edit sends no
             # notification, so this informs without pinging anyone.
             lines.append(f"    ⏳ {' '.join(_waitlist_mention(r) for r in lift.waitlist)}")
-    off_poll = _off_poll_note(lifts)
-    if off_poll:
-        lines.extend(("", off_poll))
     return "\n".join(lines)
 
 
-def _off_poll_note(lifts: tuple[LiftAvailability, ...]) -> str:
+def _off_poll_line(lift: LiftAvailability) -> str:
     """Seats the poll cannot show: guests and manual bookings do not vote.
 
-    The board counts them, the poll does not, so the two disagree and the board
-    looks broken. One footer line explains the gap without putting a number on
-    every lift line — most days it is absent entirely.
+    Named under their own lift rather than summed in a footer. A rider counting
+    votes in the poll and finding one more seat gone here should be able to see
+    whose it is, without opening the payments topic to work it out.
     """
-    held = [lift for lift in lifts if not lift.cancelled and lift.off_poll_count]
-    if not held:
+    if lift.cancelled or not lift.off_poll_count:
         return ""
-    seats = ", ".join(f"+{lift.off_poll_count} at {lift.time}" for lift in held)
-    return f"🎟 Booked outside the poll: {seats}"
+    parts = [f"{_guest_mention(party)} +{party.count}" for party in lift.guests if party.count]
+    if lift.manual_count:
+        parts.append(f"+{lift.manual_count} booked offline")
+    return f"    🎟 {' · '.join(parts)}"
+
+
+def _guest_mention(party: GuestParty) -> str:
+    return f'<a href="tg://user?id={party.telegram_user_id}">{html.escape(party.label)}</a>'
 
 
 def _waitlist_mention(rider: WaitlistRider) -> str:

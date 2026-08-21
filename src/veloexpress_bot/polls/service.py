@@ -70,6 +70,7 @@ from veloexpress_bot.polls.liftsignals import (
 )
 from veloexpress_bot.polls.render import (
     AVAILABILITY_PARSE_MODE,
+    GuestParty,
     LiftAvailability,
     PollDraft,
     PollRenderInput,
@@ -1540,8 +1541,23 @@ class PollPostingService:
                 )
             ).all()
             guests_by_time: dict[str, int] = {}
-            for row in guest_rows:
+            # Named parties, not just a total: the board says whose the extra seats
+            # are, so a rider counting poll votes can see where the gap came from.
+            guest_parties_by_time: dict[str, list[GuestParty]] = {}
+            label_by_user = {vote.telegram_user_id: _rider_label(vote) for vote in votes}
+            for row in sorted(guest_rows, key=lambda row: (_as_utc(row.updated_at), row.id)):
+                if row.count <= 0:
+                    continue
                 guests_by_time[row.lift_time] = guests_by_time.get(row.lift_time, 0) + row.count
+                guest_parties_by_time.setdefault(row.lift_time, []).append(
+                    GuestParty(
+                        telegram_user_id=row.host_user_id,
+                        # A host who withdrew their own vote keeps the guest seat they
+                        # paid for, and then there is no vote left to name them from.
+                        label=label_by_user.get(row.host_user_id, "Rider"),
+                        count=row.count,
+                    )
+                )
             votes_by_option: dict[int, list[PollVote]] = {}
             for vote in votes:
                 for option_id in decode_option_ids(vote.option_ids):
@@ -1566,7 +1582,7 @@ class PollPostingService:
                     ),
                     capacity=capacity_by_time.get(snapshot.lift_time, 10),
                     manual_count=manual_by_time.get(snapshot.lift_time, 0),
-                    guest_count=guests_by_time.get(snapshot.lift_time, 0),
+                    guests=tuple(guest_parties_by_time.get(snapshot.lift_time, ())),
                     cancelled=snapshot.lift_time in cancelled_times,
                     waitlist=(
                         ()

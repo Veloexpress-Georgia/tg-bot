@@ -4,6 +4,7 @@ import pytest
 
 from veloexpress_bot.polls.defaults import CHECK_ANSWERS_OPTION, PaymentTerms, StartLocation
 from veloexpress_bot.polls.render import (
+    GuestParty,
     LiftAvailability,
     PollRenderInput,
     WaitlistRider,
@@ -132,28 +133,45 @@ def test_render_poll_requires_at_least_one_lift() -> None:
         )
 
 
-def test_availability_explains_seats_the_poll_cannot_show() -> None:
+def test_availability_names_who_holds_the_seats_the_poll_cannot_show() -> None:
     """Guests and manual bookings hold seats but cast no vote, so the board reads
-    higher than the poll. One footer line says why, instead of a number on every
-    lift line."""
+    higher than the poll. Naming the hosts under their lift answers "whose seat is
+    that" without a trip to the payments topic."""
     status = render_availability_status(
         date(2026, 8, 23),
         (
             LiftAvailability(time="8:30", seat_count=0),
-            LiftAvailability(time="10:00", seat_count=9, guest_count=1),
-            LiftAvailability(time="11:45", seat_count=11, manual_count=1, guest_count=1),
-            LiftAvailability(time="13:30", seat_count=7, cancelled=True, guest_count=1),
+            LiftAvailability(
+                time="10:00",
+                seat_count=9,
+                guests=(GuestParty(telegram_user_id=21, label="@vitaly", count=1),),
+            ),
+            LiftAvailability(
+                time="11:45",
+                seat_count=11,
+                manual_count=2,
+                guests=(GuestParty(telegram_user_id=21, label="@vitaly", count=1),),
+            ),
+            LiftAvailability(
+                time="13:30",
+                seat_count=7,
+                cancelled=True,
+                guests=(GuestParty(telegram_user_id=21, label="@vitaly", count=1),),
+            ),
         ),
     )
 
     lines = status.splitlines()
-    assert lines[-1] == "🎟 Booked outside the poll: +1 at 10:00, +2 at 11:45"
-    assert lines[-2] == ""
-    # The lift lines themselves stay untouched.
-    assert "10:00 — <b>9/10</b> · 1 left" in status
+    assert lines[2] == "8:30 — <b>0/10</b> · needs 5 more"
+    assert lines[3] == "10:00 — <b>9/10</b> · 1 left"
+    assert lines[4] == '    🎟 <a href="tg://user?id=21">@vitaly</a> +1'
+    assert lines[6] == ('    🎟 <a href="tg://user?id=21">@vitaly</a> +1 · +2 booked offline')
+    # A cancelled lift carries nobody, so its guests are not worth a line.
+    assert lines[7] == "13:30 — ❌ cancelled"
+    assert len(lines) == 8
 
 
-def test_availability_has_no_off_poll_note_when_everyone_voted() -> None:
+def test_availability_has_no_guest_line_when_everyone_voted() -> None:
     status = render_availability_status(
         date(2026, 8, 23),
         (
