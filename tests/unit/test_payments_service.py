@@ -146,7 +146,11 @@ async def db() -> AsyncIterator[SharedDatabase]:
         await database.dispose()
 
 
-def settings(*, payments_thread: int | None = PAYMENTS_THREAD) -> Settings:
+def settings(
+    *,
+    payments_thread: int | None = PAYMENTS_THREAD,
+    payments_via_private_chat: bool = False,
+) -> Settings:
     settings_factory = cast(Any, Settings)
     return settings_factory(
         _env_file=None,
@@ -157,6 +161,7 @@ def settings(*, payments_thread: int | None = PAYMENTS_THREAD) -> Settings:
         telegram_payments_thread_id=payments_thread,
         telegram_admin_ids=(1,),
         payment_price_gel=15,
+        payments_via_private_chat=payments_via_private_chat,
     )
 
 
@@ -171,9 +176,13 @@ async def _setup(
     payments_thread: int | None = PAYMENTS_THREAD,
     service_date: date | None = None,
     bot_username: str = "",
+    payments_via_private_chat: bool = False,
 ) -> tuple[PollPostingService, PaymentsService, FakeTelegramClient, str, date]:
     client = FakeTelegramClient()
-    resolved = settings(payments_thread=payments_thread)
+    resolved = settings(
+        payments_thread=payments_thread,
+        payments_via_private_chat=payments_via_private_chat,
+    )
     poll_service = PollPostingService(
         settings=resolved,
         session_factory=db.session,
@@ -1325,7 +1334,7 @@ async def test_the_board_pay_buttons_are_deep_links_when_the_username_is_known(
 ) -> None:
     """Paying is the most frequent action, so it is also the best onboarding route."""
     poll_service, payments, client, poll_id, saturday = await _setup(
-        db, bot_username="veloexpress_bot"
+        db, bot_username="veloexpress_bot", payments_via_private_chat=True
     )
     await _fill(poll_service, poll_id, 0, riders=5)
 
@@ -1441,3 +1450,33 @@ async def test_peeking_at_the_results_is_not_a_booking(db: SharedDatabase) -> No
     day = next(item for item in days if item.service_date == saturday)
     assert day.booked_rider_count == 5
     assert day.seat_count == 5
+
+
+async def test_paying_stays_in_the_group_until_the_setting_is_turned_on(
+    db: SharedDatabase,
+) -> None:
+    """The default, and what production runs: a tap records the payment in place.
+
+    A callback lands the claim the instant it is pressed; a link lands it only
+    once the rider gets through Start. With 166 members who mostly never opened
+    the bot, the private-chat route is turned on deliberately, not by default.
+    """
+    poll_service, payments, client, poll_id, saturday = await _setup(
+        db, bot_username="veloexpress_bot"
+    )
+    await _fill(poll_service, poll_id, 0, riders=5)
+
+    await payments.sync_boards()
+
+    board = client.payments_sends()[0]
+    assert board.markup is not None
+    encoded = saturday.strftime("%Y%m%d")
+    pay_row = board.markup.inline_keyboard[0]
+    assert [button.callback_data for button in pay_row] == [
+        f"pay:paid:{encoded}",
+        f"pay:cash:{encoded}",
+    ]
+    assert [button.url for button in pay_row] == [None, None]
+    # The guest form still opens privately: only a form can show a row per lift.
+    guest_urls = [button.url for button in board.markup.inline_keyboard[1] if button.url]
+    assert guest_urls == [f"https://t.me/veloexpress_bot?start=guests-{encoded}"]

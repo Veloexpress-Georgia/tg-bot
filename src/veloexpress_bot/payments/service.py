@@ -868,8 +868,12 @@ class PaymentsService:
                 if user_id not in paid_user_ids and not day.is_waitlisted(user_id)
             ),
             guests_url=self._deep_link(day.service_date, DEEP_LINK_PREFIX),
-            paid_url=self._deep_link(day.service_date, PAID_LINK_PREFIX),
-            cash_url=self._deep_link(day.service_date, CASH_LINK_PREFIX),
+            # Behind a setting, so paying stays a single in-group tap that records
+            # the moment it lands until the private-chat route has been watched
+            # working. `👤 Guests` above is unaffected: it always had to open a
+            # private chat, because only a form can show one row per lift.
+            paid_url=self._payment_link(day.service_date, PAID_LINK_PREFIX),
+            cash_url=self._payment_link(day.service_date, CASH_LINK_PREFIX),
             deadline_time=self._settings.booking_deadline_time,
             cancelled=day.cancelled,
         )
@@ -1383,6 +1387,11 @@ class PaymentsService:
         if last_posted_at is None:
             return False
         return _as_utc(last_posted_at) >= since
+
+    def _payment_link(self, service_date: date, prefix: str) -> str:
+        if not self._settings.payments_via_private_chat:
+            return ""
+        return self._deep_link(service_date, prefix)
 
     def _deep_link(self, service_date: date, prefix: str) -> str:
         if not self._bot_username:

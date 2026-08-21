@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     payment_price_gel: int = 15
     # Riders must be booked and paid by this time the evening before a lift day.
     booking_deadline_time: str = "20:00"
+    # Route the board's 💸/💵 buttons through the bot's private chat instead of
+    # recording in place. Off by default: a callback records the payment the
+    # instant it is tapped, while a link records it only once the rider gets
+    # through Start, and the group is 166 people who mostly never opened the bot.
+    # Worth turning on once it has been watched on a test group — it is the only
+    # thing that converts them, and personal notifications need that chat.
+    payments_via_private_chat: bool = False
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod
