@@ -24,8 +24,10 @@ from veloexpress_bot.bookings.render import (
     MonitorLateExit,
     MonitorRider,
     MonitorWaitlistRider,
+    render_all_riders,
     render_booking_management,
     render_booking_monitor,
+    render_cancel_day_confirmation,
 )
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.models import (
@@ -479,6 +481,44 @@ class PollPostingService:
                 monitor.updated_at = now
                 await session.commit()
         return draft
+
+    async def all_riders_view(
+        self,
+        *,
+        selected_service_date: date,
+    ) -> BookingMonitorDraft:
+        days = await self._booking_monitor_days()
+        selected_day = next(
+            (day for day in days if day.service_date == selected_service_date),
+            days[0] if days else None,
+        )
+        if selected_day is None:
+            return render_booking_monitor((), selected_service_date=None)
+        rosters: list[tuple[BookingLiftStatus, tuple[LiftRider, ...]]] = []
+        for lift in selected_day.lifts:
+            detail = await self.lift_detail(
+                service_date=selected_day.service_date,
+                lift_time=lift.time,
+            )
+            if detail is not None:
+                rosters.append((lift, detail[1]))
+        return render_all_riders(
+            days,
+            selected_service_date=selected_day.service_date,
+            rosters=tuple(rosters),
+        )
+
+    async def cancel_day_confirmation_view(
+        self,
+        *,
+        selected_service_date: date,
+    ) -> BookingMonitorDraft | None:
+        days = await self._booking_monitor_days()
+        day = next(
+            (day for day in days if day.service_date == selected_service_date),
+            None,
+        )
+        return render_cancel_day_confirmation(day) if day is not None else None
 
     async def adjust_manual_booking(
         self,

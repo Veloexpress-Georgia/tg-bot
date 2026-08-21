@@ -10,9 +10,12 @@ from veloexpress_bot.bookings.render import (
     MonitorWaitlistRider,
     decode_monitor_date,
     decode_monitor_time,
+    render_all_riders,
     render_booking_management,
     render_booking_monitor,
     render_bumped_report,
+    render_cancel_day_confirmation,
+    render_cancel_lift_confirmation,
     render_lift_detail,
     render_start_status,
 )
@@ -56,9 +59,10 @@ def test_booking_monitor_renders_day_tabs_counts_and_controls() -> None:
         "Sun 19",
     ]
     assert [button.callback_data for button in draft.reply_markup.inline_keyboard[1]] == [
-        "mon:info:20260718:0830"
+        "mon:all:20260718"
     ]
     buttons = _button_map(draft.reply_markup)
+    assert buttons["mon:all:20260718"] == "👥 All riders"
     assert buttons["mon:manage:20260718"] == "⚙️ Manage bookings"
     assert not any(data.startswith(("mon:add:", "mon:sub:")) for data in buttons)
 
@@ -152,6 +156,82 @@ def test_booking_monitor_puts_operational_attention_on_the_top_level() -> None:
     assert "⏳ Waitlist: @giorgi 10:00 #1" in draft.text
     assert "⏰ Left after deadline: @stas 10:00 · 21:14" in draft.text
     assert "👥 Guests: @vitaly +1 (10:00)" in draft.text
+
+
+def test_all_riders_shows_every_lift_in_one_read_only_card() -> None:
+    saturday = BookingMonitorDay(
+        service_date=date(2026, 8, 22),
+        lifts=(
+            BookingLiftStatus(time="8:30", vote_count=2, manual_count=0),
+            BookingLiftStatus(time="10:00", vote_count=2, manual_count=0),
+        ),
+    )
+    draft = render_all_riders(
+        (saturday,),
+        selected_service_date=saturday.service_date,
+        rosters=(
+            (
+                saturday.lifts[0],
+                (
+                    LiftRider(1, "@anna", paid=True),
+                    LiftRider(2, "@nika"),
+                ),
+            ),
+            (
+                saturday.lifts[1],
+                (
+                    LiftRider(3, "@vitaly", paid=True, cash=True, guests=1),
+                    LiftRider(4, "@giorgi", waitlisted=True),
+                ),
+            ),
+        ),
+    )
+
+    assert "8:30 — 2/10" in draft.text
+    assert "✅ @anna" in draft.text
+    assert "🔴 @nika" in draft.text
+    assert "10:00 — 2/10" in draft.text
+    assert "💵 @vitaly · +1 guest" in draft.text
+    assert "⏳ @giorgi" in draft.text
+    buttons = _button_map(draft.reply_markup)
+    assert buttons["mon:back:20260822"] == "⬅️ Back to monitor"
+    assert not any(data.startswith("mon:paid:") for data in buttons)
+
+
+def test_destructive_cancellations_require_a_second_explicit_callback() -> None:
+    service_date = date(2026, 8, 22)
+    lift = BookingLiftStatus(
+        time="10:00",
+        vote_count=7,
+        manual_count=1,
+        guest_count=2,
+    )
+    lift_confirmation = render_cancel_lift_confirmation(
+        service_date=service_date,
+        lift=lift,
+        riders=(
+            LiftRider(1, "@anna", paid=True),
+            LiftRider(2, "@nika"),
+        ),
+    )
+    assert "⚠️ Cancel 10:00" in lift_confirmation.text
+    assert "10 seats · 2 Telegram riders" in lift_confirmation.text
+    lift_buttons = _button_map(lift_confirmation.reply_markup)
+    assert lift_buttons["mon:docancel:20260822:1000"] == "🚫 Confirm cancel 10:00"
+    assert lift_buttons["mon:managelift:20260822:1000"] == "Keep lift"
+
+    day_confirmation = render_cancel_day_confirmation(
+        BookingMonitorDay(
+            service_date=service_date,
+            lifts=(lift,),
+            paid_rider_count=1,
+            expected_gel=30,
+        )
+    )
+    assert "⚠️ Cancel all" in day_confirmation.text
+    day_buttons = _button_map(day_confirmation.reply_markup)
+    assert day_buttons["mon:docancelday:20260822"] == "🚫 Confirm cancel whole day"
+    assert day_buttons["mon:manage:20260822"] == "Keep day"
 
 
 def test_render_lift_detail_separates_reading_payments_and_management() -> None:

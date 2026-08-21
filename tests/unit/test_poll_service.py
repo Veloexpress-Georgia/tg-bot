@@ -451,6 +451,13 @@ async def test_booking_monitor_surfaces_money_guests_waitlist_and_late_exits(
     assert rider_by_id[100].guests == 1
     assert rider_by_id[109].waitlisted is True
 
+    all_riders = await service.all_riders_view(selected_service_date=saturday)
+    assert "👥 All riders" in all_riders.text
+    assert "8:30 — 12/10" in all_riders.text
+    assert "10:00 — 4/10 · running" in all_riders.text
+    assert "💵 @rider100 · +1 guest" in all_riders.text
+    assert "⏳ @rider109" in all_riders.text
+
 
 async def test_cancel_lift_marks_board_and_tags_voters(db: SharedDatabase) -> None:
     client = FakeTelegramClient()

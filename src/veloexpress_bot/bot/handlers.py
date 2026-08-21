@@ -16,6 +16,7 @@ from veloexpress_bot.bookings.render import (
     decode_monitor_date,
     decode_monitor_time,
     render_bumped_report,
+    render_cancel_lift_confirmation,
     render_lift_detail,
     render_start_status,
 )
@@ -438,6 +439,21 @@ async def open_booking_management(
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("mon:all:"))
+async def open_all_riders(
+    callback: CallbackQuery,
+    settings: Settings,
+    poll_service: PollPostingService,
+) -> None:
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+    service_date = decode_monitor_date((callback.data or "").removeprefix("mon:all:"))
+    draft = await poll_service.all_riders_view(selected_service_date=service_date)
+    await _edit_card(message, draft.text, draft.reply_markup)
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("mon:info:"))
 async def open_lift_detail(
     callback: CallbackQuery,
@@ -558,8 +574,10 @@ async def show_past_refunds(
 
 @router.callback_query(
     F.data.startswith("mon:cancel:")
+    | F.data.startswith("mon:docancel:")
     | F.data.startswith("mon:restore:")
     | F.data.startswith("mon:cancelday:")
+    | F.data.startswith("mon:docancelday:")
     | F.data.startswith("mon:back:")
 )
 async def handle_lift_cancellation(
@@ -577,6 +595,17 @@ async def handle_lift_cancellation(
     admin_user_id = callback.from_user.id
 
     if action == "cancelday":
+        draft = await poll_service.cancel_day_confirmation_view(
+            selected_service_date=service_date,
+        )
+        if draft is None:
+            await callback.answer("This day is no longer active.", show_alert=True)
+            await _show_monitor(message, poll_service, admin_user_id, service_date)
+            return
+        await _edit_card(message, draft.text, draft.reply_markup)
+        await callback.answer()
+        return
+    if action == "docancelday":
         await poll_service.cancel_day(service_date=service_date, admin_user_id=admin_user_id)
         await callback.answer("Day cancelled.")
         await _show_monitor(message, poll_service, admin_user_id, service_date)
@@ -592,6 +621,21 @@ async def handle_lift_cancellation(
 
     lift_time = decode_monitor_time(parts[3])
     if action == "cancel":
+        detail = await poll_service.lift_detail(service_date=service_date, lift_time=lift_time)
+        if detail is None:
+            await callback.answer("This lift is no longer active.", show_alert=True)
+            await _show_monitor(message, poll_service, admin_user_id, service_date)
+            return
+        status, riders = detail
+        draft = render_cancel_lift_confirmation(
+            service_date=service_date,
+            lift=status,
+            riders=riders,
+        )
+        await _edit_card(message, draft.text, draft.reply_markup)
+        await callback.answer()
+        return
+    if action == "docancel":
         await poll_service.cancel_lift(
             service_date=service_date, lift_time=lift_time, admin_user_id=admin_user_id
         )

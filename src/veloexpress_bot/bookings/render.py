@@ -174,6 +174,14 @@ def render_booking_monitor(
             ]
         )
     compact_date = _compact_date(selected_day.service_date)
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="👥 All riders",
+                callback_data=f"mon:all:{compact_date}",
+            )
+        ]
+    )
     for lift in selected_day.lifts:
         compact_time = _compact_time(lift.time)
         if lift.cancelled:
@@ -266,6 +274,118 @@ def render_booking_management(
     return BookingMonitorDraft(
         text="\n".join(lines),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+def render_all_riders(
+    days: tuple[BookingMonitorDay, ...],
+    *,
+    selected_service_date: date,
+    rosters: tuple[tuple[BookingLiftStatus, tuple[LiftRider, ...]], ...],
+) -> BookingMonitorDraft:
+    lines = [f"👥 All riders · {_long_day_label(selected_service_date)}"]
+    for lift, riders in rosters:
+        lines.extend(("", _lift_line(lift)))
+        if riders:
+            lines.extend(_lift_rider_line(rider) for rider in riders)
+        elif not lift.manual_count and not lift.guest_count:
+            lines.append("—")
+    rows: list[list[InlineKeyboardButton]] = []
+    if len(days) > 1:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=("✅ " if day.service_date == selected_service_date else "")
+                    + _short_day_label(day.service_date),
+                    callback_data=f"mon:all:{_compact_date(day.service_date)}",
+                )
+                for day in days
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Back to monitor",
+                callback_data=f"mon:back:{_compact_date(selected_service_date)}",
+            )
+        ]
+    )
+    return BookingMonitorDraft(
+        text="\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+def render_cancel_lift_confirmation(
+    *,
+    service_date: date,
+    lift: BookingLiftStatus,
+    riders: tuple[LiftRider, ...],
+) -> BookingMonitorDraft:
+    compact_date = _compact_date(service_date)
+    compact_time = _compact_time(lift.time)
+    holders = tuple(rider for rider in riders if not rider.waitlisted)
+    paid = sum(rider.paid for rider in holders)
+    lines = [
+        f"⚠️ Cancel {lift.time} · {_long_day_label(service_date)}?",
+        "",
+        f"{lift.total_count} seats · {len(holders)} Telegram riders",
+        f"{lift.manual_count} manual · {lift.guest_count} guests · {paid} payment claims",
+        "",
+        "The lift will disappear from the running schedule immediately.",
+        "The bot will produce the exact refund list after cancellation.",
+    ]
+    return BookingMonitorDraft(
+        text="\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=f"🚫 Confirm cancel {lift.time}",
+                        callback_data=f"mon:docancel:{compact_date}:{compact_time}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="Keep lift",
+                        callback_data=f"mon:managelift:{compact_date}:{compact_time}",
+                    )
+                ],
+            ]
+        ),
+    )
+
+
+def render_cancel_day_confirmation(day: BookingMonitorDay) -> BookingMonitorDraft:
+    compact_date = _compact_date(day.service_date)
+    active_lifts = sum(not lift.cancelled for lift in day.lifts)
+    lines = [
+        f"⚠️ Cancel all · {_long_day_label(day.service_date)}?",
+        "",
+        f"{active_lifts} lifts · {day.confirmed_seat_count} seats",
+        f"{day.paid_rider_count} payment claims · {day.expected_gel} GEL claimed",
+        "",
+        "This retires the whole day and may require multiple refunds.",
+        "The bot will produce the exact refund list after cancellation.",
+    ]
+    return BookingMonitorDraft(
+        text="\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="🚫 Confirm cancel whole day",
+                        callback_data=f"mon:docancelday:{compact_date}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="Keep day",
+                        callback_data=f"mon:manage:{compact_date}",
+                    )
+                ],
+            ]
+        ),
     )
 
 
