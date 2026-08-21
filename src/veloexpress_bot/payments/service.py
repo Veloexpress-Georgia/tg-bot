@@ -591,6 +591,38 @@ class PaymentsService:
         await self._refresh_board(day)
         return notice
 
+    async def verify_cash_payment(
+        self,
+        *,
+        service_date: date,
+        telegram_user_id: int,
+        admin_user_id: int,
+    ) -> str:
+        """Turn a rider's cash declaration into cash actually received by Misho."""
+        if not self.enabled:
+            return PAYMENTS_DISABLED_TEXT
+        day = await self._day(service_date)
+        if day is None:
+            return BOARD_GONE_TEXT
+        async with self._session_factory() as session:
+            claim = await self._claim_row(
+                session=session,
+                service_date=service_date,
+                telegram_user_id=telegram_user_id,
+            )
+            if claim is None or claim.method != CASH_METHOD:
+                return NOT_CLAIMED_YET_TEXT
+            if claim.verified_by_user_id is not None:
+                return ALREADY_SETTLED_TEXT
+            claim.verified_by_user_id = admin_user_id
+            claim.verified_at = datetime.now(UTC)
+            claim.updated_at = datetime.now(UTC)
+            label = _rider_label(claim.username, claim.full_name)
+            amount = self._amount(claim.seats)
+            await session.commit()
+        await self._refresh_board(day)
+        return f"{label}: received {amount} GEL cash."
+
     async def cancellation_report(
         self,
         *,

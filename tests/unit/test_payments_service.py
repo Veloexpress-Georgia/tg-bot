@@ -608,6 +608,32 @@ async def test_a_cash_tap_records_the_method_so_misho_can_reconcile(
     assert claim.method == CASH_METHOD
 
 
+async def test_admin_can_mark_declared_cash_as_actually_received(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+        method=CASH_METHOD,
+    )
+
+    notice = await payments.verify_cash_payment(
+        service_date=saturday,
+        telegram_user_id=100,
+        admin_user_id=1,
+    )
+
+    assert notice == "@rider100: received 15 GEL cash."
+    async with db.session() as session:
+        claim = await session.scalar(select(PaymentClaim))
+    assert claim is not None
+    assert claim.method == CASH_METHOD
+    assert claim.verified_by_user_id == 1
+    assert claim.verified_at is not None
+
+
 async def test_an_admin_mark_leaves_the_method_unknown(db: SharedDatabase) -> None:
     """Guessing "cash" could send Misho hunting for a transfer that never existed."""
     poll_service, payments, _client, poll_id, saturday = await _setup(db)

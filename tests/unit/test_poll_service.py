@@ -14,7 +14,10 @@ from veloexpress_bot.config import Settings
 from veloexpress_bot.db.base import Base
 from veloexpress_bot.db.models import (
     AdminBookingMonitor,
+    DeadlineRoster,
+    GuestSeat,
     ManualBookingCount,
+    PaymentClaim,
     PollBatch,
     PollMessage,
     PollOptionSnapshot,
@@ -343,6 +346,110 @@ async def test_admin_booking_monitor_controls_manual_counts_and_tracks_votes(
     assert booking.count == 1
     assert monitor is not None
     assert monitor.telegram_message_id == monitor_message_id
+
+
+async def test_booking_monitor_surfaces_money_guests_waitlist_and_late_exits(
+    db: SharedDatabase,
+) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    poll = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
+        pin_after_send=False,
+    )
+    poll_id = poll.poll_id or ""
+    for user_id in range(100, 111):
+        await service.track_poll_answer(
+            poll_id=poll_id,
+            telegram_user_id=user_id,
+            username=f"rider{user_id}",
+            full_name=f"Rider {user_id}",
+            option_ids=(0,),
+        )
+    for user_id in range(200, 205):
+        await service.track_poll_answer(
+            poll_id=poll_id,
+            telegram_user_id=user_id,
+            username=f"late{user_id}",
+            full_name=f"Late {user_id}",
+            option_ids=(1,),
+        )
+
+    captured_at = datetime.now(UTC) - timedelta(minutes=1)
+    async with db.session() as session:
+        session.add(
+            GuestSeat(
+                environment="test",
+                chat_id=-100123,
+                thread_id=7,
+                service_date=saturday,
+                lift_time="8:30",
+                host_user_id=100,
+                count=1,
+            )
+        )
+        session.add(
+            PaymentClaim(
+                environment="test",
+                chat_id=-100123,
+                thread_id=7,
+                service_date=saturday,
+                telegram_user_id=100,
+                username="rider100",
+                full_name="Rider 100",
+                seats=2,
+                method="cash",
+            )
+        )
+        session.add_all(
+            DeadlineRoster(
+                environment="test",
+                chat_id=-100123,
+                thread_id=7,
+                service_date=saturday,
+                lift_time="10:00",
+                telegram_user_id=user_id,
+                label=f"@late{user_id}",
+                seats=1,
+                captured_at=captured_at,
+            )
+            for user_id in range(200, 205)
+        )
+        await session.commit()
+
+    await service.track_poll_answer(
+        poll_id=poll_id,
+        telegram_user_id=204,
+        username="late204",
+        full_name="Late 204",
+        option_ids=(),
+    )
+
+    view = await service.booking_monitor_view(
+        admin_user_id=1,
+        selected_service_date=saturday,
+    )
+
+    assert "💵 Cash to collect: @rider100 30 GEL" in view.text
+    assert "👥 Guests: @rider100 +1 (8:30)" in view.text
+    assert "@rider109 8:30 #1" in view.text
+    assert "@late204 10:00" in view.text
+    assert "🔴 Unpaid:" in view.text
+    assert "10:00 — 4/10 · running" in view.text
+
+    detail = await service.lift_detail(service_date=saturday, lift_time="8:30")
+    assert detail is not None
+    status, riders = detail
+    rider_by_id = {rider.telegram_user_id: rider for rider in riders}
+    assert status.guest_count == 1
+    assert rider_by_id[100].cash is True
+    assert rider_by_id[100].guests == 1
+    assert rider_by_id[109].waitlisted is True
 
 
 async def test_cancel_lift_marks_board_and_tags_voters(db: SharedDatabase) -> None:

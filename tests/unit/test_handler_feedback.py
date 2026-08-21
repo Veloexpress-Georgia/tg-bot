@@ -85,8 +85,10 @@ def test_core_callback_handlers_are_registered() -> None:
     assert {
         "open_booking_monitor",
         "select_booking_monitor_day",
+        "open_booking_management",
         "adjust_manual_booking",
         "open_lift_detail",
+        "open_lift_tool",
         "handle_lift_cancellation",
         "open_weekend_plan",
         "handle_weekend_plan_card",

@@ -1,6 +1,8 @@
 import html
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime
+from typing import Literal
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -32,10 +34,15 @@ class BookingLiftStatus:
     guest_count: int = 0
     capacity: int = 10
     cancelled: bool = False
+    running_locked: bool = False
 
     @property
     def total_count(self) -> int:
         return self.vote_count + self.manual_count + self.guest_count
+
+    @property
+    def running(self) -> bool:
+        return not self.cancelled and (self.total_count >= MINIMUM_RIDERS or self.running_locked)
 
 
 @dataclass(frozen=True)
@@ -43,6 +50,41 @@ class LiftRider:
     telegram_user_id: int
     label: str
     paid: bool = False
+    cash: bool = False
+    guests: int = 0
+    waitlisted: bool = False
+
+
+@dataclass(frozen=True)
+class MonitorRider:
+    telegram_user_id: int
+    label: str
+    amount_gel: int = 0
+    lift_times: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class MonitorGuest:
+    host_user_id: int
+    host_label: str
+    lift_time: str
+    count: int
+
+
+@dataclass(frozen=True)
+class MonitorWaitlistRider:
+    telegram_user_id: int
+    label: str
+    lift_time: str
+    position: int
+
+
+@dataclass(frozen=True)
+class MonitorLateExit:
+    telegram_user_id: int
+    label: str
+    lift_time: str
+    changed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -59,14 +101,34 @@ class BookingMonitorDay:
     # cancelling it would refund a trip people took.
     past: bool = False
     has_refund_reports: bool = False
+    unpaid_riders: tuple[MonitorRider, ...] = ()
+    cash_pending: tuple[MonitorRider, ...] = ()
+    guests: tuple[MonitorGuest, ...] = ()
+    waitlist: tuple[MonitorWaitlistRider, ...] = ()
+    late_exits: tuple[MonitorLateExit, ...] = ()
 
     @property
     def running_count(self) -> int:
-        return sum(not lift.cancelled and lift.total_count >= MINIMUM_RIDERS for lift in self.lifts)
+        return sum(lift.running for lift in self.lifts)
 
     @property
     def seat_count(self) -> int:
         return sum(lift.total_count for lift in self.lifts if not lift.cancelled)
+
+    @property
+    def confirmed_seat_count(self) -> int:
+        return sum(
+            min(lift.total_count, lift.capacity) for lift in self.lifts if not lift.cancelled
+        )
+
+    @property
+    def attention_count(self) -> int:
+        return (
+            len(self.unpaid_riders)
+            + len(self.cash_pending)
+            + len(self.waitlist)
+            + len(self.late_exits)
+        )
 
 
 @dataclass(frozen=True)
@@ -96,7 +158,8 @@ def render_booking_monitor(
         _summary_line(selected_day),
         "",
     ]
-    lines.extend(_lift_line(lift) for lift in selected_day.lifts)
+    lines.extend(_attention_lines(selected_day))
+    lines.extend(("", *(_lift_line(lift) for lift in selected_day.lifts)))
 
     rows: list[list[InlineKeyboardButton]] = []
     if len(days) > 1:
@@ -126,17 +189,19 @@ def render_booking_monitor(
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="➖",
-                    callback_data=f"mon:sub:{compact_date}:{compact_time}",
-                ),
-                InlineKeyboardButton(
-                    text=f"{lift.time} · {lift.total_count}/{lift.capacity}",
+                    text=f"{lift.time} · {lift.total_count}/{lift.capacity}{_button_suffix(lift)}",
                     callback_data=f"mon:info:{compact_date}:{compact_time}",
-                ),
+                )
+            ]
+        )
+
+    if not selected_day.past and selected_day.lifts:
+        rows.append(
+            [
                 InlineKeyboardButton(
-                    text="➕",
-                    callback_data=f"mon:add:{compact_date}:{compact_time}",
-                ),
+                    text="⚙️ Manage bookings",
+                    callback_data=f"mon:manage:{compact_date}",
+                )
             ]
         )
 
@@ -146,10 +211,46 @@ def render_booking_monitor(
         # be the end of it.
         rows.append([InlineKeyboardButton(text="🧾 Past refunds", callback_data="mon:refunds")])
 
-    # Never on a day that has already run: cancelling retires the day and reports
-    # every payment as a refund, which for a trip people actually took is the bot
-    # handing back money that was earned. The day stays readable, and payments can
-    # still be marked on it — late bookkeeping is the reason it is still here.
+    return BookingMonitorDraft(
+        text="\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+def render_booking_management(
+    days: tuple[BookingMonitorDay, ...],
+    *,
+    selected_service_date: date | None,
+) -> BookingMonitorDraft:
+    if not days:
+        return render_booking_monitor(days, selected_service_date=selected_service_date)
+    selected_day = next(
+        (day for day in days if day.service_date == selected_service_date),
+        days[0],
+    )
+    compact_date = _compact_date(selected_day.service_date)
+    lines = [
+        f"⚙️ Manage bookings · {_long_day_label(selected_day.service_date)}",
+        "",
+        "Changes here affect seats immediately.",
+        "Open a lift to change manual seats, cancel it, or restore it.",
+        "",
+    ]
+    lines.extend(_lift_line(lift) for lift in selected_day.lifts)
+    rows: list[list[InlineKeyboardButton]] = []
+    for lift in selected_day.lifts:
+        compact_time = _compact_time(lift.time)
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=(
+                        f"{'❌ ' if lift.cancelled else ''}{lift.time} · "
+                        f"{lift.total_count}/{lift.capacity}"
+                    ),
+                    callback_data=f"mon:managelift:{compact_date}:{compact_time}",
+                ),
+            ]
+        )
     if not selected_day.past and any(not lift.cancelled for lift in selected_day.lifts):
         rows.append(
             [
@@ -159,7 +260,9 @@ def render_booking_monitor(
                 )
             ]
         )
-
+    rows.append(
+        [InlineKeyboardButton(text="⬅️ Back to monitor", callback_data=f"mon:back:{compact_date}")]
+    )
     return BookingMonitorDraft(
         text="\n".join(lines),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
@@ -234,6 +337,7 @@ def render_lift_detail(
     service_date: date,
     lift: BookingLiftStatus,
     riders: tuple[LiftRider, ...],
+    mode: Literal["view", "payments", "manage"] = "view",
 ) -> BookingMonitorDraft:
     compact_date = _compact_date(service_date)
     compact_time = _compact_time(lift.time)
@@ -248,36 +352,71 @@ def render_lift_detail(
         lines.append(f"Guests: {lift.guest_count}")
     lines.append(f"Total: {lift.total_count}/{lift.capacity}")
     if riders:
-        paid = sum(rider.paid for rider in riders)
-        lines.append(f"Paid: {paid}/{len(riders)}")
+        paid = sum(rider.paid for rider in riders if not rider.waitlisted)
+        holders = sum(not rider.waitlisted for rider in riders)
+        lines.append(f"Paid: {paid}/{holders}")
         lines.append("")
-        lines.append(", ".join(rider.label for rider in riders))
+        lines.extend(_lift_rider_line(rider) for rider in riders)
 
-    if lift.cancelled:
-        action = InlineKeyboardButton(
-            text="♻️ Restore lift",
-            callback_data=f"mon:restore:{compact_date}:{compact_time}",
-        )
-    else:
-        action = InlineKeyboardButton(
-            text="🚫 Cancel lift",
-            callback_data=f"mon:cancel:{compact_date}:{compact_time}",
-        )
     rows: list[list[InlineKeyboardButton]] = []
-    # Tapping a rider records a payment made outside Telegram — cash, or a direct
-    # message to Misho. Riders who can tap the payments board do not need this.
-    for index in range(0, len(riders), 2):
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=f"{'✓ ' if rider.paid else ''}{rider.label}",
-                    callback_data=f"mon:paid:{compact_date}:{rider.telegram_user_id}",
-                )
-                for rider in riders[index : index + 2]
-            ]
+    if mode == "payments":
+        # Deliberately a separate mode: names on the read-only roster must not be
+        # live payment toggles.
+        payable_riders = [rider for rider in riders if not rider.waitlisted]
+        for index in range(0, len(payable_riders), 2):
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"{'💵 ' if rider.cash else '✓ ' if rider.paid else ''}{rider.label}",
+                        callback_data=(
+                            f"mon:{'cashreceived' if rider.cash else 'paid'}:"
+                            f"{compact_date}:{compact_time}:{rider.telegram_user_id}"
+                        ),
+                    )
+                    for rider in payable_riders[index : index + 2]
+                ]
+            )
+    elif mode == "manage":
+        if not lift.cancelled:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="➖ Manual",
+                        callback_data=f"mon:sub:{compact_date}:{compact_time}",
+                    ),
+                    InlineKeyboardButton(
+                        text="➕ Manual",
+                        callback_data=f"mon:add:{compact_date}:{compact_time}",
+                    ),
+                ]
+            )
+        action = InlineKeyboardButton(
+            text="♻️ Restore lift" if lift.cancelled else "🚫 Cancel lift",
+            callback_data=(
+                f"mon:restore:{compact_date}:{compact_time}"
+                if lift.cancelled
+                else f"mon:cancel:{compact_date}:{compact_time}"
+            ),
         )
-    rows.append([action])
-    rows.append([InlineKeyboardButton(text="⬅️ Back", callback_data=f"mon:back:{compact_date}")])
+        rows.append([action])
+    else:
+        if not lift.cancelled:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="💰 Update payments",
+                        callback_data=f"mon:liftmoney:{compact_date}:{compact_time}",
+                    )
+                ]
+            )
+    back_callback = (
+        f"mon:manage:{compact_date}"
+        if mode == "manage"
+        else f"mon:info:{compact_date}:{compact_time}"
+        if mode == "payments"
+        else f"mon:back:{compact_date}"
+    )
+    rows.append([InlineKeyboardButton(text="⬅️ Back", callback_data=back_callback)])
     return BookingMonitorDraft(
         text="\n".join(lines),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
@@ -304,15 +443,89 @@ def _summary_line(day: BookingMonitorDay) -> str:
     as a contradiction that needed the source to explain.
     """
     active = sum(not lift.cancelled for lift in day.lifts)
-    parts = [
-        f"Running {day.running_count} of {active}",
-        f"{day.seat_count} seats",
-    ]
+    parts = [f"Running {day.running_count} of {active}", f"{day.confirmed_seat_count} seats"]
     if day.booked_rider_count:
-        parts.append(f"paid {day.paid_rider_count}/{day.booked_rider_count}")
+        parts.append(f"claimed {day.paid_rider_count}/{day.booked_rider_count}")
     if day.expected_gel or day.owed_gel:
         parts.append(f"{day.expected_gel} of {day.owed_gel} GEL")
     return " · ".join(parts)
+
+
+def _lift_rider_line(rider: LiftRider) -> str:
+    if rider.waitlisted:
+        marker = "⏳"
+    elif rider.cash:
+        marker = "💵"
+    elif rider.paid:
+        marker = "✅"
+    else:
+        marker = "🔴"
+    guests = f" · +{rider.guests} guest" if rider.guests == 1 else ""
+    if rider.guests > 1:
+        guests = f" · +{rider.guests} guests"
+    return f"{marker} {rider.label}{guests}"
+
+
+def _attention_lines(day: BookingMonitorDay) -> tuple[str, ...]:
+    lines: list[str] = []
+    if day.attention_count:
+        lines.extend(("", f"⚠️ Needs attention · {day.attention_count}"))
+    if day.unpaid_riders:
+        lines.append(f"🔴 Unpaid: {_money_riders(day.unpaid_riders)}")
+    if day.cash_pending:
+        lines.append(f"💵 Cash to collect: {_money_riders(day.cash_pending)}")
+    if day.waitlist:
+        lines.append(
+            "⏳ Waitlist: "
+            + _summarize(
+                f"{rider.label} {rider.lift_time} #{rider.position}" for rider in day.waitlist
+            )
+        )
+    if day.late_exits:
+        lines.append(
+            "⏰ Left after deadline: "
+            + _summarize(
+                f"{rider.label} {rider.lift_time}{_changed_at(rider.changed_at)}"
+                for rider in day.late_exits
+            )
+        )
+    if day.guests:
+        lines.extend(
+            (
+                "",
+                "👥 Guests: "
+                + _summarize(
+                    f"{guest.host_label} +{guest.count} ({guest.lift_time})" for guest in day.guests
+                ),
+            )
+        )
+    return tuple(lines)
+
+
+def _money_riders(riders: tuple[MonitorRider, ...]) -> str:
+    return _summarize(f"{rider.label} {rider.amount_gel} GEL" for rider in riders)
+
+
+def _summarize(items: Iterable[str], *, limit: int = 8) -> str:
+    values = list(items)
+    shown = ", ".join(values[:limit])
+    remaining = len(values) - limit
+    return f"{shown}, +{remaining} more" if remaining > 0 else shown
+
+
+def _changed_at(moment: datetime | None) -> str:
+    return f" · {moment:%H:%M}" if moment is not None else ""
+
+
+def _button_suffix(lift: BookingLiftStatus) -> str:
+    if lift.cancelled:
+        return " · cancelled"
+    over = lift.total_count - lift.capacity
+    if over > 0:
+        return f" +{over} waiting"
+    if lift.total_count >= lift.capacity:
+        return " · full"
+    return ""
 
 
 def _lift_line(lift: BookingLiftStatus) -> str:
@@ -335,6 +548,8 @@ def _lift_state(lift: BookingLiftStatus) -> str:
         return f"waitlist +{over}"
     if lift.total_count >= lift.capacity:
         return "full"
+    if lift.running_locked:
+        return f"running · {lift.capacity - lift.total_count} left"
     if lift.total_count < MINIMUM_RIDERS:
         return f"needs {MINIMUM_RIDERS - lift.total_count} more"
     return f"{lift.capacity - lift.total_count} left"

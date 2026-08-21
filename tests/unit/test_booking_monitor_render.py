@@ -1,11 +1,16 @@
-from datetime import date
+from datetime import UTC, date, datetime
 
 from veloexpress_bot.bookings.render import (
     BookingLiftStatus,
     BookingMonitorDay,
     LiftRider,
+    MonitorGuest,
+    MonitorLateExit,
+    MonitorRider,
+    MonitorWaitlistRider,
     decode_monitor_date,
     decode_monitor_time,
+    render_booking_management,
     render_booking_monitor,
     render_bumped_report,
     render_lift_detail,
@@ -42,7 +47,7 @@ def test_booking_monitor_renders_day_tabs_counts_and_controls() -> None:
     assert "📊 Booking monitor · Sat, 18 Jul" in draft.text
     # Paid of owed, never a bare total: on its own the money figure sat next to a
     # seat count built from different rules and read as a contradiction.
-    assert "Running 2 of 2 · 16 seats · paid 3/9 · 60 of 240 GEL" in draft.text
+    assert "Running 2 of 2 · 16 seats · claimed 3/9 · 60 of 240 GEL" in draft.text
     assert "8:30 — 7/10 · 3 left · 1 manual" in draft.text
     assert "10:00 — 9/10 · 1 left" in draft.text
     assert draft.reply_markup is not None
@@ -51,10 +56,11 @@ def test_booking_monitor_renders_day_tabs_counts_and_controls() -> None:
         "Sun 19",
     ]
     assert [button.callback_data for button in draft.reply_markup.inline_keyboard[1]] == [
-        "mon:sub:20260718:0830",
-        "mon:info:20260718:0830",
-        "mon:add:20260718:0830",
+        "mon:info:20260718:0830"
     ]
+    buttons = _button_map(draft.reply_markup)
+    assert buttons["mon:manage:20260718"] == "⚙️ Manage bookings"
+    assert not any(data.startswith(("mon:add:", "mon:sub:")) for data in buttons)
 
 
 def test_booking_monitor_falls_back_to_first_day_and_shows_waitlist() -> None:
@@ -91,10 +97,64 @@ def test_booking_monitor_shows_cancelled_lift_and_cancel_day_control() -> None:
     assert draft.reply_markup is not None
     buttons = _button_map(draft.reply_markup)
     assert buttons["mon:info:20260718:1000"] == "❌ 10:00 · cancelled"
-    assert buttons["mon:cancelday:20260718"].startswith("🚫 Cancel all")
+    assert buttons["mon:manage:20260718"] == "⚙️ Manage bookings"
+
+    management = render_booking_management(
+        (
+            BookingMonitorDay(
+                service_date=date(2026, 7, 18),
+                lifts=(
+                    BookingLiftStatus(time="8:30", vote_count=6, manual_count=0),
+                    BookingLiftStatus(time="10:00", vote_count=0, manual_count=0, cancelled=True),
+                ),
+            ),
+        ),
+        selected_service_date=date(2026, 7, 18),
+    )
+    management_buttons = _button_map(management.reply_markup)
+    assert management_buttons["mon:managelift:20260718:0830"] == "8:30 · 6/10"
+    assert management_buttons["mon:managelift:20260718:1000"] == "❌ 10:00 · 0/10"
+    assert not any(
+        data.startswith(("mon:add:", "mon:sub:", "mon:restore:")) for data in management_buttons
+    )
+    assert management_buttons["mon:cancelday:20260718"].startswith("🚫 Cancel all")
+    assert management_buttons["mon:back:20260718"] == "⬅️ Back to monitor"
 
 
-def test_render_lift_detail_toggles_cancel_and_restore() -> None:
+def test_booking_monitor_puts_operational_attention_on_the_top_level() -> None:
+    draft = render_booking_monitor(
+        (
+            BookingMonitorDay(
+                service_date=date(2026, 8, 22),
+                lifts=(BookingLiftStatus(time="10:00", vote_count=10, manual_count=0),),
+                expected_gel=105,
+                owed_gel=150,
+                unpaid_riders=(MonitorRider(1, "@anna", amount_gel=15),),
+                cash_pending=(MonitorRider(2, "@vitaly", amount_gel=30),),
+                guests=(MonitorGuest(2, "@vitaly", "10:00", 1),),
+                waitlist=(MonitorWaitlistRider(3, "@giorgi", "10:00", 1),),
+                late_exits=(
+                    MonitorLateExit(
+                        4,
+                        "@stas",
+                        "10:00",
+                        datetime(2026, 8, 21, 21, 14, tzinfo=UTC),
+                    ),
+                ),
+            ),
+        ),
+        selected_service_date=date(2026, 8, 22),
+    )
+
+    assert "⚠️ Needs attention · 4" in draft.text
+    assert "🔴 Unpaid: @anna 15 GEL" in draft.text
+    assert "💵 Cash to collect: @vitaly 30 GEL" in draft.text
+    assert "⏳ Waitlist: @giorgi 10:00 #1" in draft.text
+    assert "⏰ Left after deadline: @stas 10:00 · 21:14" in draft.text
+    assert "👥 Guests: @vitaly +1 (10:00)" in draft.text
+
+
+def test_render_lift_detail_separates_reading_payments_and_management() -> None:
     active = render_lift_detail(
         service_date=date(2026, 7, 18),
         lift=BookingLiftStatus(time="8:30", vote_count=2, manual_count=1),
@@ -106,18 +166,46 @@ def test_render_lift_detail_toggles_cancel_and_restore() -> None:
     assert "🚲 8:30 · Sat, 18 Jul" in active.text
     assert "Total: 3/10" in active.text
     assert "Paid: 1/2" in active.text
-    assert "@stas, Anna" in active.text
+    assert "✅ @stas" in active.text
+    assert "🔴 Anna" in active.text
     active_buttons = _button_map(active.reply_markup)
-    assert active_buttons["mon:cancel:20260718:0830"] == "🚫 Cancel lift"
     assert active_buttons["mon:back:20260718"] == "⬅️ Back"
-    # Tapping a rider records a payment taken outside Telegram.
-    assert active_buttons["mon:paid:20260718:10"] == "✓ @stas"
-    assert active_buttons["mon:paid:20260718:11"] == "Anna"
+    assert active_buttons["mon:liftmoney:20260718:0830"] == "💰 Update payments"
+    assert not any(data.startswith("mon:paid:") for data in active_buttons)
+
+    payments = render_lift_detail(
+        service_date=date(2026, 7, 18),
+        lift=BookingLiftStatus(time="8:30", vote_count=2, manual_count=1),
+        riders=(
+            LiftRider(telegram_user_id=10, label="@stas", paid=True),
+            LiftRider(telegram_user_id=11, label="Anna", paid=True, cash=True),
+            LiftRider(telegram_user_id=12, label="Giorgi"),
+        ),
+        mode="payments",
+    )
+    payment_buttons = _button_map(payments.reply_markup)
+    assert payment_buttons["mon:paid:20260718:0830:10"] == "✓ @stas"
+    assert payment_buttons["mon:cashreceived:20260718:0830:11"] == "💵 Anna"
+    assert payment_buttons["mon:paid:20260718:0830:12"] == "Giorgi"
+    assert payment_buttons["mon:info:20260718:0830"] == "⬅️ Back"
+
+    management = render_lift_detail(
+        service_date=date(2026, 7, 18),
+        lift=BookingLiftStatus(time="8:30", vote_count=2, manual_count=1),
+        riders=(),
+        mode="manage",
+    )
+    management_buttons = _button_map(management.reply_markup)
+    assert management_buttons["mon:add:20260718:0830"] == "➕ Manual"
+    assert management_buttons["mon:sub:20260718:0830"] == "➖ Manual"
+    assert management_buttons["mon:cancel:20260718:0830"] == "🚫 Cancel lift"
+    assert management_buttons["mon:manage:20260718"] == "⬅️ Back"
 
     cancelled = render_lift_detail(
         service_date=date(2026, 7, 18),
         lift=BookingLiftStatus(time="8:30", vote_count=2, manual_count=1, cancelled=True),
         riders=(LiftRider(telegram_user_id=10, label="@stas"),),
+        mode="manage",
     )
     assert "❌ Cancelled." in cancelled.text
     cancelled_buttons = _button_map(cancelled.reply_markup)
