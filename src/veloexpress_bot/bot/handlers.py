@@ -12,8 +12,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, ErrorEvent, InlineKeyboardMarkup, Message, PollAnswer
 
 from veloexpress_bot.bookings.render import (
+    BUMPED_REPORT_PARSE_MODE,
     decode_monitor_date,
     decode_monitor_time,
+    render_bumped_report,
     render_lift_detail,
     render_start_status,
 )
@@ -384,7 +386,7 @@ async def adjust_manual_booking(
     delta = 1 if action == "add" else -1
     await callback.answer("Updating…")
     try:
-        await poll_service.adjust_manual_booking(
+        result = await poll_service.adjust_manual_booking(
             service_date=decode_monitor_date(compact_date),
             lift_time=decode_monitor_time(compact_time),
             delta=delta,
@@ -392,6 +394,22 @@ async def adjust_manual_booking(
         )
     except ValueError as error:
         await message.answer(str(error))
+        return
+
+    if result.bumped:
+        # The seat was taken from somebody. Said once, here, where the admin just
+        # tapped — the monitor card itself only ever shows the current totals.
+        await message.answer(
+            render_bumped_report(
+                service_date=result.service_date,
+                lift_time=result.lift_time,
+                riders=tuple(
+                    (rider.label, rider.telegram_user_id, rider.paid) for rider in result.bumped
+                ),
+                price_gel=settings.payment_price_gel,
+            ),
+            parse_mode=BUMPED_REPORT_PARSE_MODE,
+        )
 
 
 @router.callback_query(F.data.startswith("mon:info:"))

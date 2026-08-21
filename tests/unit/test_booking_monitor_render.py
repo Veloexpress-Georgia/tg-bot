@@ -7,6 +7,7 @@ from veloexpress_bot.bookings.render import (
     decode_monitor_date,
     decode_monitor_time,
     render_booking_monitor,
+    render_bumped_report,
     render_lift_detail,
     render_start_status,
 )
@@ -220,3 +221,28 @@ def test_past_refunds_are_reachable_once_any_exist() -> None:
 
     assert draft.reply_markup is not None
     assert _button_map(draft.reply_markup)["mon:refunds"] == "🧾 Past refunds"
+
+
+def test_bumped_report_separates_the_refund_from_the_rest() -> None:
+    text = render_bumped_report(
+        service_date=date(2026, 8, 23),
+        lift_time="11:45",
+        riders=(("@egor", 11, True), ("Ivan", 12, False)),
+        price_gel=15,
+    )
+
+    assert text.startswith("⚠️ 11:45 · Sun, 23 Aug — manual seat added.")
+    assert 'tg://user?id=11">@egor</a> — paid, refund 15 GEL' in text
+    assert 'tg://user?id=12">Ivan</a> — nothing paid' in text
+    assert text.endswith("Refund 15 GEL.")
+
+
+def test_bumped_report_says_when_no_money_is_owed() -> None:
+    text = render_bumped_report(
+        service_date=date(2026, 8, 23),
+        lift_time="11:45",
+        riders=(("Ivan", 12, False),),
+        price_gel=15,
+    )
+
+    assert text.endswith("Nobody paid for those seats.")

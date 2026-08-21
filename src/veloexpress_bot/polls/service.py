@@ -184,10 +184,22 @@ class CleanupResult:
 
 
 @dataclass(frozen=True)
+class BumpedRider:
+    """A rider a manual seat pushed off the lift, and whether their money is in."""
+
+    telegram_user_id: int
+    label: str
+    paid: bool
+
+
+@dataclass(frozen=True)
 class ManualBookingAdjustmentResult:
     service_date: date
     lift_time: str
     manual_count: int
+    # Named, not counted: an admin who takes a rider personally has to know whose
+    # seat paid for it, and who is now owed money back.
+    bumped: tuple[BumpedRider, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -495,6 +507,20 @@ class PollPostingService:
                 booking.count = new_count
                 booking.updated_by_user_id = admin_user_id
                 booking.updated_at = now
+            # Whose seat this manual booking just took. Read before the commit, so
+            # the "before" allocation is the one the riders were looking at.
+            bumped = (
+                await self._bumped_by_manual(
+                    session=session,
+                    snapshot=snapshot,
+                    service_date=service_date,
+                    lift_time=lift_time,
+                    manual_before=current_count,
+                    manual_after=new_count,
+                )
+                if delta > 0
+                else ()
+            )
             await session.commit()
 
         if poll_id is not None:
@@ -504,6 +530,80 @@ class PollPostingService:
             service_date=service_date,
             lift_time=lift_time,
             manual_count=new_count,
+            bumped=bumped,
+        )
+
+    async def _bumped_by_manual(
+        self,
+        *,
+        session: AsyncSession,
+        snapshot: PollOptionSnapshot,
+        service_date: date,
+        lift_time: str,
+        manual_before: int,
+        manual_after: int,
+    ) -> tuple[BumpedRider, ...]:
+        """Riders who held a seat at the old manual count and lost it at the new one.
+
+        A manual booking outranks a poll vote, so raising it evicts whoever booked
+        last — possibly somebody who has already paid. Silently is the one way that
+        must not happen: the admin took the seat, so the admin owes the refund.
+        """
+        votes = [
+            vote
+            for vote in (
+                await session.scalars(select(PollVote).where(PollVote.poll_id == snapshot.poll_id))
+            ).all()
+            if snapshot.option_index in decode_option_ids(vote.option_ids)
+        ]
+        if not votes:
+            return ()
+        capacity = {lift.time: lift.capacity for lift in DEFAULT_LIFTS}.get(lift_time, 10)
+        guests = (
+            await session.scalar(
+                select(func.coalesce(func.sum(GuestSeat.count), 0))
+                .where(GuestSeat.environment == self._settings.app_env)
+                .where(GuestSeat.chat_id == self._settings.telegram_target_chat_id)
+                .where(GuestSeat.thread_id == self._settings.telegram_target_thread_id)
+                .where(GuestSeat.service_date == service_date)
+                .where(GuestSeat.lift_time == lift_time)
+            )
+        ) or 0
+        candidates = [
+            SeatCandidate(
+                telegram_user_id=vote.telegram_user_id,
+                label=_rider_label(vote),
+                booked_at=_as_utc(vote.updated_at) or datetime.now(UTC),
+            )
+            for vote in votes
+        ]
+        before = allocate_seats(candidates, capacity=capacity, reserved=manual_before + guests)
+        after = allocate_seats(candidates, capacity=capacity, reserved=manual_after + guests)
+        held_after = {candidate.telegram_user_id for candidate in after.holders}
+        lost = [
+            candidate
+            for candidate in before.holders
+            if candidate.telegram_user_id not in held_after
+        ]
+        if not lost:
+            return ()
+        paid_user_ids = set(
+            (
+                await session.scalars(
+                    select(PaymentClaim.telegram_user_id)
+                    .where(PaymentClaim.environment == self._settings.app_env)
+                    .where(PaymentClaim.chat_id == self._settings.telegram_target_chat_id)
+                    .where(PaymentClaim.service_date == service_date)
+                )
+            ).all()
+        )
+        return tuple(
+            BumpedRider(
+                telegram_user_id=candidate.telegram_user_id,
+                label=candidate.label,
+                paid=candidate.telegram_user_id in paid_user_ids,
+            )
+            for candidate in lost
         )
 
     async def lift_detail(

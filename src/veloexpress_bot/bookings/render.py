@@ -1,3 +1,4 @@
+import html
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -163,6 +164,43 @@ def render_booking_monitor(
         text="\n".join(lines),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
+
+
+# The monitor cards are plain text; this one carries mentions so the admin can
+# reach the rider they owe.
+BUMPED_REPORT_PARSE_MODE = "HTML"
+
+
+def render_bumped_report(
+    *,
+    service_date: date,
+    lift_time: str,
+    riders: tuple[tuple[str, int, bool], ...],
+    price_gel: int,
+) -> str:
+    """Name the riders a manual booking just pushed onto the waitlist.
+
+    A manual seat outranks a poll vote, so adding one can evict a rider who has
+    already paid. The admin took that seat deliberately; owing somebody a refund
+    without being told is the part that would be an accident.
+    """
+    lines = [
+        f"⚠️ {lift_time} · {_long_day_label(service_date)} — manual seat added.",
+        "",
+        "Off the lift now:",
+        "",
+    ]
+    refund = 0
+    for label, user_id, paid in riders:
+        mention = f'<a href="tg://user?id={user_id}">{html.escape(label)}</a>'
+        if paid:
+            refund += price_gel
+            lines.append(f"{mention} — paid, refund {price_gel} GEL")
+        else:
+            lines.append(f"{mention} — nothing paid")
+    lines.append("")
+    lines.append(f"Refund {refund} GEL." if refund else "Nobody paid for those seats.")
+    return "\n".join(lines)
 
 
 def render_start_status(

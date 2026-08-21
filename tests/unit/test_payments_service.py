@@ -1481,3 +1481,56 @@ async def test_paying_stays_in_the_group_until_the_setting_is_turned_on(
     # The guest form still opens privately: only a form can show a row per lift.
     guest_urls = [button.url for button in board.markup.inline_keyboard[1] if button.url]
     assert guest_urls == [f"https://t.me/veloexpress_bot?start=guests-{encoded}"]
+
+
+async def test_a_manual_seat_names_the_paid_rider_it_bumps(db: SharedDatabase) -> None:
+    """The admin took the seat, so the admin owes the refund — and can only know
+    that if the bot says whose seat it was."""
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=10)
+    last = await payments.claim(
+        service_date=saturday, telegram_user_id=109, username="tenth", full_name="Tenth"
+    )
+    assert "15 GEL" in last.text
+
+    result = await poll_service.adjust_manual_booking(
+        service_date=saturday,
+        lift_time="8:30",
+        delta=1,
+        admin_user_id=1,
+    )
+
+    # Labelled from the poll vote, which is what the availability board shows too.
+    assert [(rider.label, rider.paid) for rider in result.bumped] == [("@rider109", True)]
+
+
+async def test_a_manual_seat_on_a_lift_with_room_bumps_nobody(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.claim(
+        service_date=saturday, telegram_user_id=104, username="fifth", full_name="Fifth"
+    )
+
+    result = await poll_service.adjust_manual_booking(
+        service_date=saturday,
+        lift_time="8:30",
+        delta=1,
+        admin_user_id=1,
+    )
+
+    assert result.bumped == ()
+
+
+async def test_removing_a_manual_seat_reports_no_refunds(db: SharedDatabase) -> None:
+    """Freeing a seat gives one back; nobody is owed money for that."""
+    poll_service, _payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=10)
+    await poll_service.adjust_manual_booking(
+        service_date=saturday, lift_time="8:30", delta=1, admin_user_id=1
+    )
+
+    result = await poll_service.adjust_manual_booking(
+        service_date=saturday, lift_time="8:30", delta=-1, admin_user_id=1
+    )
+
+    assert result.bumped == ()
