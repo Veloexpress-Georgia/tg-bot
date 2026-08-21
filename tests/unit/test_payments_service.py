@@ -24,6 +24,8 @@ from veloexpress_bot.payments.service import (
     CASH_METHOD,
     NOT_BOOKED_TEXT,
     PAYMENTS_DISABLED_TEXT,
+    UNDO_AFTER_DEADLINE_TEXT,
+    UNDO_VERIFIED_TEXT,
     WAITLIST_WARNING_TEXT,
     PaymentsService,
 )
@@ -1534,3 +1536,180 @@ async def test_removing_a_manual_seat_reports_no_refunds(db: SharedDatabase) -> 
     )
 
     assert result.bumped == ()
+
+
+async def test_cancelling_one_lift_refunds_only_the_seats_it_took(db: SharedDatabase) -> None:
+    """A rider still riding later that day keeps the money for that seat. Reporting
+    the whole payment had the admin handing back a trip that is still happening."""
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, 1, riders=5)
+    await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+        acknowledged=True,
+    )
+
+    await poll_service.cancel_lift(service_date=saturday, lift_time="10:00", admin_user_id=1)
+    report = await payments.cancellation_report(service_date=saturday, cancelled_lift_time="10:00")
+
+    assert report is not None
+    assert "still on 8:30 · refund 15 GEL" in report
+    assert report.endswith("Refund 15 GEL of 30 GEL paid.")
+
+
+async def test_a_cancelled_lift_nobody_rode_alone_refunds_the_whole_payment(
+    db: SharedDatabase,
+) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+        acknowledged=True,
+    )
+
+    await poll_service.cancel_lift(service_date=saturday, lift_time="8:30", admin_user_id=1)
+    report = await payments.cancellation_report(service_date=saturday, cancelled_lift_time="8:30")
+
+    assert report is not None
+    assert "nothing left, refund" in report
+    assert report.endswith("Refund 15 GEL.")
+
+
+async def test_an_admin_marking_a_payment_counts_the_guest_seats_too(
+    db: SharedDatabase,
+) -> None:
+    """Cash for a rider and their guest is one handful of money. Recording only the
+    rider's own seat left the board chasing them for the difference."""
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.adjust_guest_seats(
+        service_date=saturday, telegram_user_id=100, lift_times=("8:30",), delta=1
+    )
+
+    notice = await payments.toggle_admin_payment(
+        service_date=saturday, telegram_user_id=100, admin_user_id=1
+    )
+
+    assert notice == "@rider100: paid 30 GEL."
+    async with db.session() as session:
+        claim = await session.scalar(select(PaymentClaim))
+        assert claim is not None
+        assert claim.seats == 2
+
+
+async def test_a_topic_post_settles_the_guest_seats_as_well(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.adjust_guest_seats(
+        service_date=saturday, telegram_user_id=100, lift_times=("8:30",), delta=1
+    )
+
+    await payments.record_topic_post(
+        telegram_user_id=100,
+        posted_at=datetime.now(UTC),
+    )
+
+    async with db.session() as session:
+        claim = await session.scalar(select(PaymentClaim))
+        assert claim is not None
+        assert claim.seats == 2
+
+
+async def test_a_guest_can_be_added_to_a_lift_that_has_not_filled_yet(
+    db: SharedDatabase,
+) -> None:
+    """A guest is one of the five a lift needs. Refusing them until it fills — with
+    "No seats left on those lifts", of all excuses — had it both ways."""
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=4)
+
+    notice = await payments.adjust_guest_seats(
+        service_date=saturday, telegram_user_id=100, lift_times=("8:30",), delta=1
+    )
+
+    assert notice == "Guests updated."
+    day = await payments._day(saturday)
+    assert day is not None
+    # Four voters plus the guest is five: the lift runs, and both owe for it.
+    assert day.running_lift_times == ("8:30",)
+    assert day.seats_by_lift["8:30"] == 5
+
+
+async def test_paying_for_the_whole_day_covers_guests_on_lifts_still_short(
+    db: SharedDatabase,
+) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await _vote(poll_service, poll_id, 100, 0, 1)
+    await payments.adjust_guest_seats(
+        service_date=saturday, telegram_user_id=100, lift_times=("10:00",), delta=1
+    )
+
+    card = await payments.my_day_card(service_date=saturday, telegram_user_id=100)
+    outcome = await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+        acknowledged=True,
+        include_pending=True,
+    )
+
+    # 8:30 for the rider, 10:00 for the rider and their guest: three seats.
+    assert "45 GEL" in outcome.text
+    assert "💸 Pay all · 45" in [
+        button.text
+        for row in (card.reply_markup.inline_keyboard if card.reply_markup else [])
+        for button in row
+    ]
+
+
+async def test_undo_stops_once_booking_has_closed(db: SharedDatabase) -> None:
+    """After the freeze the money is spent by the group's own rule, so undo would
+    erase the only record that it ever arrived."""
+    saturday = _future_saturday()
+    poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="rider100", full_name="Rider 100"
+    )
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+
+    notice = await payments.undo(service_date=saturday, telegram_user_id=100)
+
+    assert notice == UNDO_AFTER_DEADLINE_TEXT
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentClaim)) is not None
+
+
+async def test_undo_leaves_a_payment_an_admin_recorded(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.toggle_admin_payment(
+        service_date=saturday, telegram_user_id=100, admin_user_id=1
+    )
+
+    notice = await payments.undo(service_date=saturday, telegram_user_id=100)
+
+    assert notice == UNDO_VERIFIED_TEXT
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentClaim)) is not None
+
+
+async def test_undo_still_works_before_the_deadline(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="rider100", full_name="Rider 100"
+    )
+
+    notice = await payments.undo(service_date=saturday, telegram_user_id=100)
+
+    assert notice == "Removed."
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentClaim)) is None

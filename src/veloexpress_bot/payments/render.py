@@ -71,6 +71,9 @@ class RefundRow:
     seats: int
     amount_gel: int
     remaining_lift_times: tuple[str, ...]
+    # What is actually owed back. Not the whole payment whenever the rider still
+    # holds seats elsewhere on the day: their money follows them there.
+    refund_gel: int = 0
 
 
 def render_cancellation_report(
@@ -91,12 +94,14 @@ def render_cancellation_report(
     for row in rows:
         seats = f" · {row.seats} seats" if row.seats > 1 else ""
         mention = f'<a href="tg://user?id={row.telegram_user_id}">{html.escape(row.label)}</a>'
+        refund_due += row.refund_gel
         if row.remaining_lift_times:
-            # Payment covers the day, so another lift still earns what they paid.
+            # Payment covers the day, so another lift still earns part of it. Only
+            # the seats that stopped existing come back.
             still = ", ".join(row.remaining_lift_times)
-            lines.append(f"{mention} — {row.amount_gel} GEL{seats} · still on {still}")
+            owed_back = f" · refund {row.refund_gel} GEL" if row.refund_gel else ""
+            lines.append(f"{mention} — {row.amount_gel} GEL{seats} · still on {still}{owed_back}")
             continue
-        refund_due += row.amount_gel
         if cancelled_lift_time is None:
             # The header already said the whole day is gone; every row is a refund.
             lines.append(f"{mention} — {row.amount_gel} GEL{seats}")
@@ -104,7 +109,10 @@ def render_cancellation_report(
             lines.append(f"{mention} — {row.amount_gel} GEL{seats} · nothing left, refund")
     total = sum(row.amount_gel for row in rows)
     lines.append("")
-    if refund_due and refund_due != total:
+    if not refund_due:
+        # Everybody kept a seat somewhere: the day moved, the money did not.
+        lines.append(f"Nothing to refund — {total} GEL stays on the day.")
+    elif refund_due != total:
         lines.append(f"Refund {refund_due} GEL of {total} GEL paid.")
     else:
         lines.append(f"Refund {total} GEL.")

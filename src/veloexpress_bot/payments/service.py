@@ -143,11 +143,28 @@ class DayBookings:
             self.capacity_by_lift.get(lift_time, 0) - self.seats_by_lift.get(lift_time, 0), 0
         )
 
-    def guest_seats(self, telegram_user_id: int) -> int:
-        """Guest seats the rider holds on lifts that are actually running."""
+    def guest_seats(
+        self,
+        telegram_user_id: int,
+        *,
+        lift_times: tuple[str, ...] | None = None,
+        include_pending: bool = False,
+    ) -> int:
+        """Guest seats the rider holds, on running lifts unless told otherwise.
+
+        A guest on a lift still short of the minimum is a real seat — they are part
+        of what gets it to five — but no more billable than the host's own seat
+        there, so the default stays the running lifts.
+        """
+        if lift_times is None:
+            lift_times = (
+                self.booked_lift_times_by_user.get(telegram_user_id, ())
+                if include_pending
+                else self.lift_times_by_user.get(telegram_user_id, ())
+            )
         return sum(
             self.guests_by_user_lift.get((telegram_user_id, lift_time), 0)
-            for lift_time in self.lift_times_by_user.get(telegram_user_id, ())
+            for lift_time in lift_times
         )
 
     @property
@@ -225,7 +242,7 @@ class PaymentsService:
                 service_date=service_date,
                 telegram_user_id=telegram_user_id,
             )
-            guests = day.guest_seats(telegram_user_id)
+            guests = day.guest_seats(telegram_user_id, lift_times=paying_for)
             owed = len(paying_for) + guests
             if claim is not None and claim.seats >= owed:
                 return ClaimOutcome(ALREADY_SETTLED_TEXT)
@@ -388,13 +405,16 @@ class PaymentsService:
             for lift_time in booked
         )
         pending = day.pending_lift_times(telegram_user_id)
-        guests = day.guest_seats(telegram_user_id)
+        guests_now = day.guest_seats(telegram_user_id, lift_times=running)
+        guests_all = day.guest_seats(telegram_user_id, include_pending=True)
         return RiderDayView(
             service_date=day.service_date,
             rows=rows,
             pending_lift_times=pending,
-            due_now_gel=self._amount(len(running) + guests),
-            due_all_gel=self._amount(len(running) + len(pending) + guests),
+            due_now_gel=self._amount(len(running) + guests_now),
+            # Settling the whole day covers the guests waiting on it as well;
+            # leaving them out quoted an amount the next tap would not accept.
+            due_all_gel=self._amount(len(running) + len(pending) + guests_all),
             paid_gel=self._amount(day.paid_seats_by_user.get(telegram_user_id, 0)),
         )
 
@@ -416,7 +436,9 @@ class PaymentsService:
         changed = 0
         async with self._session_factory() as session:
             for lift_time in lift_times:
-                if lift_time not in day.lift_times_by_user.get(telegram_user_id, ()):
+                if lift_time not in day.booked_lift_times_by_user.get(telegram_user_id, ()):
+                    # Booked, not necessarily running: a guest is one of the five a
+                    # lift needs, so refusing them until it fills is backwards.
                     continue
                 current = day.guests_by_user_lift.get((telegram_user_id, lift_time), 0)
                 if delta > 0 and day.seats_left(lift_time) <= 0:
@@ -471,6 +493,14 @@ class PaymentsService:
             )
             if claim is None:
                 return NOTHING_TO_UNDO_TEXT
+            if claim.verified_by_user_id is not None:
+                return UNDO_VERIFIED_TEXT
+            notice = await self._service_day_notice(
+                session=session,
+                service_date=service_date,
+            )
+            if notice is not None and notice.roster_captured_at is not None:
+                return UNDO_AFTER_DEADLINE_TEXT
             posted_message_id = claim.posted_message_id
             await session.delete(claim)
             await session.commit()
@@ -504,7 +534,13 @@ class PaymentsService:
         if day is None:
             return BOARD_GONE_TEXT
         username, full_name = day.labels_by_user.get(telegram_user_id, (None, "Rider"))
-        seats = max(len(day.lift_times_by_user.get(telegram_user_id, ())), 1)
+        # Guests included: the rider handed over cash for them too, and recording
+        # only their own seat left the board calling a settled rider a debtor.
+        seats = max(
+            len(day.lift_times_by_user.get(telegram_user_id, ()))
+            + day.guest_seats(telegram_user_id),
+            1,
+        )
 
         async with self._session_factory() as session:
             claim = await self._claim_row(
@@ -574,16 +610,10 @@ class PaymentsService:
             return None
 
         rows = tuple(
-            RefundRow(
-                label=_rider_label(claim.username, claim.full_name),
-                telegram_user_id=claim.telegram_user_id,
-                seats=claim.seats,
-                amount_gel=self._amount(claim.seats),
-                remaining_lift_times=(
-                    ()
-                    if day is None or cancelled_lift_time is None
-                    else day.booked_lift_times_by_user.get(claim.telegram_user_id, ())
-                ),
+            self._refund_row(
+                claim,
+                day=day,
+                cancelled_lift_time=cancelled_lift_time,
             )
             for claim in claims
         )
@@ -608,6 +638,39 @@ class PaymentsService:
                 )
                 await session.commit()
         return report
+
+    def _refund_row(
+        self,
+        claim: PaymentClaim,
+        *,
+        day: DayBookings | None,
+        cancelled_lift_time: str | None,
+    ) -> RefundRow:
+        """One rider's line: what they paid, what they still hold, what comes back.
+
+        Cancelling one lift out of two does not undo the whole payment — the seats
+        they still hold keep their share. Reporting the full amount had the admin
+        handing back money for a trip that is still happening.
+        """
+        remaining = (
+            ()
+            if day is None or cancelled_lift_time is None
+            else day.booked_lift_times_by_user.get(claim.telegram_user_id, ())
+        )
+        held = len(remaining)
+        if day is not None:
+            held += sum(
+                day.guests_by_user_lift.get((claim.telegram_user_id, lift_time), 0)
+                for lift_time in remaining
+            )
+        return RefundRow(
+            label=_rider_label(claim.username, claim.full_name),
+            telegram_user_id=claim.telegram_user_id,
+            seats=claim.seats,
+            amount_gel=self._amount(claim.seats),
+            remaining_lift_times=remaining,
+            refund_gel=self._amount(max(claim.seats - held, 0)),
+        )
 
     async def recent_refund_reports(self, *, limit: int = 5) -> tuple[str, ...]:
         """The last few refund lists, newest first, so a deleted message is not lost."""
@@ -713,7 +776,10 @@ class PaymentsService:
                         telegram_user_id=telegram_user_id,
                         username=username,
                         full_name=full_name,
-                        seats=len(day.lift_times_by_user[telegram_user_id]),
+                        seats=(
+                            len(day.lift_times_by_user[telegram_user_id])
+                            + day.guest_seats(telegram_user_id)
+                        ),
                     )
                 )
                 await session.commit()
