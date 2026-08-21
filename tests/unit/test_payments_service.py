@@ -17,6 +17,7 @@ from veloexpress_bot.db.models import (
     PaymentClaim,
     PaymentsBoard,
     PollOptionSnapshot,
+    PollVote,
     RiderCard,
 )
 from veloexpress_bot.payments.service import (
@@ -488,7 +489,7 @@ async def test_the_waitlist_is_not_billed_and_is_warned_before_paying(
 async def test_manual_bookings_take_seats_before_telegram_voters(db: SharedDatabase) -> None:
     """An admin accepted them personally, so a poll vote cannot bump them."""
     poll_service, payments, _client, poll_id, saturday = await _setup(db)
-    await _fill(poll_service, poll_id, 0, riders=9)
+    await _fill(poll_service, poll_id, 0, riders=8)
     for _ in range(2):
         await poll_service.adjust_manual_booking(
             service_date=saturday,
@@ -496,8 +497,10 @@ async def test_manual_bookings_take_seats_before_telegram_voters(db: SharedDatab
             delta=1,
             admin_user_id=1,
         )
+    await _vote(poll_service, poll_id, 108, 0)
 
-    # 9 voters + 2 manual = 11 for ten seats, so the last voter loses their place.
+    # The van was full before the ninth poll vote arrived, so that voter waits;
+    # the admin did not create an overbooking by displacing an existing holder.
     ninth = await payments.claim(
         service_date=saturday, telegram_user_id=108, username="ninth", full_name="Ninth"
     )
@@ -1332,6 +1335,34 @@ async def test_the_card_tells_a_waitlisted_rider_their_place(db: SharedDatabase)
     assert "nothing to pay until one frees up" in card.text
 
 
+async def test_adding_a_lift_keeps_a_legacy_votes_place_in_the_first_queue(
+    db: SharedDatabase,
+) -> None:
+    """The migration cannot invent per-lift times for votes already in the DB.
+
+    Their old ``updated_at`` is still the booking time for every option they held.
+    On the first post-deploy answer change, those existing options must inherit it;
+    otherwise adding another lift sends an early rider behind all ten later voters.
+    """
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=11)
+    async with db.session() as session:
+        legacy_vote = await session.scalar(
+            select(PollVote)
+            .where(PollVote.poll_id == poll_id)
+            .where(PollVote.telegram_user_id == 100)
+        )
+        assert legacy_vote is not None
+        legacy_vote.option_booked_at = ""
+        await session.commit()
+
+    await _vote(poll_service, poll_id, 100, 0, 1)
+
+    card = await payments.my_day_card(service_date=saturday, telegram_user_id=100)
+    assert "8:30 — riding" in card.text
+    assert "8:30 — ⏳ waitlist" not in card.text
+
+
 async def test_the_board_pay_buttons_are_deep_links_when_the_username_is_known(
     db: SharedDatabase,
 ) -> None:
@@ -1485,9 +1516,12 @@ async def test_paying_stays_in_the_group_until_the_setting_is_turned_on(
     assert guest_urls == [f"https://t.me/veloexpress_bot?start=guests-{encoded}"]
 
 
-async def test_a_manual_seat_names_the_paid_rider_it_bumps(db: SharedDatabase) -> None:
-    """The admin took the seat, so the admin owes the refund — and can only know
-    that if the bot says whose seat it was."""
+async def test_a_manual_seat_cannot_displace_a_paid_rider(db: SharedDatabase) -> None:
+    """A stale-looking plus button must not turn a full van into an overbooking.
+
+    Naming the displaced rider after the fact still leaves the admin to repair a
+    booking the bot should never have accepted.
+    """
     poll_service, payments, _client, poll_id, saturday = await _setup(db)
     await _fill(poll_service, poll_id, 0, riders=10)
     last = await payments.claim(
@@ -1495,15 +1529,17 @@ async def test_a_manual_seat_names_the_paid_rider_it_bumps(db: SharedDatabase) -
     )
     assert "15 GEL" in last.text
 
-    result = await poll_service.adjust_manual_booking(
-        service_date=saturday,
-        lift_time="8:30",
-        delta=1,
-        admin_user_id=1,
-    )
+    with pytest.raises(ValueError, match="No seats left"):
+        await poll_service.adjust_manual_booking(
+            service_date=saturday,
+            lift_time="8:30",
+            delta=1,
+            admin_user_id=1,
+        )
 
-    # Labelled from the poll vote, which is what the availability board shows too.
-    assert [(rider.label, rider.paid) for rider in result.bumped] == [("@rider109", True)]
+    detail = await poll_service.lift_detail(service_date=saturday, lift_time="8:30")
+    assert detail is not None
+    assert detail[0].manual_count == 0
 
 
 async def test_a_manual_seat_on_a_lift_with_room_bumps_nobody(db: SharedDatabase) -> None:
@@ -1526,7 +1562,7 @@ async def test_a_manual_seat_on_a_lift_with_room_bumps_nobody(db: SharedDatabase
 async def test_removing_a_manual_seat_reports_no_refunds(db: SharedDatabase) -> None:
     """Freeing a seat gives one back; nobody is owed money for that."""
     poll_service, _payments, _client, poll_id, saturday = await _setup(db)
-    await _fill(poll_service, poll_id, 0, riders=10)
+    await _fill(poll_service, poll_id, 0, riders=9)
     await poll_service.adjust_manual_booking(
         service_date=saturday, lift_time="8:30", delta=1, admin_user_id=1
     )

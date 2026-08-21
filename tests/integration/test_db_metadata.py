@@ -41,9 +41,11 @@ def test_poll_auto_schedule_has_one_row_per_target() -> None:
 
 
 def test_poll_vote_unique_index_matches_migration() -> None:
+    vote_columns = Base.metadata.tables["poll_vote"].columns
     vote_index_names = {index.name for index in Base.metadata.tables["poll_vote"].indexes}
     event_index_names = {index.name for index in Base.metadata.tables["poll_vote_event"].indexes}
 
+    assert "option_booked_at" in vote_columns
     assert "uq_poll_vote_poll_user" in vote_index_names
     assert {
         "ix_poll_vote_event_poll_id",

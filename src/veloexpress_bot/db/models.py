@@ -89,6 +89,11 @@ class PollVote(Base):
     username: Mapped[str | None] = mapped_column(String(128))
     full_name: Mapped[str] = mapped_column(Text)
     option_ids: Mapped[str] = mapped_column(Text, default="")
+    # When each option was first picked, as `index:epoch` pairs. Seats go in
+    # booking order, and `updated_at` moves whenever any part of the answer
+    # changes — so adding a second lift used to send the rider to the back of the
+    # queue on the lift they already held.
+    option_booked_at: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

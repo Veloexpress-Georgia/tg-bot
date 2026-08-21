@@ -37,8 +37,9 @@ def allocate_seats(
     an admin took a manual rider personally, and a guest belongs to a rider who
     already declared them — so a poll vote cannot bump either.
 
-    Booking order is the order the poll itself displays, which means changing your
-    answer moves you to the back. That is the honest reading: you re-booked.
+    Booking order is tracked per lift. Adding or removing another lift leaves an
+    existing seat alone; leaving this lift and later choosing it again is a new
+    booking and moves the rider to the back here.
     """
     ordered = sorted(
         candidates, key=lambda candidate: (candidate.booked_at, candidate.telegram_user_id)

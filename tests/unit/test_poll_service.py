@@ -836,6 +836,31 @@ async def test_manual_booking_count_cannot_go_below_zero(db: SharedDatabase) -> 
         )
 
 
+async def test_stale_monitor_button_cannot_add_a_seat_to_a_cancelled_lift(
+    db: SharedDatabase,
+) -> None:
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=FakeTelegramClient(),
+    )
+    service_date = date(2026, 5, 16)
+    await service.create_poll(PollSetup(service_date=service_date, created_by_user_id=1))
+    await service.cancel_lift(service_date=service_date, lift_time="8:30", admin_user_id=1)
+
+    with pytest.raises(ValueError, match="This lift is cancelled"):
+        await service.adjust_manual_booking(
+            service_date=service_date,
+            lift_time="8:30",
+            delta=1,
+            admin_user_id=1,
+        )
+
+    detail = await service.lift_detail(service_date=service_date, lift_time="8:30")
+    assert detail is not None
+    assert detail[0].manual_count == 0
+
+
 @pytest.mark.asyncio
 async def test_poll_service_posts_and_persists_message(db: SharedDatabase) -> None:
     client = FakeTelegramClient()

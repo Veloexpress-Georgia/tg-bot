@@ -484,12 +484,47 @@ class PollPostingService:
                 .where(ManualBookingCount.thread_id == self._settings.telegram_target_thread_id)
                 .where(ManualBookingCount.service_date == service_date)
                 .where(ManualBookingCount.lift_time == lift_time)
+                .with_for_update()
             )
             current_count = booking.count if booking is not None else 0
             new_count = current_count + delta
             if new_count < 0:
                 msg = "No manual bookings to remove."
                 raise ValueError(msg)
+            if delta > 0:
+                cancelled = await session.scalar(
+                    select(CancelledLift.id)
+                    .where(CancelledLift.environment == self._settings.app_env)
+                    .where(CancelledLift.chat_id == self._settings.telegram_target_chat_id)
+                    .where(CancelledLift.thread_id == self._settings.telegram_target_thread_id)
+                    .where(CancelledLift.service_date == service_date)
+                    .where(CancelledLift.lift_time == lift_time)
+                )
+                if cancelled is not None:
+                    msg = "This lift is cancelled."
+                    raise ValueError(msg)
+                votes = (
+                    await session.scalars(
+                        select(PollVote).where(PollVote.poll_id == snapshot.poll_id)
+                    )
+                ).all()
+                vote_count = sum(
+                    snapshot.option_index in decode_option_ids(vote.option_ids) for vote in votes
+                )
+                guest_count = (
+                    await session.scalar(
+                        select(func.coalesce(func.sum(GuestSeat.count), 0))
+                        .where(GuestSeat.environment == self._settings.app_env)
+                        .where(GuestSeat.chat_id == self._settings.telegram_target_chat_id)
+                        .where(GuestSeat.thread_id == self._settings.telegram_target_thread_id)
+                        .where(GuestSeat.service_date == service_date)
+                        .where(GuestSeat.lift_time == lift_time)
+                    )
+                ) or 0
+                capacity = {lift.time: lift.capacity for lift in DEFAULT_LIFTS}.get(lift_time, 10)
+                if vote_count + current_count + guest_count >= capacity:
+                    msg = "No seats left on this lift."
+                    raise ValueError(msg)
             if booking is None:
                 session.add(
                     ManualBookingCount(
@@ -507,8 +542,9 @@ class PollPostingService:
                 booking.count = new_count
                 booking.updated_by_user_id = admin_user_id
                 booking.updated_at = now
-            # Whose seat this manual booking just took. Read before the commit, so
-            # the "before" allocation is the one the riders were looking at.
+            # Re-check after staging the change. A poll vote can land between the
+            # capacity read above and this query; even then the manual seat must
+            # fail instead of silently displacing the new holder.
             bumped = (
                 await self._bumped_by_manual(
                     session=session,
@@ -521,6 +557,9 @@ class PollPostingService:
                 if delta > 0
                 else ()
             )
+            if bumped:
+                msg = "No seats left on this lift."
+                raise ValueError(msg)
             await session.commit()
 
         if poll_id is not None:
@@ -545,9 +584,9 @@ class PollPostingService:
     ) -> tuple[BumpedRider, ...]:
         """Riders who held a seat at the old manual count and lost it at the new one.
 
-        A manual booking outranks a poll vote, so raising it evicts whoever booked
-        last — possibly somebody who has already paid. Silently is the one way that
-        must not happen: the admin took the seat, so the admin owes the refund.
+        A manual booking outranks a poll vote in allocation. This detects a rider
+        who would lose a seat so the caller can reject the manual booking before
+        commit, including when a vote raced the earlier capacity check.
         """
         votes = [
             vote
@@ -573,7 +612,7 @@ class PollPostingService:
             SeatCandidate(
                 telegram_user_id=vote.telegram_user_id,
                 label=_rider_label(vote),
-                booked_at=_as_utc(vote.updated_at) or datetime.now(UTC),
+                booked_at=vote_booked_at(vote, snapshot.option_index),
             )
             for vote in votes
         ]
@@ -1208,7 +1247,7 @@ class PollPostingService:
                     SeatCandidate(
                         telegram_user_id=vote.telegram_user_id,
                         label=vote.full_name or _rider_label(vote),
-                        booked_at=_as_utc(vote.updated_at) or datetime.now(UTC),
+                        booked_at=vote_booked_at(vote, snapshot.option_index),
                     )
                     for vote in booked
                 ),
@@ -1537,6 +1576,13 @@ class PollPostingService:
                     created_at=now,
                 )
                 session.add(event)
+            option_booked_at = option_times_after_vote(
+                previous=vote.option_booked_at if vote is not None else "",
+                previous_option_ids=decode_option_ids(old_option_ids),
+                previous_updated_at=vote.updated_at if vote is not None else None,
+                option_ids=option_ids,
+                now=now,
+            )
             if vote is None:
                 session.add(
                     PollVote(
@@ -1545,6 +1591,7 @@ class PollPostingService:
                         username=username,
                         full_name=full_name,
                         option_ids=encoded_option_ids,
+                        option_booked_at=option_booked_at,
                         updated_at=now,
                     )
                 )
@@ -1552,6 +1599,7 @@ class PollPostingService:
                 vote.username = username
                 vote.full_name = full_name
                 vote.option_ids = encoded_option_ids
+                vote.option_booked_at = option_booked_at
                 vote.updated_at = now
             try:
                 await session.commit()
@@ -1689,6 +1737,7 @@ class PollPostingService:
                         if snapshot.lift_time in cancelled_times
                         else _waitlist_for(
                             votes_by_option.get(snapshot.option_index, []),
+                            option_index=snapshot.option_index,
                             capacity=capacity_by_time.get(snapshot.lift_time, 10),
                             reserved=manual_by_time.get(snapshot.lift_time, 0)
                             + guests_by_time.get(snapshot.lift_time, 0),
@@ -2506,6 +2555,13 @@ class PollPostingService:
                         created_at=updated_at,
                     )
                 )
+            option_booked_at = option_times_after_vote(
+                previous=vote.option_booked_at if vote is not None else "",
+                previous_option_ids=decode_option_ids(old_option_ids),
+                previous_updated_at=vote.updated_at if vote is not None else None,
+                option_ids=decode_option_ids(option_ids),
+                now=updated_at,
+            )
             if vote is None:
                 session.add(
                     PollVote(
@@ -2514,6 +2570,7 @@ class PollPostingService:
                         username=username,
                         full_name=full_name,
                         option_ids=option_ids,
+                        option_booked_at=option_booked_at,
                         updated_at=updated_at,
                     )
                 )
@@ -2521,6 +2578,7 @@ class PollPostingService:
                 vote.username = username
                 vote.full_name = full_name
                 vote.option_ids = option_ids
+                vote.option_booked_at = option_booked_at
                 vote.updated_at = updated_at
             await session.commit()
 
@@ -2723,6 +2781,7 @@ def _shared_date(events: list[LiftEvent]) -> date | None:
 def _waitlist_for(
     votes: list[PollVote],
     *,
+    option_index: int,
     capacity: int,
     reserved: int,
 ) -> tuple[WaitlistRider, ...]:
@@ -2731,7 +2790,7 @@ def _waitlist_for(
             SeatCandidate(
                 telegram_user_id=vote.telegram_user_id,
                 label=_rider_label(vote),
-                booked_at=_as_utc(vote.updated_at) or datetime.now(UTC),
+                booked_at=vote_booked_at(vote, option_index),
             )
             for vote in votes
         ),
@@ -2927,6 +2986,73 @@ def decode_option_ids(option_ids: str) -> tuple[int, ...]:
     if not option_ids:
         return ()
     return tuple(int(item) for item in option_ids.split(",") if item)
+
+
+# Microseconds, not seconds: two people booking the same lift in the same second
+# is ordinary, and a tie there would be broken by user id — which is to say by
+# who joined Telegram first.
+_TIME_SCALE = 1_000_000
+
+
+def encode_option_times(booked_at: dict[int, datetime]) -> str:
+    return ",".join(
+        f"{option_id}:{int(moment.timestamp() * _TIME_SCALE)}"
+        for option_id, moment in sorted(booked_at.items())
+    )
+
+
+def decode_option_times(value: str) -> dict[int, datetime]:
+    times: dict[int, datetime] = {}
+    for item in value.split(","):
+        if not item:
+            continue
+        option_id, _, epoch = item.partition(":")
+        if not epoch:
+            continue
+        times[int(option_id)] = datetime.fromtimestamp(int(epoch) / _TIME_SCALE, tz=UTC)
+    return times
+
+
+def option_times_after_vote(
+    *,
+    previous: str,
+    previous_option_ids: tuple[int, ...],
+    previous_updated_at: datetime | None,
+    option_ids: tuple[int, ...],
+    now: datetime,
+) -> str:
+    """Keep the time each option was first picked; stamp only the new ones.
+
+    Telegram sends the whole answer on every change, so a rider adding a second
+    lift looks identical to one re-picking their first. Carrying the old times
+    over is what tells those apart — otherwise adding a lift silently costs the
+    rider their place in the queue on the lift they already held.
+    """
+    kept = decode_option_times(previous)
+    # Rows written before the per-option column existed have no encoded times.
+    # Their last whole-answer timestamp is still the best booking time for every
+    # option they already held. Seed only those old options; genuinely new picks
+    # below still receive `now`, and a removed-then-restored option starts over.
+    legacy_time = _as_utc(previous_updated_at) if previous_updated_at is not None else None
+    if legacy_time is not None:
+        for option_id in previous_option_ids:
+            kept.setdefault(option_id, legacy_time)
+    return encode_option_times(
+        {option_id: kept.get(option_id, now) for option_id in sorted(set(option_ids))}
+    )
+
+
+def vote_booked_at(vote: PollVote, option_id: int) -> datetime:
+    """When this rider took this lift. Falls back to the whole answer's timestamp.
+
+    Votes cast before per-option times existed have none, and their `updated_at`
+    is the best record there is.
+    """
+    times = decode_option_times(vote.option_booked_at)
+    moment = times.get(option_id)
+    if moment is not None:
+        return moment
+    return _as_utc(vote.updated_at) or datetime.now(UTC)
 
 
 def _options_by_poll_id(

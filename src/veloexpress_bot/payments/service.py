@@ -62,7 +62,12 @@ from veloexpress_bot.polls.liftsignals import (
     render_seat_promotions,
 )
 from veloexpress_bot.polls.seating import SeatCandidate, allocate_seats
-from veloexpress_bot.polls.service import SessionFactory, TelegramPollClient, decode_option_ids
+from veloexpress_bot.polls.service import (
+    SessionFactory,
+    TelegramPollClient,
+    decode_option_ids,
+    vote_booked_at,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1110,7 +1115,7 @@ class PaymentsService:
                         SeatCandidate(
                             telegram_user_id=vote.telegram_user_id,
                             label=_rider_label(vote.username, vote.full_name),
-                            booked_at=_as_utc(vote.updated_at),
+                            booked_at=vote_booked_at(vote, snapshot.option_index),
                         )
                         for vote in voters
                     ),
