@@ -1775,3 +1775,35 @@ async def test_undo_still_works_before_the_deadline(db: SharedDatabase) -> None:
     assert notice == "Removed."
     async with db.session() as session:
         assert await session.scalar(select(PaymentClaim)) is None
+
+
+async def test_adding_a_second_lift_keeps_your_place_on_the_first(db: SharedDatabase) -> None:
+    """Telegram resends the whole answer on every change, so adding a lift looked
+    like re-booking and cost the rider their place on a lift they already held."""
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=10)
+    day = await payments._day(saturday)
+    assert day is not None
+    assert day.seat_holders_by_lift["8:30"][0] == 100
+
+    # Rider 100 keeps 8:30 and adds 10:00.
+    await _vote(poll_service, poll_id, 100, 0, 1)
+
+    day = await payments._day(saturday)
+    assert day is not None
+    assert day.seat_holders_by_lift["8:30"][0] == 100
+    assert day.waitlist_by_lift["8:30"] == ()
+
+
+async def test_dropping_a_lift_and_taking_it_again_goes_to_the_back(db: SharedDatabase) -> None:
+    """The other half of the rule stays: giving a seat up and taking it again is a
+    new booking, and the people who waited go first."""
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=10)
+    # Rider 100 leaves 8:30 for 10:00, then comes back.
+    await _vote(poll_service, poll_id, 100, 1)
+    await _vote(poll_service, poll_id, 100, 0)
+
+    day = await payments._day(saturday)
+    assert day is not None
+    assert day.seat_holders_by_lift["8:30"][-1] == 100
