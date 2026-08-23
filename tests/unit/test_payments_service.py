@@ -608,48 +608,6 @@ async def test_a_cash_tap_records_the_method_so_misho_can_reconcile(
     assert claim.method == CASH_METHOD
 
 
-async def test_admin_can_mark_declared_cash_as_actually_received(db: SharedDatabase) -> None:
-    poll_service, payments, _client, poll_id, saturday = await _setup(db)
-    await _fill(poll_service, poll_id, 0, riders=5)
-    await payments.claim(
-        service_date=saturday,
-        telegram_user_id=100,
-        username="rider100",
-        full_name="Rider 100",
-        method=CASH_METHOD,
-    )
-
-    notice = await payments.verify_cash_payment(
-        service_date=saturday,
-        telegram_user_id=100,
-        admin_user_id=1,
-    )
-
-    assert notice == "@rider100: received 15 GEL cash."
-    async with db.session() as session:
-        claim = await session.scalar(select(PaymentClaim))
-    assert claim is not None
-    assert claim.method == CASH_METHOD
-    assert claim.verified_by_user_id == 1
-    assert claim.verified_at is not None
-
-
-async def test_an_admin_mark_leaves_the_method_unknown(db: SharedDatabase) -> None:
-    """Guessing "cash" could send Misho hunting for a transfer that never existed."""
-    poll_service, payments, _client, poll_id, saturday = await _setup(db)
-    await _fill(poll_service, poll_id, 0, riders=5)
-    await payments.sync_boards()
-
-    await payments.toggle_admin_payment(
-        service_date=saturday, telegram_user_id=100, admin_user_id=1
-    )
-
-    async with db.session() as session:
-        claim = await session.scalar(select(PaymentClaim))
-    assert claim is not None
-    assert claim.method is None
-
-
 async def test_writing_in_the_payments_topic_marks_the_rider_paid(db: SharedDatabase) -> None:
     """The group convention is that you post there once you have paid.
 
@@ -774,70 +732,8 @@ async def test_undo_removes_the_claim_and_the_posted_line(db: SharedDatabase) ->
         assert await session.scalar(select(PaymentClaim)) is None
 
 
-async def test_an_admin_can_record_a_cash_payment_without_posting_to_the_topic(
-    db: SharedDatabase,
-) -> None:
-    poll_service, payments, client, poll_id, saturday = await _setup(db)
-    await _fill(poll_service, poll_id, 0, riders=5)
-    await payments.sync_boards()
-    board = client.payments_sends()[-1]
-    sends_before = len(client.payments_sends())
-
-    notice = await payments.toggle_admin_payment(
-        service_date=saturday,
-        telegram_user_id=100,
-        admin_user_id=1,
-    )
-
-    assert notice == "@rider100: paid 15 GEL."
-    # Whoever took the cash already knows; only the board changes.
-    assert len(client.payments_sends()) == sends_before
-    board_edits = [text for message_id, text in client.edits if message_id == board.message_id]
-    assert "✓ @rider100 — 15 GEL" in board_edits[-1]
-
-    async with db.session() as session:
-        claim = await session.scalar(select(PaymentClaim))
-    assert claim is not None
-    assert claim.verified_by_user_id == 1
-
-
-async def test_the_admin_mark_toggles_back_off(db: SharedDatabase) -> None:
-    poll_service, payments, _client, poll_id, saturday = await _setup(db)
-    await _fill(poll_service, poll_id, 0, riders=5)
-    await payments.sync_boards()
-
-    await payments.toggle_admin_payment(
-        service_date=saturday, telegram_user_id=100, admin_user_id=1
-    )
-    notice = await payments.toggle_admin_payment(
-        service_date=saturday, telegram_user_id=100, admin_user_id=1
-    )
-
-    assert notice == "@rider100: not paid."
-    async with db.session() as session:
-        assert await session.scalar(select(PaymentClaim)) is None
-
-
-async def test_unmarking_a_rider_claim_also_removes_the_line_the_bot_posted(
-    db: SharedDatabase,
-) -> None:
-    poll_service, payments, client, poll_id, saturday = await _setup(db)
-    await _fill(poll_service, poll_id, 0, riders=5)
-    await payments.sync_boards()
-    await payments.claim(
-        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
-    )
-    posted = client.payments_sends()[-1]
-
-    await payments.toggle_admin_payment(
-        service_date=saturday, telegram_user_id=100, admin_user_id=1
-    )
-
-    assert posted.message_id in client.deleted
-
-
 async def test_nothing_is_posted_when_the_payments_topic_is_unset(db: SharedDatabase) -> None:
-    """The admin mark is reachable from the monitor even with payments switched off.
+    """Payment links reach riders even with payments switched off for the chat.
 
     Without a guard the board would be sent with no thread id, which lands in the
     group's root topic rather than nowhere.
@@ -845,13 +741,15 @@ async def test_nothing_is_posted_when_the_payments_topic_is_unset(db: SharedData
     poll_service, payments, client, poll_id, saturday = await _setup(db, payments_thread=None)
     await _fill(poll_service, poll_id, 0, riders=5)
 
-    notice = await payments.toggle_admin_payment(
+    outcome = await payments.claim(
         service_date=saturday,
         telegram_user_id=100,
-        admin_user_id=1,
+        username="rider100",
+        full_name="Rider 100",
+        acknowledged=True,
     )
 
-    assert notice == PAYMENTS_DISABLED_TEXT
+    assert outcome.text == PAYMENTS_DISABLED_TEXT
     assert [record for record in client.sent if record.thread_id is None] == []
     async with db.session() as session:
         assert await session.scalar(select(PaymentsBoard)) is None
@@ -1642,28 +1540,6 @@ async def test_a_cancelled_lift_nobody_rode_alone_refunds_the_whole_payment(
     assert report.endswith("Refund 15 GEL.")
 
 
-async def test_an_admin_marking_a_payment_counts_the_guest_seats_too(
-    db: SharedDatabase,
-) -> None:
-    """Cash for a rider and their guest is one handful of money. Recording only the
-    rider's own seat left the board chasing them for the difference."""
-    poll_service, payments, _client, poll_id, saturday = await _setup(db)
-    await _fill(poll_service, poll_id, 0, riders=5)
-    await payments.adjust_guest_seats(
-        service_date=saturday, telegram_user_id=100, lift_times=("8:30",), delta=1
-    )
-
-    notice = await payments.toggle_admin_payment(
-        service_date=saturday, telegram_user_id=100, admin_user_id=1
-    )
-
-    assert notice == "@rider100: paid 30 GEL."
-    async with db.session() as session:
-        claim = await session.scalar(select(PaymentClaim))
-        assert claim is not None
-        assert claim.seats == 2
-
-
 async def test_a_topic_post_settles_the_guest_seats_as_well(db: SharedDatabase) -> None:
     poll_service, payments, _client, poll_id, saturday = await _setup(db)
     await _fill(poll_service, poll_id, 0, riders=5)
@@ -1750,11 +1626,19 @@ async def test_undo_stops_once_booking_has_closed(db: SharedDatabase) -> None:
 
 
 async def test_undo_leaves_a_payment_an_admin_recorded(db: SharedDatabase) -> None:
+    """Claims an admin vouched for still exist from before the monitor's payment
+    controls were taken out, and undoing one would erase somebody else's record."""
     poll_service, payments, _client, poll_id, saturday = await _setup(db)
     await _fill(poll_service, poll_id, 0, riders=5)
-    await payments.toggle_admin_payment(
-        service_date=saturday, telegram_user_id=100, admin_user_id=1
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="rider100", full_name="Rider 100"
     )
+    async with db.session() as session:
+        claim = await session.scalar(select(PaymentClaim))
+        assert claim is not None
+        claim.verified_by_user_id = 1
+        claim.verified_at = datetime.now(UTC)
+        await session.commit()
 
     notice = await payments.undo(service_date=saturday, telegram_user_id=100)
 

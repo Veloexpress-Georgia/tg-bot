@@ -479,7 +479,7 @@ async def open_lift_detail(
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("mon:liftmoney:") | F.data.startswith("mon:managelift:"))
+@router.callback_query(F.data.startswith("mon:managelift:"))
 async def open_lift_tool(
     callback: CallbackQuery,
     settings: Settings,
@@ -488,7 +488,7 @@ async def open_lift_tool(
     message = await _admin_private_message(callback, settings)
     if message is None:
         return
-    action, compact_date, compact_time = (callback.data or "").split(":")[1:]
+    _, compact_date, compact_time = (callback.data or "").split(":")[1:]
     service_date = decode_monitor_date(compact_date)
     detail = await poll_service.lift_detail(
         service_date=service_date,
@@ -503,54 +503,10 @@ async def open_lift_tool(
         service_date=service_date,
         lift=status,
         riders=riders,
-        mode="payments" if action == "liftmoney" else "manage",
+        mode="manage",
     )
     await _edit_card(message, draft.text, draft.reply_markup)
     await callback.answer()
-
-
-@router.callback_query(F.data.startswith("mon:paid:") | F.data.startswith("mon:cashreceived:"))
-async def toggle_rider_payment(
-    callback: CallbackQuery,
-    settings: Settings,
-    poll_service: PollPostingService,
-    payments_service: PaymentsService,
-) -> None:
-    message = await _admin_private_message(callback, settings)
-    if message is None:
-        return
-    parts = (callback.data or "").split(":")
-    service_date = decode_monitor_date(parts[2])
-    lift_time = decode_monitor_time(parts[3]) if len(parts) >= 5 else None
-    user_id = int(parts[4] if len(parts) >= 5 else parts[3])
-    if parts[1] == "cashreceived":
-        notice = await payments_service.verify_cash_payment(
-            service_date=service_date,
-            telegram_user_id=user_id,
-            admin_user_id=callback.from_user.id,
-        )
-    else:
-        notice = await payments_service.toggle_admin_payment(
-            service_date=service_date,
-            telegram_user_id=user_id,
-            admin_user_id=callback.from_user.id,
-        )
-    await callback.answer(notice)
-    if lift_time is None:
-        await _show_monitor(message, poll_service, callback.from_user.id, service_date)
-        return
-    detail = await poll_service.lift_detail(service_date=service_date, lift_time=lift_time)
-    if detail is None:
-        await _show_monitor(message, poll_service, callback.from_user.id, service_date)
-        return
-    status, riders = detail
-    draft = render_lift_detail(
-        service_date=service_date,
-        lift=status,
-        riders=riders,
-        mode="payments",
-    )
-    await _edit_card(message, draft.text, draft.reply_markup)
 
 
 @router.callback_query(F.data == "mon:refunds")

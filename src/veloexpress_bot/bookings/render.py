@@ -156,10 +156,11 @@ def render_booking_monitor(
         f"📊 Booking monitor · {_long_day_label(selected_day.service_date)}",
         "",
         _summary_line(selected_day),
-        "",
     ]
+    # Each block opens with its own blank line, so a day with nothing to flag does
+    # not gather a stack of them.
     lines.extend(_attention_lines(selected_day))
-    lines.extend(("", *(_lift_line(lift) for lift in selected_day.lifts)))
+    lines.extend(("", *_lift_lines(selected_day)))
 
     rows: list[list[InlineKeyboardButton]] = []
     if len(days) > 1:
@@ -182,27 +183,6 @@ def render_booking_monitor(
             )
         ]
     )
-    for lift in selected_day.lifts:
-        compact_time = _compact_time(lift.time)
-        if lift.cancelled:
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        text=f"❌ {lift.time} · cancelled",
-                        callback_data=f"mon:info:{compact_date}:{compact_time}",
-                    )
-                ]
-            )
-            continue
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=f"{lift.time} · {lift.total_count}/{lift.capacity}{_button_suffix(lift)}",
-                    callback_data=f"mon:info:{compact_date}:{compact_time}",
-                )
-            ]
-        )
-
     if not selected_day.past and selected_day.lifts:
         rows.append(
             [
@@ -457,7 +437,7 @@ def render_lift_detail(
     service_date: date,
     lift: BookingLiftStatus,
     riders: tuple[LiftRider, ...],
-    mode: Literal["view", "payments", "manage"] = "view",
+    mode: Literal["view", "manage"] = "view",
 ) -> BookingMonitorDraft:
     compact_date = _compact_date(service_date)
     compact_time = _compact_time(lift.time)
@@ -479,24 +459,7 @@ def render_lift_detail(
         lines.extend(_lift_rider_line(rider) for rider in riders)
 
     rows: list[list[InlineKeyboardButton]] = []
-    if mode == "payments":
-        # Deliberately a separate mode: names on the read-only roster must not be
-        # live payment toggles.
-        payable_riders = [rider for rider in riders if not rider.waitlisted]
-        for index in range(0, len(payable_riders), 2):
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        text=f"{'💵 ' if rider.cash else '✓ ' if rider.paid else ''}{rider.label}",
-                        callback_data=(
-                            f"mon:{'cashreceived' if rider.cash else 'paid'}:"
-                            f"{compact_date}:{compact_time}:{rider.telegram_user_id}"
-                        ),
-                    )
-                    for rider in payable_riders[index : index + 2]
-                ]
-            )
-    elif mode == "manage":
+    if mode == "manage":
         if not lift.cancelled:
             rows.append(
                 [
@@ -519,23 +482,7 @@ def render_lift_detail(
             ),
         )
         rows.append([action])
-    else:
-        if not lift.cancelled:
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        text="💰 Update payments",
-                        callback_data=f"mon:liftmoney:{compact_date}:{compact_time}",
-                    )
-                ]
-            )
-    back_callback = (
-        f"mon:manage:{compact_date}"
-        if mode == "manage"
-        else f"mon:info:{compact_date}:{compact_time}"
-        if mode == "payments"
-        else f"mon:back:{compact_date}"
-    )
+    back_callback = f"mon:manage:{compact_date}" if mode == "manage" else f"mon:back:{compact_date}"
     rows.append([InlineKeyboardButton(text="⬅️ Back", callback_data=back_callback)])
     return BookingMonitorDraft(
         text="\n".join(lines),
@@ -610,16 +557,24 @@ def _attention_lines(day: BookingMonitorDay) -> tuple[str, ...]:
             )
         )
     if day.guests:
-        lines.extend(
-            (
-                "",
-                "👥 Guests: "
-                + _summarize(
-                    f"{guest.host_label} +{guest.count} ({guest.lift_time})" for guest in day.guests
-                ),
-            )
-        )
+        lines.extend(("", "👥 Guests: " + _summarize(_guest_parties(day.guests))))
     return tuple(lines)
+
+
+def _guest_parties(guests: tuple[MonitorGuest, ...]) -> tuple[str, ...]:
+    """One entry per host, listing their lifts.
+
+    The same rider bringing the same guest on three lifts is one arrangement, and
+    reading their name three times says nothing the lift list does not.
+    """
+    lifts_by_party: dict[tuple[int, str, int], list[str]] = {}
+    for guest in guests:
+        key = (guest.host_user_id, guest.host_label, guest.count)
+        lifts_by_party.setdefault(key, []).append(guest.lift_time)
+    return tuple(
+        f"{label} +{count} ({', '.join(lifts)})"
+        for (_, label, count), lifts in lifts_by_party.items()
+    )
 
 
 def _money_riders(riders: tuple[MonitorRider, ...]) -> str:
@@ -637,15 +592,43 @@ def _changed_at(moment: datetime | None) -> str:
     return f" · {moment:%H:%M}" if moment is not None else ""
 
 
-def _button_suffix(lift: BookingLiftStatus) -> str:
-    if lift.cancelled:
-        return " · cancelled"
+def _lift_lines(day: BookingMonitorDay) -> tuple[str, ...]:
+    """Lifts that are happening, one line each; the rest in a single line.
+
+    An admin does not need "needs 5 more" spelled out five times — they know what
+    five means, and reading it on every empty lift buried the three that are
+    actually running. Empty lifts still get named: nothing is hidden, it is just
+    not given a line of its own.
+    """
+    lines = [_running_lift_line(lift) for lift in day.lifts if lift.running]
+    cancelled = tuple(lift.time for lift in day.lifts if lift.cancelled)
+    quiet = tuple(lift.time for lift in day.lifts if not lift.running and not lift.cancelled)
+    if quiet:
+        lines.append(f"💤 Not filled: {', '.join(quiet)}")
+    if cancelled:
+        lines.append(f"❌ Cancelled: {', '.join(cancelled)}")
+    if not lines:
+        lines.append("Nothing booked yet.")
+    return tuple(lines)
+
+
+def _running_lift_line(lift: BookingLiftStatus) -> str:
+    """Seats and nothing else, unless something needs acting on.
+
+    "1 left" is arithmetic the admin can do from 9/10; "full" and "waitlist +2"
+    are the two states that change what they would do next.
+    """
+    parts = [f"🚐 {lift.time}", f"{lift.total_count}/{lift.capacity}"]
     over = lift.total_count - lift.capacity
     if over > 0:
-        return f" +{over} waiting"
-    if lift.total_count >= lift.capacity:
-        return " · full"
-    return ""
+        parts.append(f"waitlist +{over}")
+    elif lift.total_count >= lift.capacity:
+        parts.append("full")
+    if lift.manual_count:
+        # Not in any section above, and it is the one number an admin put there
+        # by hand.
+        parts.append(f"{lift.manual_count} manual")
+    return " · ".join(parts)
 
 
 def _lift_line(lift: BookingLiftStatus) -> str:

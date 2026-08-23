@@ -97,8 +97,9 @@ def test_core_callback_handlers_are_registered() -> None:
         "handle_extra_day_card",
         "handle_poll_schedule_card",
         "handle_payment_button",
-        "toggle_rider_payment",
     } <= names
+    # Payments are the riders' own business now: the monitor reads, never records.
+    assert "toggle_rider_payment" not in names
 
 
 def test_the_payments_topic_watcher_yields_to_narrower_message_handlers() -> None:

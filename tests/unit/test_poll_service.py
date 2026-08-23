@@ -318,7 +318,8 @@ async def test_admin_booking_monitor_controls_manual_counts_and_tracks_votes(
         text for message_id, text in client.edited_texts if message_id == monitor_message_id
     ]
     assert "8:30 — <b>1/10</b> · needs 4 more" in availability_updates[-1]
-    assert "8:30 — 1/10 · needs 4 more · 1 manual" in monitor_updates[-1]
+    # One manual seat does not make a lift: it is named, not given a line.
+    assert "💤 Not filled: 8:30" in monitor_updates[-1]
 
     await service.track_poll_answer(
         poll_id=poll.poll_id or "",
@@ -331,7 +332,7 @@ async def test_admin_booking_monitor_controls_manual_counts_and_tracks_votes(
     monitor_updates = [
         text for message_id, text in client.edited_texts if message_id == monitor_message_id
     ]
-    assert "8:30 — 2/10 · needs 3 more · 1 manual" in monitor_updates[-1]
+    assert "💤 Not filled: 8:30" in monitor_updates[-1]
 
     detail = await service.lift_detail(service_date=saturday, lift_time="8:30")
     assert detail is not None
@@ -440,7 +441,7 @@ async def test_booking_monitor_surfaces_money_guests_waitlist_and_late_exits(
     assert "@rider109 8:30 #1" in view.text
     assert "@late204 10:00" in view.text
     assert "🔴 Unpaid:" in view.text
-    assert "10:00 — 4/10 · running" in view.text
+    assert "🚐 10:00 · 4/10" in view.text
 
     detail = await service.lift_detail(service_date=saturday, lift_time="8:30")
     assert detail is not None

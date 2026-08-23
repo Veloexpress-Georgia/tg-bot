@@ -51,8 +51,9 @@ def test_booking_monitor_renders_day_tabs_counts_and_controls() -> None:
     # Paid of owed, never a bare total: on its own the money figure sat next to a
     # seat count built from different rules and read as a contradiction.
     assert "Running 2 of 2 · 16 seats · claimed 3/9 · 60 of 240 GEL" in draft.text
-    assert "8:30 — 7/10 · 3 left · 1 manual" in draft.text
-    assert "10:00 — 9/10 · 1 left" in draft.text
+    # Seats, not arithmetic: "3 left" is something the admin can read off 7/10.
+    assert "🚐 8:30 · 7/10 · 1 manual" in draft.text
+    assert "🚐 10:00 · 9/10" in draft.text
     assert draft.reply_markup is not None
     assert [button.text for button in draft.reply_markup.inline_keyboard[0]] == [
         "✅ Sat 18",
@@ -65,6 +66,8 @@ def test_booking_monitor_renders_day_tabs_counts_and_controls() -> None:
     assert buttons["mon:all:20260718"] == "👥 All riders"
     assert buttons["mon:manage:20260718"] == "⚙️ Manage bookings"
     assert not any(data.startswith(("mon:add:", "mon:sub:")) for data in buttons)
+    # One button per lift on top of "All riders" was the same list twice.
+    assert not any(data.startswith("mon:info:") for data in buttons)
 
 
 def test_booking_monitor_falls_back_to_first_day_and_shows_waitlist() -> None:
@@ -79,7 +82,7 @@ def test_booking_monitor_falls_back_to_first_day_and_shows_waitlist() -> None:
     )
 
     assert "Sun, 19 Jul" in draft.text
-    assert "10:00 — 12/10 · waitlist +2 · 2 manual" in draft.text
+    assert "🚐 10:00 · 12/10 · waitlist +2 · 2 manual" in draft.text
 
 
 def test_booking_monitor_shows_cancelled_lift_and_cancel_day_control() -> None:
@@ -96,11 +99,11 @@ def test_booking_monitor_shows_cancelled_lift_and_cancel_day_control() -> None:
         selected_service_date=date(2026, 7, 18),
     )
 
-    assert "8:30 — 6/10 · 4 left" in draft.text
-    assert "10:00 — ❌ cancelled" in draft.text
+    # 6 riders is above the minimum, so 8:30 is happening; 10:00 is named, not listed.
+    assert "🚐 8:30 · 6/10" in draft.text
+    assert "❌ Cancelled: 10:00" in draft.text
     assert draft.reply_markup is not None
     buttons = _button_map(draft.reply_markup)
-    assert buttons["mon:info:20260718:1000"] == "❌ 10:00 · cancelled"
     assert buttons["mon:manage:20260718"] == "⚙️ Manage bookings"
 
     management = render_booking_management(
@@ -234,7 +237,7 @@ def test_destructive_cancellations_require_a_second_explicit_callback() -> None:
     assert day_buttons["mon:manage:20260822"] == "Keep day"
 
 
-def test_render_lift_detail_separates_reading_payments_and_management() -> None:
+def test_render_lift_detail_reads_by_default_and_acts_only_under_manage() -> None:
     active = render_lift_detail(
         service_date=date(2026, 7, 18),
         lift=BookingLiftStatus(time="8:30", vote_count=2, manual_count=1),
@@ -250,24 +253,11 @@ def test_render_lift_detail_separates_reading_payments_and_management() -> None:
     assert "🔴 Anna" in active.text
     active_buttons = _button_map(active.reply_markup)
     assert active_buttons["mon:back:20260718"] == "⬅️ Back"
-    assert active_buttons["mon:liftmoney:20260718:0830"] == "💰 Update payments"
-    assert not any(data.startswith("mon:paid:") for data in active_buttons)
-
-    payments = render_lift_detail(
-        service_date=date(2026, 7, 18),
-        lift=BookingLiftStatus(time="8:30", vote_count=2, manual_count=1),
-        riders=(
-            LiftRider(telegram_user_id=10, label="@stas", paid=True),
-            LiftRider(telegram_user_id=11, label="Anna", paid=True, cash=True),
-            LiftRider(telegram_user_id=12, label="Giorgi"),
-        ),
-        mode="payments",
+    # Who paid is worth reading; recording it for them is not the bot's job.
+    assert not any(
+        data.startswith(("mon:paid:", "mon:cashreceived:", "mon:liftmoney:"))
+        for data in active_buttons
     )
-    payment_buttons = _button_map(payments.reply_markup)
-    assert payment_buttons["mon:paid:20260718:0830:10"] == "✓ @stas"
-    assert payment_buttons["mon:cashreceived:20260718:0830:11"] == "💵 Anna"
-    assert payment_buttons["mon:paid:20260718:0830:12"] == "Giorgi"
-    assert payment_buttons["mon:info:20260718:0830"] == "⬅️ Back"
 
     management = render_lift_detail(
         service_date=date(2026, 7, 18),
@@ -280,16 +270,6 @@ def test_render_lift_detail_separates_reading_payments_and_management() -> None:
     assert management_buttons["mon:sub:20260718:0830"] == "➖ Manual"
     assert management_buttons["mon:cancel:20260718:0830"] == "🚫 Cancel lift"
     assert management_buttons["mon:manage:20260718"] == "⬅️ Back"
-
-    cancelled = render_lift_detail(
-        service_date=date(2026, 7, 18),
-        lift=BookingLiftStatus(time="8:30", vote_count=2, manual_count=1, cancelled=True),
-        riders=(LiftRider(telegram_user_id=10, label="@stas"),),
-        mode="manage",
-    )
-    assert "❌ Cancelled." in cancelled.text
-    cancelled_buttons = _button_map(cancelled.reply_markup)
-    assert cancelled_buttons["mon:restore:20260718:0830"] == "♻️ Restore lift"
 
 
 def test_start_status_answers_instead_of_greeting() -> None:
@@ -353,7 +333,9 @@ def test_guests_are_counted_like_any_other_seat() -> None:
         selected_service_date=date(2026, 7, 18),
     )
 
-    assert "8:30 — 10/10 · full · 1 manual · 2 guests" in draft.text
+    # Guests are in the seat count and named in their own section; repeating them
+    # on the lift line was the same fact three times.
+    assert "🚐 8:30 · 10/10 · full · 1 manual" in draft.text
 
 
 def test_a_day_that_already_ran_cannot_be_cancelled() -> None:
@@ -414,3 +396,23 @@ def test_bumped_report_says_when_no_money_is_owed() -> None:
     )
 
     assert text.endswith("Nobody paid for those seats.")
+
+
+def test_a_host_with_the_same_guest_all_day_is_named_once() -> None:
+    draft = render_booking_monitor(
+        (
+            BookingMonitorDay(
+                service_date=date(2026, 8, 23),
+                lifts=(
+                    BookingLiftStatus(time="10:00", vote_count=8, manual_count=0, guest_count=1),
+                ),
+                guests=(
+                    MonitorGuest(host_user_id=8, host_label="@vitaly", lift_time="10:00", count=1),
+                    MonitorGuest(host_user_id=8, host_label="@vitaly", lift_time="11:45", count=1),
+                ),
+            ),
+        ),
+        selected_service_date=date(2026, 8, 23),
+    )
+
+    assert "👥 Guests: @vitaly +1 (10:00, 11:45)" in draft.text
