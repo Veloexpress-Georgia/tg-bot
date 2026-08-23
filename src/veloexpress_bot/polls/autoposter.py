@@ -15,7 +15,6 @@ from veloexpress_bot.db.models import PollAutoSchedule
 from veloexpress_bot.payments.service import PaymentsService
 from veloexpress_bot.polls.autoschedule import (
     SHORT_WEEKDAY_LABELS,
-    WEEKDAY_LABELS,
     AutoScheduleState,
     CardView,
     ScheduleCardDraft,
@@ -23,10 +22,11 @@ from veloexpress_bot.polls.autoschedule import (
     decide_tick,
     decode_card_time,
     next_announce_lead,
-    next_pending_creation,
     render_schedule_announcement,
     render_schedule_card,
+    render_schedule_summary,
     skip_target_week,
+    state_from_row,
 )
 from veloexpress_bot.polls.planner import resolve_week_plan
 from veloexpress_bot.polls.schedule import enabled_lift_count, lift_range_from_cancelled
@@ -165,19 +165,10 @@ class PollAutoScheduler:
 
     async def schedule_summary(self) -> str:
         """One line for the start card: when the next polls appear, or why they will not."""
-        state = await self.schedule_state()
-        if state is None or not state.enabled:
-            return "⏰ Auto-posting is off — post from 📋 Weekend."
-        now = datetime.now(UTC).astimezone(self._zone)
-        pending = next_pending_creation(state, now, zone=self._zone)
-        if pending is None:
-            return f"⏰ Polls open {WEEKDAY_LABELS[state.creation_weekday]} {state.creation_time}."
-        _, creation_at = pending
-        if now >= creation_at:
-            return "⏰ Polls are due now."
-        return (
-            f"⏰ Next polls open {SHORT_WEEKDAY_LABELS[creation_at.weekday()]} "
-            f"{creation_at.hour}:{creation_at.minute:02d}."
+        return render_schedule_summary(
+            await self.schedule_state(),
+            now=datetime.now(UTC).astimezone(self._zone),
+            zone=self._zone,
         )
 
     async def schedule_card(self, *, view: CardView = "main") -> ScheduleCardDraft:
@@ -395,7 +386,7 @@ class PollAutoScheduler:
                     updated_by_user_id=admin_user_id,
                 )
                 session.add(row)
-            state = _state_from_row(row)
+            state = state_from_row(row)
             updated = apply(state)
             row.enabled = updated.enabled
             row.creation_weekday = updated.creation_weekday
@@ -422,7 +413,7 @@ class PollAutoScheduler:
             if row is None:
                 return None
             return ScheduleRowData(
-                state=_state_from_row(row),
+                state=state_from_row(row),
                 announce_message_id=row.announce_message_id,
                 updated_by_user_id=row.updated_by_user_id,
             )
@@ -434,17 +425,3 @@ class PollAutoScheduler:
             .where(PollAutoSchedule.chat_id == self._settings.telegram_target_chat_id)
             .where(PollAutoSchedule.thread_id == self._settings.telegram_target_thread_id)
         )
-
-
-def _state_from_row(row: PollAutoSchedule) -> AutoScheduleState:
-    return AutoScheduleState(
-        enabled=row.enabled if row.enabled is not None else False,
-        creation_weekday=row.creation_weekday if row.creation_weekday is not None else 4,
-        creation_time=row.creation_time or "14:00",
-        announce_lead_minutes=(
-            row.announce_lead_minutes if row.announce_lead_minutes is not None else 120
-        ),
-        skip_week_start=row.skip_week_start,
-        last_announced_week_start=row.last_announced_week_start,
-        last_created_week_start=row.last_created_week_start,
-    )

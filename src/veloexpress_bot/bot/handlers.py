@@ -454,6 +454,27 @@ async def open_all_riders(
     await callback.answer()
 
 
+@router.callback_query(F.data.in_({"mon:history", "mon:menu"}))
+async def open_lift_history(
+    callback: CallbackQuery,
+    settings: Settings,
+    poll_service: PollPostingService,
+) -> None:
+    """History, and the way back out of it — neither belongs to a day."""
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+    if callback.data == "mon:history":
+        draft = await poll_service.lift_history_view()
+    else:
+        draft = await poll_service.booking_monitor_view(
+            admin_user_id=callback.from_user.id,
+            selected_service_date=None,
+        )
+    await _edit_card(message, draft.text, draft.reply_markup)
+    await callback.answer()
+
+
 # Nothing renders a `mon:info:` button any more, but monitor cards already sitting
 # in admin chats still carry them, and a tap that spins forever reads as a dead bot.
 @router.callback_query(F.data.startswith("mon:info:"))

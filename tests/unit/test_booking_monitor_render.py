@@ -3,6 +3,8 @@ from datetime import UTC, date, datetime
 from veloexpress_bot.bookings.render import (
     BookingLiftStatus,
     BookingMonitorDay,
+    LiftHistory,
+    LiftHistoryDay,
     LiftRider,
     MonitorGuest,
     MonitorLateExit,
@@ -17,6 +19,7 @@ from veloexpress_bot.bookings.render import (
     render_cancel_day_confirmation,
     render_cancel_lift_confirmation,
     render_lift_detail,
+    render_lift_history,
     render_start_status,
 )
 
@@ -309,11 +312,94 @@ def test_start_status_says_so_when_there_is_nothing_on() -> None:
     assert "⏰ Auto-posting is off." in text
 
 
-def test_booking_monitor_empty_state_and_callback_decoding() -> None:
-    draft = render_booking_monitor((), selected_service_date=None)
+def test_a_quiet_week_turns_the_monitor_into_the_way_in() -> None:
+    """Midweek there is nothing to monitor. Left as a bare "no polls" line the card
+    was a dead end with no buttons — /start was the only way out of it."""
+    draft = render_booking_monitor(
+        (),
+        selected_service_date=None,
+        schedule_line="⏰ Next polls open Thu 18:00.",
+        history=LiftHistory(
+            days=(
+                LiftHistoryDay(
+                    service_date=date(2026, 8, 23),
+                    ran_count=3,
+                    lift_count=5,
+                    seat_count=28,
+                    paid_gel=420,
+                ),
+                LiftHistoryDay(
+                    service_date=date(2026, 8, 22),
+                    ran_count=3,
+                    lift_count=5,
+                    seat_count=26,
+                    paid_gel=390,
+                ),
+                LiftHistoryDay(
+                    service_date=date(2026, 8, 16),
+                    ran_count=4,
+                    lift_count=5,
+                    seat_count=33,
+                    paid_gel=495,
+                ),
+            ),
+            total_days=3,
+            total_ran=10,
+            total_seats=87,
+            total_gel=1305,
+        ),
+    )
 
-    assert draft.text == "📊 Booking monitor\n\nNo active lift polls."
-    assert draft.reply_markup is None
+    assert "📊 Booking monitor · quiet week" in draft.text
+    assert "⏰ Next polls open Thu 18:00." in draft.text
+    # Both days of the weekend just gone, not the one before it.
+    assert "Last lifts · 22–23 Aug" in draft.text
+    assert "🚐 6 lifts · 54 seats · 810 GEL" in draft.text
+    buttons = _button_map(draft.reply_markup)
+    assert buttons["menu:weekend_plan"] == "📋 Weekend"
+    assert buttons["menu:extra_day"] == "➕ Extra lift day"
+    assert buttons["plan:schedule"] == "⏰ Schedule"
+    assert buttons["mon:history"] == "📜 Lift history"
+
+
+def test_a_first_quiet_week_offers_no_history_to_read() -> None:
+    draft = render_booking_monitor(
+        (),
+        selected_service_date=None,
+        schedule_line="⏰ Auto-posting is off — post from 📋 Weekend.",
+        history=LiftHistory(days=(), total_days=0, total_ran=0, total_seats=0, total_gel=0),
+    )
+
+    buttons = _button_map(draft.reply_markup)
+    assert "mon:history" not in buttons
+    assert "Last lifts" not in draft.text
+
+
+def test_lift_history_lists_the_days_and_the_season_under_them() -> None:
+    draft = render_lift_history(
+        LiftHistory(
+            days=(
+                LiftHistoryDay(
+                    service_date=date(2026, 8, 23),
+                    ran_count=3,
+                    lift_count=5,
+                    seat_count=28,
+                    paid_gel=420,
+                ),
+            ),
+            total_days=12,
+            total_ran=47,
+            total_seats=380,
+            total_gel=5700,
+        )
+    )
+
+    assert "Sun, 23 Aug · 3/5 lifts · 28 seats · 420 GEL" in draft.text
+    assert "All time · 12 days · 47 lifts · 380 seats · 5700 GEL" in draft.text
+    assert _button_map(draft.reply_markup)["mon:menu"] == "⬅️ Back"
+
+
+def test_callback_decoding_round_trips() -> None:
     assert decode_monitor_date("20260718") == date(2026, 7, 18)
     assert decode_monitor_time("0830") == "8:30"
     assert decode_monitor_time("1000") == "10:00"

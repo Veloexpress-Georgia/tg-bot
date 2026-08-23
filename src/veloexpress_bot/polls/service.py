@@ -19,6 +19,8 @@ from veloexpress_bot.bookings.render import (
     BookingLiftStatus,
     BookingMonitorDay,
     BookingMonitorDraft,
+    LiftHistory,
+    LiftHistoryDay,
     LiftRider,
     MonitorGuest,
     MonitorLateExit,
@@ -28,6 +30,7 @@ from veloexpress_bot.bookings.render import (
     render_booking_management,
     render_booking_monitor,
     render_cancel_day_confirmation,
+    render_lift_history,
 )
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.models import (
@@ -40,6 +43,7 @@ from veloexpress_bot.db.models import (
     ManualBookingCount,
     PaymentClaim,
     PaymentsBoard,
+    PollAutoSchedule,
     PollBatch,
     PollMessage,
     PollOptionSnapshot,
@@ -55,6 +59,7 @@ from veloexpress_bot.deeplinks import message_link, topic_link
 # `payments/__init__` pulls in `render`, never `service`. Kept next to its parser
 # rather than moved into `deeplinks`, which is about t.me/c group links.
 from veloexpress_bot.payments.myday import deep_link
+from veloexpress_bot.polls.autoschedule import render_schedule_summary, state_from_row
 from veloexpress_bot.polls.defaults import (
     DEFAULT_CANCELLED_LIFT_TIMES,
     DEFAULT_LIFTS,
@@ -412,7 +417,7 @@ class PollPostingService:
         available_dates = {day.service_date for day in days}
         if selected_date not in available_dates:
             selected_date = days[0].service_date if days else None
-        draft = render_booking_monitor(days, selected_service_date=selected_date)
+        draft = await self._monitor_draft(days, selected_service_date=selected_date)
 
         # Opening is an explicit action, so retire any prior monitor message and
         # post a fresh one at the bottom instead of editing one buried up the chat.
@@ -453,7 +458,7 @@ class PollPostingService:
         selected_date = selected_service_date
         if selected_date not in available_dates:
             selected_date = days[0].service_date if days else None
-        draft = render_booking_monitor(days, selected_service_date=selected_date)
+        draft = await self._monitor_draft(days, selected_service_date=selected_date)
 
         now = datetime.now(UTC)
         async with self._session_factory() as session:
@@ -487,6 +492,171 @@ class PollPostingService:
                 await session.commit()
         return draft
 
+    async def _monitor_draft(
+        self,
+        days: tuple[BookingMonitorDay, ...],
+        *,
+        selected_service_date: date | None,
+    ) -> BookingMonitorDraft:
+        """The monitor card. With no live days it becomes the midweek way in, so
+        it needs the schedule line and the last weekend's figures."""
+        if days:
+            return render_booking_monitor(days, selected_service_date=selected_service_date)
+        return render_booking_monitor(
+            (),
+            selected_service_date=None,
+            schedule_line=await self._schedule_line(),
+            history=await self.lift_history(),
+        )
+
+    async def _schedule_line(self) -> str:
+        async with self._session_factory() as session:
+            row = await session.scalar(
+                select(PollAutoSchedule)
+                .where(PollAutoSchedule.environment == self._settings.app_env)
+                .where(PollAutoSchedule.chat_id == self._settings.telegram_target_chat_id)
+                .where(PollAutoSchedule.thread_id == self._settings.telegram_target_thread_id)
+            )
+        return render_schedule_summary(
+            state_from_row(row),
+            now=datetime.now(UTC).astimezone(self._zone),
+            zone=self._zone,
+        )
+
+    async def lift_history(self, *, limit: int = 8) -> LiftHistory:
+        """What the finished lift days came to, newest first.
+
+        Built from the deadline roster rather than live votes: the roster is who
+        held a seat when booking closed, which is what actually rode. Days that
+        finished without a roster — the bot was down at 20:00, or they predate the
+        freeze — fall back to the votes that are still on file, which is the best
+        record there is for them.
+        """
+        if self._settings.telegram_target_chat_id is None:
+            return LiftHistory(days=(), total_days=0, total_ran=0, total_seats=0, total_gel=0)
+        today = datetime.now(UTC).astimezone(self._zone).date()
+        async with self._session_factory() as session:
+            batches = (
+                await session.scalars(
+                    select(PollBatch)
+                    .where(PollBatch.environment == self._settings.app_env)
+                    .where(PollBatch.chat_id == self._settings.telegram_target_chat_id)
+                    .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
+                    .where(PollBatch.status == "posted")
+                    .where(PollBatch.service_date < today)
+                    .order_by(PollBatch.service_date.desc(), PollBatch.id.desc())
+                )
+            ).all()
+            past_batches: dict[date, PollBatch] = {}
+            for batch in batches:
+                past_batches.setdefault(batch.service_date, batch)
+            if not past_batches:
+                return LiftHistory(days=(), total_days=0, total_ran=0, total_seats=0, total_gel=0)
+
+            service_dates = tuple(past_batches)
+            roster_rows = (
+                await session.scalars(
+                    select(DeadlineRoster)
+                    .where(DeadlineRoster.environment == self._settings.app_env)
+                    .where(DeadlineRoster.chat_id == self._settings.telegram_target_chat_id)
+                    .where(DeadlineRoster.thread_id == self._settings.telegram_target_thread_id)
+                    .where(DeadlineRoster.service_date.in_(service_dates))
+                )
+            ).all()
+            snapshots = (
+                await session.scalars(
+                    select(PollOptionSnapshot)
+                    .where(
+                        PollOptionSnapshot.batch_id.in_(
+                            tuple(batch.id for batch in past_batches.values())
+                        )
+                    )
+                    .where(PollOptionSnapshot.lift_time.is_not(None))
+                )
+            ).all()
+            votes = (
+                await session.scalars(
+                    select(PollVote).where(
+                        PollVote.poll_id.in_(tuple({snapshot.poll_id for snapshot in snapshots}))
+                    )
+                )
+            ).all()
+            cancelled = (
+                await session.scalars(
+                    select(CancelledLift)
+                    .where(CancelledLift.environment == self._settings.app_env)
+                    .where(CancelledLift.chat_id == self._settings.telegram_target_chat_id)
+                    .where(CancelledLift.thread_id == self._settings.telegram_target_thread_id)
+                    .where(CancelledLift.service_date.in_(service_dates))
+                )
+            ).all()
+            claims = (
+                await session.execute(
+                    select(PaymentClaim.service_date, PaymentClaim.seats)
+                    .where(PaymentClaim.environment == self._settings.app_env)
+                    .where(PaymentClaim.chat_id == self._settings.telegram_target_chat_id)
+                    .where(PaymentClaim.service_date.in_(service_dates))
+                )
+            ).all()
+
+        seats_by_date_time: dict[tuple[date, str], int] = {}
+        for row in roster_rows:
+            key = (row.service_date, row.lift_time)
+            seats_by_date_time[key] = seats_by_date_time.get(key, 0) + row.seats
+        votes_by_poll_option: dict[tuple[str, int], int] = {}
+        for vote in votes:
+            for option_index in decode_option_ids(vote.option_ids):
+                key = (vote.poll_id, option_index)
+                votes_by_poll_option[key] = votes_by_poll_option.get(key, 0) + 1
+        cancelled_date_time = {(row.service_date, row.lift_time) for row in cancelled}
+        paid_seats_by_date: dict[date, int] = {}
+        for claim_date, claim_seats in claims:
+            paid_seats_by_date[claim_date] = paid_seats_by_date.get(claim_date, 0) + claim_seats
+
+        history_days: list[LiftHistoryDay] = []
+        for service_date, batch in past_batches.items():
+            day_snapshots = [
+                snapshot
+                for snapshot in snapshots
+                if snapshot.batch_id == batch.id and snapshot.lift_time is not None
+            ]
+            ran = 0
+            seats = 0
+            lifts = 0
+            for snapshot in day_snapshots:
+                lift_time = snapshot.lift_time
+                if lift_time is None or (service_date, lift_time) in cancelled_date_time:
+                    continue
+                lifts += 1
+                lift_seats = seats_by_date_time.get(
+                    (service_date, lift_time),
+                    votes_by_poll_option.get((snapshot.poll_id, snapshot.option_index), 0),
+                )
+                if lift_seats >= MINIMUM_RIDERS:
+                    ran += 1
+                    seats += lift_seats
+            history_days.append(
+                LiftHistoryDay(
+                    service_date=service_date,
+                    ran_count=ran,
+                    lift_count=lifts,
+                    seat_count=seats,
+                    paid_gel=paid_seats_by_date.get(service_date, 0)
+                    * self._settings.payment_price_gel,
+                )
+            )
+
+        return LiftHistory(
+            days=tuple(history_days[:limit]),
+            total_days=sum(day.ran_count > 0 for day in history_days),
+            total_ran=sum(day.ran_count for day in history_days),
+            total_seats=sum(day.seat_count for day in history_days),
+            total_gel=sum(day.paid_gel for day in history_days),
+        )
+
+    async def lift_history_view(self) -> BookingMonitorDraft:
+        return render_lift_history(await self.lift_history())
+
     async def all_riders_view(
         self,
         *,
@@ -498,7 +668,7 @@ class PollPostingService:
             days[0] if days else None,
         )
         if selected_day is None:
-            return render_booking_monitor((), selected_service_date=None)
+            return await self._monitor_draft((), selected_service_date=None)
         rosters: list[tuple[BookingLiftStatus, tuple[LiftRider, ...]]] = []
         for lift in selected_day.lifts:
             detail = await self.lift_detail(
@@ -2115,7 +2285,7 @@ class PollPostingService:
             return
         days = await self._booking_monitor_days()
         for row in rows:
-            draft = render_booking_monitor(
+            draft = await self._monitor_draft(
                 days,
                 selected_service_date=days[0].service_date if days else None,
             )
@@ -2283,7 +2453,7 @@ class PollPostingService:
         if not monitors:
             return 0
 
-        draft = render_booking_monitor(days, selected_service_date=today)
+        draft = await self._monitor_draft(days, selected_service_date=today)
         reposted = 0
         for monitor in monitors:
             try:
@@ -2350,7 +2520,7 @@ class PollPostingService:
                 # stored tab is left alone while it still exists, so the card does
                 # not jump under them while they are reading another day.
                 selected_date = _preferred_monitor_date(days, today=today)
-            draft = render_booking_monitor(days, selected_service_date=selected_date)
+            draft = await self._monitor_draft(days, selected_service_date=selected_date)
             try:
                 updated = await self._telegram_client.edit_text(
                     chat_id=monitor.private_chat_id,

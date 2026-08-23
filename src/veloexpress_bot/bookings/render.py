@@ -132,6 +132,34 @@ class BookingMonitorDay:
 
 
 @dataclass(frozen=True)
+class LiftHistoryDay:
+    """A day that already happened, as the deadline roster left it."""
+
+    service_date: date
+    ran_count: int
+    lift_count: int
+    seat_count: int
+    paid_gel: int
+
+
+@dataclass(frozen=True)
+class LiftHistory:
+    days: tuple[LiftHistoryDay, ...]
+    total_days: int
+    total_ran: int
+    total_seats: int
+    total_gel: int
+
+    @property
+    def last_weekend(self) -> tuple[LiftHistoryDay, ...]:
+        """The most recent lift day and anything within a day of it."""
+        if not self.days:
+            return ()
+        newest = self.days[0].service_date
+        return tuple(day for day in self.days if (newest - day.service_date).days <= 1)
+
+
+@dataclass(frozen=True)
 class BookingMonitorDraft:
     text: str
     reply_markup: InlineKeyboardMarkup | None
@@ -141,12 +169,11 @@ def render_booking_monitor(
     days: tuple[BookingMonitorDay, ...],
     *,
     selected_service_date: date | None,
+    schedule_line: str = "",
+    history: LiftHistory | None = None,
 ) -> BookingMonitorDraft:
     if not days:
-        return BookingMonitorDraft(
-            text="📊 Booking monitor\n\nNo active lift polls.",
-            reply_markup=None,
-        )
+        return _render_quiet_week(schedule_line=schedule_line, history=history)
 
     selected_day = next(
         (day for day in days if day.service_date == selected_service_date),
@@ -203,6 +230,83 @@ def render_booking_monitor(
         text="\n".join(lines),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
+
+
+def _render_quiet_week(
+    *,
+    schedule_line: str,
+    history: LiftHistory | None,
+) -> BookingMonitorDraft:
+    """Midweek there is nothing to monitor, so the card becomes the way in.
+
+    Left as a bare "No active lift polls." it was a dead end with no buttons at
+    all — an admin opening it on a Monday had to run /start again to get anywhere.
+    """
+    lines = ["📊 Booking monitor · quiet week", "", "No lift polls are open."]
+    if schedule_line:
+        lines.append(schedule_line)
+    if history is not None and history.last_weekend:
+        recent = history.last_weekend
+        lines.extend(("", f"Last lifts · {_day_span_label(recent)}", _weekend_total_line(recent)))
+    rows = [
+        [
+            InlineKeyboardButton(text="📋 Weekend", callback_data="menu:weekend_plan"),
+            InlineKeyboardButton(text="➕ Extra lift day", callback_data="menu:extra_day"),
+        ],
+        [InlineKeyboardButton(text="⏰ Schedule", callback_data="plan:schedule")],
+    ]
+    if history is not None and history.days:
+        rows.append([InlineKeyboardButton(text="📜 Lift history", callback_data="mon:history")])
+    return BookingMonitorDraft(
+        text="\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+def render_lift_history(history: LiftHistory) -> BookingMonitorDraft:
+    """Every lift day the bot has seen, newest first, with the season under it."""
+    lines = ["📜 Lift history", ""]
+    if not history.days:
+        lines.append("No lift day has finished yet.")
+    else:
+        lines.extend(_history_day_line(day) for day in history.days)
+        lines.extend(
+            (
+                "",
+                f"All time · {history.total_days} days · {history.total_ran} lifts · "
+                f"{history.total_seats} seats · {history.total_gel} GEL",
+            )
+        )
+    return BookingMonitorDraft(
+        text="\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Back", callback_data="mon:menu")],
+            ]
+        ),
+    )
+
+
+def _history_day_line(day: LiftHistoryDay) -> str:
+    return (
+        f"{_long_day_label(day.service_date)} · {day.ran_count}/{day.lift_count} lifts · "
+        f"{day.seat_count} seats · {day.paid_gel} GEL"
+    )
+
+
+def _day_span_label(days: tuple[LiftHistoryDay, ...]) -> str:
+    oldest = days[-1].service_date
+    newest = days[0].service_date
+    if oldest == newest:
+        return _long_day_label(newest)
+    return f"{oldest.day}–{newest.day} {EN_SHORT_MONTHS[newest.month]}"
+
+
+def _weekend_total_line(days: tuple[LiftHistoryDay, ...]) -> str:
+    ran = sum(day.ran_count for day in days)
+    seats = sum(day.seat_count for day in days)
+    paid = sum(day.paid_gel for day in days)
+    return f"🚐 {ran} lifts · {seats} seats · {paid} GEL"
 
 
 def render_booking_management(

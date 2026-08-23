@@ -87,6 +87,7 @@ def test_core_callback_handlers_are_registered() -> None:
         "select_booking_monitor_day",
         "open_booking_management",
         "open_all_riders",
+        "open_lift_history",
         "adjust_manual_booking",
         "open_lift_detail",
         "open_lift_tool",

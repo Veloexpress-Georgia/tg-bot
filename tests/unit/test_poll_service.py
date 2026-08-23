@@ -536,7 +536,8 @@ async def test_cancel_day_retires_batch_and_clears_monitor(db: SharedDatabase) -
 
     # Day leaves the monitor; nothing active to manage.
     view = await service.booking_monitor_view(admin_user_id=1, selected_service_date=saturday)
-    assert "No active lift polls." in view.text
+    assert "📊 Booking monitor · quiet week" in view.text
+    assert "No lift polls are open." in view.text
 
     # A fresh poll for the same date is allowed and starts clean.
     await service.create_poll(
@@ -2266,3 +2267,118 @@ async def test_the_monitor_is_not_reposted_before_the_morning_or_off_lift_days(
         await service.repost_daily_monitors(now=datetime.combine(sunday, time(9, 0), tzinfo=zone))
         == 0
     )
+
+
+async def test_lift_history_counts_finished_days_from_the_frozen_roster(
+    db: SharedDatabase,
+) -> None:
+    """The roster is who held a seat when booking closed, which is what rode. Live
+    votes only ever describe now — by Monday they have late drop-outs in them."""
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    yesterday = datetime.now(UTC).date() - timedelta(days=1)
+    result = await service.create_poll(
+        PollSetup(service_date=yesterday, created_by_user_id=1),
+        pin_after_send=False,
+    )
+    poll_id = result.poll_id or ""
+    for index in range(6):
+        await service.track_poll_answer(
+            poll_id=poll_id,
+            telegram_user_id=100 + index,
+            username=f"rider{index}",
+            full_name=f"Rider {index}",
+            option_ids=(0,),
+        )
+    async with db.session() as session:
+        for index in range(5):
+            session.add(
+                DeadlineRoster(
+                    environment="test",
+                    chat_id=-100123,
+                    thread_id=7,
+                    service_date=yesterday,
+                    lift_time="8:30",
+                    telegram_user_id=200 + index,
+                    label=f"@frozen{index}",
+                    seats=1,
+                )
+            )
+        session.add(
+            PaymentClaim(
+                environment="test",
+                chat_id=-100123,
+                thread_id=7,
+                service_date=yesterday,
+                telegram_user_id=200,
+                full_name="Frozen 0",
+                seats=2,
+            )
+        )
+        await session.commit()
+
+    history = await service.lift_history()
+
+    assert [day.service_date for day in history.days] == [yesterday]
+    day = history.days[0]
+    # Five frozen seats on 8:30, not the six who happen to still be voting.
+    assert (day.ran_count, day.seat_count) == (1, 5)
+    assert day.lift_count == 5
+    assert day.paid_gel == 30
+    assert (history.total_days, history.total_ran, history.total_gel) == (1, 1, 30)
+
+
+async def test_lift_history_falls_back_to_votes_when_no_roster_was_frozen(
+    db: SharedDatabase,
+) -> None:
+    """Days from before the freeze existed, or where the bot was down at 20:00,
+    still have their votes on file — the best record there is for them."""
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    yesterday = datetime.now(UTC).date() - timedelta(days=1)
+    result = await service.create_poll(
+        PollSetup(service_date=yesterday, created_by_user_id=1),
+        pin_after_send=False,
+    )
+    poll_id = result.poll_id or ""
+    for index in range(7):
+        await service.track_poll_answer(
+            poll_id=poll_id,
+            telegram_user_id=100 + index,
+            username=f"rider{index}",
+            full_name=f"Rider {index}",
+            option_ids=(0,),
+        )
+
+    history = await service.lift_history()
+
+    assert history.days[0].seat_count == 7
+    assert history.total_ran == 1
+
+
+async def test_lift_history_ignores_days_that_have_not_happened_yet(
+    db: SharedDatabase,
+) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1),
+        pin_after_send=False,
+    )
+
+    history = await service.lift_history()
+
+    assert history.days == ()

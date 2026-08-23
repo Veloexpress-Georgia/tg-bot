@@ -6,6 +6,8 @@ from typing import Literal
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from veloexpress_bot.db.models import PollAutoSchedule
+
 SATURDAY_WEEKDAY = 5
 ANNOUNCE_LEAD_CHOICES = (0, 60, 120, 180)
 CREATION_TIME_CHOICES = tuple(f"{hour:02d}:00" for hour in range(9, 21))
@@ -162,6 +164,44 @@ def next_announce_lead(current_minutes: int) -> int:
     except ValueError:
         return ANNOUNCE_LEAD_CHOICES[0]
     return ANNOUNCE_LEAD_CHOICES[(index + 1) % len(ANNOUNCE_LEAD_CHOICES)]
+
+
+def state_from_row(row: PollAutoSchedule | None) -> AutoScheduleState:
+    """The stored schedule, with the defaults a half-written row leaves out."""
+    if row is None:
+        return AutoScheduleState()
+    return AutoScheduleState(
+        enabled=row.enabled if row.enabled is not None else False,
+        creation_weekday=row.creation_weekday if row.creation_weekday is not None else 4,
+        creation_time=row.creation_time or "14:00",
+        announce_lead_minutes=(
+            row.announce_lead_minutes if row.announce_lead_minutes is not None else 120
+        ),
+        skip_week_start=row.skip_week_start,
+        last_announced_week_start=row.last_announced_week_start,
+        last_created_week_start=row.last_created_week_start,
+    )
+
+
+def render_schedule_summary(
+    state: AutoScheduleState | None,
+    *,
+    now: datetime,
+    zone: tzinfo,
+) -> str:
+    """One line: when the next polls appear, or why they will not."""
+    if state is None or not state.enabled:
+        return "⏰ Auto-posting is off — post from 📋 Weekend."
+    pending = next_pending_creation(state, now, zone=zone)
+    if pending is None:
+        return f"⏰ Polls open {WEEKDAY_LABELS[state.creation_weekday]} {state.creation_time}."
+    _, creation_at = pending
+    if now >= creation_at:
+        return "⏰ Polls are due now."
+    return (
+        f"⏰ Next polls open {SHORT_WEEKDAY_LABELS[creation_at.weekday()]} "
+        f"{creation_at.hour}:{creation_at.minute:02d}."
+    )
 
 
 def render_schedule_announcement(
