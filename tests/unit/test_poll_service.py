@@ -1,7 +1,7 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -2205,3 +2205,64 @@ async def test_poll_service_cleans_setup_messages_via_telegram_client(db: Shared
     assert result.deleted_count == 2
     assert result.failed_count == 1
     assert client.deleted == [1, 3]
+
+
+async def test_the_monitor_is_reposted_on_the_morning_of_a_lift_day(
+    db: SharedDatabase,
+) -> None:
+    """By Sunday breakfast the card sits above days of other messages — which is
+    when the admin needs it in hand."""
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1),
+        pin_after_send=False,
+    )
+    first_id = await service.open_booking_monitor(admin_user_id=1, private_chat_id=555)
+    morning = datetime.combine(saturday, time(8, 30), tzinfo=ZoneInfo("Asia/Tbilisi"))
+
+    assert await service.repost_daily_monitors(now=morning) == 1
+
+    async with db.session() as session:
+        monitor = await session.scalar(select(AdminBookingMonitor))
+    assert monitor is not None
+    assert monitor.telegram_message_id != first_id
+    assert monitor.selected_service_date == saturday
+    assert first_id in client.deleted
+
+    # Once a day: the tick runs every 30 seconds and must not repost on each one.
+    assert await service.repost_daily_monitors(now=morning + timedelta(hours=1)) == 0
+
+
+async def test_the_monitor_is_not_reposted_before_the_morning_or_off_lift_days(
+    db: SharedDatabase,
+) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, sunday = _upcoming_weekend()
+    await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1),
+        pin_after_send=False,
+    )
+    await service.open_booking_monitor(admin_user_id=1, private_chat_id=555)
+    zone = ZoneInfo("Asia/Tbilisi")
+
+    # Small hours of the lift day itself: too early to be useful, easy to sleep through.
+    assert (
+        await service.repost_daily_monitors(now=datetime.combine(saturday, time(3, 0), tzinfo=zone))
+        == 0
+    )
+    # A day with no lifts of its own.
+    assert (
+        await service.repost_daily_monitors(now=datetime.combine(sunday, time(9, 0), tzinfo=zone))
+        == 0
+    )

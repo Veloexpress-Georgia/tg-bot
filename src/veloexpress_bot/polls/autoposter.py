@@ -119,6 +119,13 @@ class PollAutoScheduler:
             except Exception:
                 logger.exception("payments_board_sync_failed")
 
+        # On a lift-day morning the admin's monitor is put back at the bottom of
+        # their chat, where they can actually reach it.
+        try:
+            await self._poll_service.repost_daily_monitors(now=now_local)
+        except Exception:
+            logger.exception("booking_monitor_repost_tick_failed")
+
         # A rules or price change has to reach notices already posted; recreating
         # the polls would throw away live votes.
         try:

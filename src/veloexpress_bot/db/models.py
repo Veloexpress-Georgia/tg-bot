@@ -447,6 +447,10 @@ class AdminBookingMonitor(Base):
     private_chat_id: Mapped[int] = mapped_column(BigInteger)
     telegram_message_id: Mapped[int] = mapped_column(BigInteger)
     selected_service_date: Mapped[date | None] = mapped_column(Date)
+    # The lift day this card was last reposted for. The monitor is edited in place
+    # all week, which on the morning of a lift day leaves it buried above whatever
+    # the admin has been reading since.
+    reposted_for: Mapped[date | None] = mapped_column(Date)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

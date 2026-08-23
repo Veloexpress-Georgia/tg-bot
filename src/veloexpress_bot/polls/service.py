@@ -4,14 +4,14 @@ from asyncio import Lock
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from time import perf_counter
 from typing import Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from aiogram.types import InlineKeyboardMarkup
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -225,6 +225,11 @@ class RecreatePollsResult:
     old_batch_ids: tuple[int, ...]
     replacement_by_date: dict[date, int]
     replaced_dates: tuple[date, ...]
+
+
+# Early enough to be in hand before the first van at 8:30, late enough not to be
+# a notification in the middle of the night.
+MONITOR_REPOST_AT = time(8, 0)
 
 
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
@@ -2209,6 +2214,7 @@ class PollPostingService:
         private_chat_id: int,
         telegram_message_id: int,
         selected_service_date: date | None,
+        reposted_for: date | None = None,
     ) -> None:
         now = datetime.now(UTC)
         async with self._session_factory() as session:
@@ -2226,6 +2232,7 @@ class PollPostingService:
                         private_chat_id=private_chat_id,
                         telegram_message_id=telegram_message_id,
                         selected_service_date=selected_service_date,
+                        reposted_for=reposted_for,
                         updated_at=now,
                     )
                 )
@@ -2233,8 +2240,88 @@ class PollPostingService:
                 monitor.private_chat_id = private_chat_id
                 monitor.telegram_message_id = telegram_message_id
                 monitor.selected_service_date = selected_service_date
+                if reposted_for is not None:
+                    monitor.reposted_for = reposted_for
                 monitor.updated_at = now
             await session.commit()
+
+    async def repost_daily_monitors(self, *, now: datetime | None = None) -> int:
+        """On a lift-day morning, put each admin's monitor back at the bottom.
+
+        The card is edited in place all week, so by Sunday breakfast it sits above
+        days of other messages — exactly when an admin needs it most. Once per lift
+        day, and only from `MONITOR_REPOST_AT`: the point is to have it in hand
+        before the first van, not to ping anybody overnight.
+        """
+        if self._settings.telegram_target_chat_id is None:
+            return 0
+        moment = (now or datetime.now(UTC)).astimezone(self._zone)
+        if moment.time() < MONITOR_REPOST_AT:
+            return 0
+        days = await self._booking_monitor_days()
+        today = moment.date()
+        if today not in {day.service_date for day in days}:
+            return 0
+
+        async with self._session_factory() as session:
+            monitors = (
+                await session.scalars(
+                    select(AdminBookingMonitor)
+                    .where(AdminBookingMonitor.environment == self._settings.app_env)
+                    .where(AdminBookingMonitor.chat_id == self._settings.telegram_target_chat_id)
+                    .where(
+                        AdminBookingMonitor.thread_id == self._settings.telegram_target_thread_id
+                    )
+                    .where(
+                        or_(
+                            AdminBookingMonitor.reposted_for.is_(None),
+                            AdminBookingMonitor.reposted_for != today,
+                        )
+                    )
+                )
+            ).all()
+        if not monitors:
+            return 0
+
+        draft = render_booking_monitor(days, selected_service_date=today)
+        reposted = 0
+        for monitor in monitors:
+            try:
+                sent = await self._telegram_client.send_text(
+                    chat_id=monitor.private_chat_id,
+                    message_thread_id=None,
+                    text=draft.text,
+                    reply_markup=draft.reply_markup,
+                )
+            except Exception:
+                logger.exception(
+                    "booking_monitor_repost_failed admin_user_id=%s",
+                    monitor.admin_user_id,
+                    extra={"admin_user_id": monitor.admin_user_id},
+                )
+                continue
+            # Posted before the old card goes, so the admin is never left without
+            # one; the stale card would otherwise keep live buttons over old counts.
+            await self._telegram_client.delete_message(
+                chat_id=monitor.private_chat_id,
+                message_id=monitor.telegram_message_id,
+            )
+            await self._store_booking_monitor(
+                admin_user_id=monitor.admin_user_id,
+                private_chat_id=monitor.private_chat_id,
+                telegram_message_id=sent.message_id,
+                selected_service_date=today,
+                reposted_for=today,
+            )
+            reposted += 1
+        if reposted:
+            logger.info(
+                "booking_monitor_reposted service_date=%s monitors=%s",
+                today.isoformat(),
+                reposted,
+                extra={"service_date": today.isoformat(), "monitors": reposted},
+            )
+        return reposted
 
     async def _refresh_booking_monitors(self) -> None:
         if self._settings.telegram_target_chat_id is None:
@@ -2255,10 +2342,14 @@ class PollPostingService:
 
         days = await self._booking_monitor_days()
         available_dates = {day.service_date for day in days}
+        today = datetime.now(UTC).astimezone(self._zone).date()
         for monitor in monitors:
             selected_date = monitor.selected_service_date
             if selected_date not in available_dates:
-                selected_date = days[0].service_date if days else None
+                # Today first: on a lift day that is the tab the admin wants. The
+                # stored tab is left alone while it still exists, so the card does
+                # not jump under them while they are reading another day.
+                selected_date = _preferred_monitor_date(days, today=today)
             draft = render_booking_monitor(days, selected_service_date=selected_date)
             try:
                 updated = await self._telegram_client.edit_text(
@@ -2999,6 +3090,18 @@ def _initial_lift_availability(
         for lift in DEFAULT_LIFTS
         if lift.time not in cancelled
     )
+
+
+def _preferred_monitor_date(
+    days: tuple[BookingMonitorDay, ...],
+    *,
+    today: date,
+) -> date | None:
+    if not days:
+        return None
+    if any(day.service_date == today for day in days):
+        return today
+    return days[0].service_date
 
 
 def _service_week_start(service_date: date) -> date:
