@@ -454,6 +454,8 @@ async def open_all_riders(
     await callback.answer()
 
 
+# Nothing renders a `mon:info:` button any more, but monitor cards already sitting
+# in admin chats still carry them, and a tap that spins forever reads as a dead bot.
 @router.callback_query(F.data.startswith("mon:info:"))
 async def open_lift_detail(
     callback: CallbackQuery,
