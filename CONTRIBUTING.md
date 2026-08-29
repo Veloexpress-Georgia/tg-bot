@@ -1,6 +1,6 @@
 # Contributing
 
-This project is early and intentionally small. Keep first-MVP changes focused on Telegram poll automation.
+Keep changes focused on the existing Telegram workflow: planning, bookings, payments, and operational recovery.
 
 ## Setup
 
@@ -22,9 +22,6 @@ Document any Telegram smoke-test result in the PR. If you could not run a live T
 
 Do not add these features without a new approved plan:
 
-- payment tracking
 - rider balances or fines
-- overbooking/waitlists
-- scheduling
 - miniapp or website
 - template editor

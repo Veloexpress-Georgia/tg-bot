@@ -35,6 +35,8 @@ class BookingLiftStatus:
     capacity: int = 10
     cancelled: bool = False
     running_locked: bool = False
+    covered_count: int = 0
+    deadline_closed: bool = False
 
     @property
     def total_count(self) -> int:
@@ -43,6 +45,10 @@ class BookingLiftStatus:
     @property
     def running(self) -> bool:
         return not self.cancelled and (self.total_count >= MINIMUM_RIDERS or self.running_locked)
+
+    @property
+    def funded(self) -> bool:
+        return not self.cancelled and self.covered_count >= MINIMUM_RIDERS
 
 
 @dataclass(frozen=True)
@@ -614,7 +620,12 @@ def _summary_line(day: BookingMonitorDay) -> str:
     as a contradiction that needed the source to explain.
     """
     active = sum(not lift.cancelled for lift in day.lifts)
-    parts = [f"Running {day.running_count} of {active}", f"{day.confirmed_seat_count} seats"]
+    funded = sum(lift.funded for lift in day.lifts)
+    parts = [
+        f"At minimum {day.running_count} of {active}",
+        f"funded {funded}",
+        f"{day.confirmed_seat_count} seats",
+    ]
     if day.booked_rider_count:
         parts.append(f"claimed {day.paid_rider_count}/{day.booked_rider_count}")
     if day.expected_gel or day.owed_gel:
@@ -723,6 +734,12 @@ def _running_lift_line(lift: BookingLiftStatus) -> str:
     are the two states that change what they would do next.
     """
     parts = [f"🚐 {lift.time}", f"{lift.total_count}/{lift.capacity}"]
+    if lift.funded:
+        parts.append("funded")
+    elif lift.deadline_closed:
+        parts.append(f"{lift.covered_count}/{MINIMUM_RIDERS} paid · decision needed")
+    else:
+        parts.append(f"payment open · {lift.covered_count}/{MINIMUM_RIDERS} paid")
     over = lift.total_count - lift.capacity
     if over > 0:
         parts.append(f"waitlist +{over}")
@@ -756,10 +773,14 @@ def _lift_state(lift: BookingLiftStatus) -> str:
     if lift.total_count >= lift.capacity:
         return "full"
     if lift.running_locked:
-        return f"running · {lift.capacity - lift.total_count} left"
+        if lift.funded:
+            return f"funded · {lift.capacity - lift.total_count} left"
+        return f"decision needed · {lift.covered_count}/{MINIMUM_RIDERS} paid"
     if lift.total_count < MINIMUM_RIDERS:
         return f"needs {MINIMUM_RIDERS - lift.total_count} more"
-    return f"{lift.capacity - lift.total_count} left"
+    if lift.funded:
+        return f"funded · {lift.capacity - lift.total_count} left"
+    return f"payment open · {lift.covered_count}/{MINIMUM_RIDERS} paid"
 
 
 EN_SHORT_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")

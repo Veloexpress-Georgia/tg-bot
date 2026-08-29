@@ -33,6 +33,7 @@ class RosterSeat:
     # who brought somebody holds seats=2, guests=1.
     seats: int
     guests: int = 0
+    covered_seats: int = 0
 
 
 @dataclass(frozen=True)

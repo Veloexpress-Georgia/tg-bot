@@ -45,7 +45,7 @@ def test_board_lists_running_lifts_price_and_the_taps() -> None:
     )
 
     assert "💸 Payments · Sat, 18 Jul" in draft.text
-    assert "Running: 8:30, 10:00" in draft.text
+    assert "Payment open: 8:30, 10:00" in draft.text
     assert "15 GEL per seat · pay by 20:00" in draft.text
     assert "💸 transfer · 💵 cash · 👤 Guests opens a form in the bot" in draft.text
     assert "Waiting on:" in draft.text

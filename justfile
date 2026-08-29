@@ -22,6 +22,12 @@ format:
     uv run ruff format .
     uv run ruff check --fix .
 
+format-check:
+    uv run ruff format --check .
+
+lint:
+    uv run ruff check .
+
 check:
     uv run ruff format --check .
     uv run ruff check .

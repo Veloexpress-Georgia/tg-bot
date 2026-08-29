@@ -1,6 +1,6 @@
 # Agent Guide
 
-Use `.omx/plans/ralplan-veloexpress-bot-mvp.md` as the current source of truth.
+Use `README.md`, `CONTEXT.md`, and accepted decisions under `docs/adr/` as the current source of truth. The original `.omx` MVP plan is historical context only.
 
 ## Commands
 
@@ -14,16 +14,14 @@ Use `.omx/plans/ralplan-veloexpress-bot-mvp.md` as the current source of truth.
 
 ## Scope
 
-First MVP is admin-only poll automation:
+The current product includes:
 
-- aiogram command and setup flow
-- predefined RU/EN poll template
-- cancel default lifts
-- toggle first lift location
-- post one native poll per service day
-- persist poll batch/message IDs
+- weekend and extra-day poll planning
+- booking, capacity and waitlist monitoring
+- service-day payment tracking and deadline rosters
+- automatic scheduling, notices and Telegram-message recovery
 
-Do not implement payment tracking, balances, overbooking, scheduling, website, miniapp, or template editing unless a newer plan supersedes this file.
+Balances across service days, fines, a website, miniapp, and template editing remain out of scope unless explicitly approved.
 
 ## Code Boundaries
 

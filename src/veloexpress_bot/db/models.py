@@ -339,6 +339,7 @@ class DeadlineRoster(Base):
     # Total seats this row held, own seat plus guests; `guests` of that total.
     seats: Mapped[int] = mapped_column(Integer, default=1)
     guests: Mapped[int] = mapped_column(Integer, default=0)
+    covered_seats: Mapped[int] = mapped_column(Integer, default=0)
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
@@ -364,6 +365,10 @@ class PaymentClaim(Base):
     # What the rider has settled for. Not what they owe: re-voting before the
     # deadline changes the bill, and conflating the two makes the bot lie about money.
     seats: Mapped[int] = mapped_column(Integer, default=1)
+    # Immutable money is recorded in PaymentEntry; this is the current received
+    # total kept on the read projection for cheap board rendering.
+    amount_gel: Mapped[int] = mapped_column(Integer, default=0)
+    cash_amount_gel: Mapped[int] = mapped_column(Integer, default=0)
     # "cash" | "transfer" | NULL when the bot never learned how the money arrived.
     # Misho reconciles against his bank statement, so cash is the case worth naming.
     method: Mapped[str | None] = mapped_column(String(16))
@@ -376,6 +381,64 @@ class PaymentClaim(Base):
     verified_by_user_id: Mapped[int | None] = mapped_column(BigInteger)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class ServiceDayTerms(Base):
+    """The price and deadline agreed when a service day is first published."""
+
+    __tablename__ = "service_day_terms"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    price_gel: Mapped[int] = mapped_column(Integer)
+    deadline_time: Mapped[str] = mapped_column(String(16))
+    timezone: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class ServiceDayDefaults(Base):
+    """Runtime-editable terms copied into newly published service days."""
+
+    __tablename__ = "service_day_defaults"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    price_gel: Mapped[int] = mapped_column(Integer)
+    deadline_time: Mapped[str] = mapped_column(String(16))
+    updated_by_user_id: Mapped[int] = mapped_column(BigInteger)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class PaymentEntry(Base):
+    """One append-only money movement for a rider and service day."""
+
+    __tablename__ = "payment_entry"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger)
+    amount_gel: Mapped[int] = mapped_column(Integer)
+    method: Mapped[str | None] = mapped_column(String(16))
+    kind: Mapped[str] = mapped_column(String(16), default="received")
+    reference_key: Mapped[str | None] = mapped_column(String(256))
+    reversed_entry_id: Mapped[int | None] = mapped_column(
+        ForeignKey("payment_entry.id", ondelete="SET NULL")
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
 
@@ -456,8 +519,51 @@ class AdminBookingMonitor(Base):
     )
 
 
+class WorkerCheckpoint(Base):
+    """Last success and failure of one required background worker."""
+
+    __tablename__ = "worker_checkpoint"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(64))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class TelegramOutbox(Base):
+    """A Telegram text delivery that must survive transient API failures."""
+
+    __tablename__ = "telegram_outbox"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    operation_key: Mapped[str] = mapped_column(String(256))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    text: Mapped[str] = mapped_column(Text)
+    parse_mode: Mapped[str | None] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 Index("ix_poll_vote_event_batch_id", PollVoteEvent.batch_id)
 Index("ix_poll_vote_event_user", PollVoteEvent.telegram_user_id)
+
+
+Index(
+    "ix_refund_report_scope_created",
+    RefundReport.environment,
+    RefundReport.chat_id,
+    RefundReport.created_at,
+)
 
 
 Index(
@@ -583,6 +689,42 @@ Index(
 
 
 Index(
+    "uq_service_day_terms_scope_date",
+    ServiceDayTerms.environment,
+    ServiceDayTerms.chat_id,
+    func.coalesce(ServiceDayTerms.thread_id, 0),
+    ServiceDayTerms.service_date,
+    unique=True,
+)
+
+
+Index(
+    "uq_service_day_defaults_scope",
+    ServiceDayDefaults.environment,
+    ServiceDayDefaults.chat_id,
+    func.coalesce(ServiceDayDefaults.thread_id, 0),
+    unique=True,
+)
+
+
+Index(
+    "ix_payment_entry_scope_date_user",
+    PaymentEntry.environment,
+    PaymentEntry.chat_id,
+    PaymentEntry.service_date,
+    PaymentEntry.telegram_user_id,
+)
+
+
+Index(
+    "uq_payment_entry_environment_reference",
+    PaymentEntry.environment,
+    PaymentEntry.reference_key,
+    unique=True,
+)
+
+
+Index(
     "uq_guest_seat_scope_date_time_host",
     GuestSeat.environment,
     GuestSeat.chat_id,
@@ -618,6 +760,22 @@ Index(
     AdminBookingMonitor.chat_id,
     func.coalesce(AdminBookingMonitor.thread_id, 0),
     AdminBookingMonitor.admin_user_id,
+    unique=True,
+)
+
+
+Index(
+    "uq_worker_checkpoint_environment_name",
+    WorkerCheckpoint.environment,
+    WorkerCheckpoint.name,
+    unique=True,
+)
+
+
+Index(
+    "uq_telegram_outbox_environment_operation",
+    TelegramOutbox.environment,
+    TelegramOutbox.operation_key,
     unique=True,
 )
 

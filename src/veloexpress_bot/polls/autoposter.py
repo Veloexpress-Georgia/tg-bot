@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from veloexpress_bot.config import Settings
-from veloexpress_bot.db.models import PollAutoSchedule
+from veloexpress_bot.db.models import PollAutoSchedule, WorkerCheckpoint
 from veloexpress_bot.payments.service import PaymentsService
 from veloexpress_bot.polls.autoschedule import (
     SHORT_WEEKDAY_LABELS,
@@ -41,6 +41,11 @@ from veloexpress_bot.polls.service import (
 logger = logging.getLogger(__name__)
 
 TICK_INTERVAL_SECONDS = 30.0
+WORKER_NAME = "auto_scheduler"
+
+
+class SchedulerDegradedError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -87,21 +92,37 @@ class PollAutoScheduler:
         while True:
             try:
                 await self.tick()
-            except Exception:
+            except Exception as error:
                 logger.exception("poll_auto_schedule_tick_failed")
+                await self._record_worker_checkpoint(error=error)
+            else:
+                await self._record_worker_checkpoint(error=None)
             await sleep(interval_seconds)
 
     async def tick(self, now: datetime | None = None) -> str | None:
         if self._settings.telegram_target_chat_id is None:
             return None
         now_local = (now or datetime.now(UTC)).astimezone(self._zone)
+        failures: list[str] = []
+        try:
+            await self._poll_service.deliver_pending_notifications()
+        except Exception:
+            logger.exception("telegram_outbox_delivery_failed")
+            failures.append("telegram_outbox_delivery")
         if self._payments_service is not None:
+            try:
+                await self._payments_service.reconcile_cancelled_days()
+            except Exception:
+                logger.exception("cancelled_day_reconciliation_failed")
+                failures.append("cancelled_day_reconciliation")
+
             # Freeze first: everything below reads the day's seats, and after the
             # deadline the frozen roster is what those seats are.
             try:
                 await self._payments_service.capture_deadline_rosters(now=now_local)
             except Exception:
                 logger.exception("deadline_roster_capture_failed")
+                failures.append("deadline_roster_capture")
 
             # A freed seat is good news for whoever was waiting, but only if they
             # hear it — the board that shows the new order is edited silently.
@@ -109,6 +130,7 @@ class PollAutoScheduler:
                 await self._payments_service.announce_seat_promotions(now=now_local)
             except Exception:
                 logger.exception("seat_promotion_announce_failed")
+                failures.append("seat_promotion_announce")
 
             # Boards next: the "lift is running" notice links to that day's board,
             # and on the tick a lift crosses the minimum the board is created here.
@@ -118,6 +140,7 @@ class PollAutoScheduler:
                 await self._payments_service.sync_boards(now=now_local)
             except Exception:
                 logger.exception("payments_board_sync_failed")
+                failures.append("payments_board_sync")
 
         # On a lift-day morning the admin's monitor is put back at the bottom of
         # their chat, where they can actually reach it.
@@ -125,6 +148,7 @@ class PollAutoScheduler:
             await self._poll_service.repost_daily_monitors(now=now_local)
         except Exception:
             logger.exception("booking_monitor_repost_tick_failed")
+            failures.append("booking_monitor_repost")
 
         # A rules or price change has to reach notices already posted; recreating
         # the polls would throw away live votes.
@@ -132,6 +156,7 @@ class PollAutoScheduler:
             await self._poll_service.refresh_poll_notices(now=now_local)
         except Exception:
             logger.exception("poll_notice_refresh_failed")
+            failures.append("poll_notice_refresh")
 
         # Threshold and departure notices are independent of the posting
         # schedule: they must run even when auto-posting was never configured.
@@ -139,13 +164,18 @@ class PollAutoScheduler:
             await self._poll_service.evaluate_lift_signals(now=now_local)
         except Exception:
             logger.exception("lift_signal_evaluation_failed")
+            failures.append("lift_signal_evaluation")
 
         row_data = await self._load_row_data()
         if row_data is None:
+            if failures:
+                raise SchedulerDegradedError(", ".join(failures))
             return None
 
         action = decide_tick(row_data.state, now_local)
         if action is None:
+            if failures:
+                raise SchedulerDegradedError(", ".join(failures))
             return None
 
         if action.kind == "announce":
@@ -154,7 +184,34 @@ class PollAutoScheduler:
             await self._create_scheduled_polls(action, row_data)
         else:
             await self._mark_week_skipped(action, row_data)
+        if failures:
+            raise SchedulerDegradedError(", ".join(failures))
         return action.kind
+
+    async def _record_worker_checkpoint(self, *, error: Exception | None) -> None:
+        now = datetime.now(UTC)
+        try:
+            async with self._session_factory() as session:
+                row = await session.scalar(
+                    select(WorkerCheckpoint)
+                    .where(WorkerCheckpoint.environment == self._settings.app_env)
+                    .where(WorkerCheckpoint.name == WORKER_NAME)
+                )
+                if row is None:
+                    row = WorkerCheckpoint(
+                        environment=self._settings.app_env,
+                        name=WORKER_NAME,
+                    )
+                    session.add(row)
+                if error is None:
+                    row.last_success_at = now
+                    row.last_error = None
+                else:
+                    row.last_failure_at = now
+                    row.last_error = f"{type(error).__name__}: {error}"[:2000]
+                await session.commit()
+        except Exception:
+            logger.exception("worker_checkpoint_update_failed")
 
     async def schedule_label(self) -> str:
         """Two or three words for the weekend card's ⏰ button."""

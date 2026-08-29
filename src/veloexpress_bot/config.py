@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Annotated, Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -63,6 +64,41 @@ class Settings(BaseSettings):
         if value in (None, ""):
             return None
         return int(value)
+
+    @field_validator("payment_price_gel")
+    @classmethod
+    def validate_payment_price(cls, value: int) -> int:
+        if value <= 0:
+            msg = "PAYMENT_PRICE_GEL must be greater than zero."
+            raise ValueError(msg)
+        return value
+
+    @field_validator("booking_deadline_time")
+    @classmethod
+    def validate_booking_deadline(cls, value: str) -> str:
+        parts = value.split(":", maxsplit=1)
+        if len(parts) != 2:
+            msg = "BOOKING_DEADLINE_TIME must use HH:MM format."
+            raise ValueError(msg)
+        try:
+            hour, minute = (int(part) for part in parts)
+        except ValueError as error:
+            msg = "BOOKING_DEADLINE_TIME must use HH:MM format."
+            raise ValueError(msg) from error
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            msg = "BOOKING_DEADLINE_TIME must be a valid 24-hour time."
+            raise ValueError(msg)
+        return f"{hour:02d}:{minute:02d}"
+
+    @field_validator("schedule_timezone")
+    @classmethod
+    def validate_schedule_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as error:
+            msg = f"Unknown SCHEDULE_TIMEZONE: {value}"
+            raise ValueError(msg) from error
+        return value
 
     @model_validator(mode="after")
     def resolve_database_url(self) -> Settings:

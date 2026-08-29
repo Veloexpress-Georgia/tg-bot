@@ -23,5 +23,11 @@ def start_menu_keyboard(*, is_admin: bool) -> InlineKeyboardMarkup | None:
                     callback_data="menu:booking_monitor",
                 ),
             ],
+            [
+                InlineKeyboardButton(
+                    text="⚙️ Service defaults",
+                    callback_data="menu:service_defaults",
+                ),
+            ],
         ]
     )

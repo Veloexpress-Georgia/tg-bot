@@ -53,9 +53,9 @@ def test_booking_monitor_renders_day_tabs_counts_and_controls() -> None:
     assert "📊 Booking monitor · Sat, 18 Jul" in draft.text
     # Paid of owed, never a bare total: on its own the money figure sat next to a
     # seat count built from different rules and read as a contradiction.
-    assert "Running 2 of 2 · 16 seats · claimed 3/9 · 60 of 240 GEL" in draft.text
+    assert "At minimum 2 of 2 · funded 0 · 16 seats · claimed 3/9 · 60 of 240 GEL" in draft.text
     # Seats, not arithmetic: "3 left" is something the admin can read off 7/10.
-    assert "🚐 8:30 · 7/10 · 1 manual" in draft.text
+    assert "🚐 8:30 · 7/10 · payment open · 0/5 paid · 1 manual" in draft.text
     assert "🚐 10:00 · 9/10" in draft.text
     assert draft.reply_markup is not None
     assert [button.text for button in draft.reply_markup.inline_keyboard[0]] == [
@@ -85,7 +85,7 @@ def test_booking_monitor_falls_back_to_first_day_and_shows_waitlist() -> None:
     )
 
     assert "Sun, 19 Jul" in draft.text
-    assert "🚐 10:00 · 12/10 · waitlist +2 · 2 manual" in draft.text
+    assert "🚐 10:00 · 12/10 · payment open · 0/5 paid · waitlist +2 · 2 manual" in draft.text
 
 
 def test_booking_monitor_shows_cancelled_lift_and_cancel_day_control() -> None:
@@ -421,7 +421,7 @@ def test_guests_are_counted_like_any_other_seat() -> None:
 
     # Guests are in the seat count and named in their own section; repeating them
     # on the lift line was the same fact three times.
-    assert "🚐 8:30 · 10/10 · full · 1 manual" in draft.text
+    assert "🚐 8:30 · 10/10 · payment open · 0/5 paid · full · 1 manual" in draft.text
 
 
 def test_a_day_that_already_ran_cannot_be_cancelled() -> None:

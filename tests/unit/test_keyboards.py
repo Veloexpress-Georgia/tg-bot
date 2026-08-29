@@ -12,5 +12,6 @@ def test_start_menu_exposes_admin_actions_only_to_admins() -> None:
     ] == [
         [("menu:weekend_plan", "📋 Weekend"), ("menu:extra_day", "➕ Extra lift day")],
         [("menu:booking_monitor", "📊 Booking monitor")],
+        [("menu:service_defaults", "⚙️ Service defaults")],
     ]
     assert start_menu_keyboard(is_admin=False) is None

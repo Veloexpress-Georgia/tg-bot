@@ -24,6 +24,7 @@ from veloexpress_bot.db.models import (
     PollScheduleHistory,
     PollVote,
     PollVoteEvent,
+    ServiceDayTerms,
 )
 from veloexpress_bot.polls.defaults import StartLocation
 from veloexpress_bot.polls.liftsignals import booking_deadline_at, lift_departure_at
@@ -35,6 +36,7 @@ from veloexpress_bot.polls.service import (
     SentPollMessage,
     SentTextMessage,
 )
+from veloexpress_bot.service_day_defaults import ServiceDayDefaultsStore
 from veloexpress_bot.telegram.errors import TelegramTargetForbiddenError
 
 
@@ -212,7 +214,7 @@ def settings() -> Settings:
 
 
 def _upcoming_weekend() -> tuple[date, date]:
-    today = datetime.now(UTC).date()
+    today = datetime.now(UTC).astimezone(ZoneInfo("Asia/Tbilisi")).date()
     saturday = today + timedelta(days=(5 - today.weekday()) % 7)
     return saturday, saturday + timedelta(days=1)
 
@@ -404,6 +406,8 @@ async def test_booking_monitor_surfaces_money_guests_waitlist_and_late_exits(
                 username="rider100",
                 full_name="Rider 100",
                 seats=2,
+                amount_gel=30,
+                cash_amount_gel=30,
                 method="cash",
             )
         )
@@ -455,7 +459,7 @@ async def test_booking_monitor_surfaces_money_guests_waitlist_and_late_exits(
     all_riders = await service.all_riders_view(selected_service_date=saturday)
     assert "👥 All riders" in all_riders.text
     assert "8:30 — 12/10" in all_riders.text
-    assert "10:00 — 4/10 · running" in all_riders.text
+    assert "10:00 — 4/10 · decision needed" in all_riders.text
     assert "💵 @rider100 · +1 guest" in all_riders.text
     assert "⏳ @rider109" in all_riders.text
 
@@ -659,6 +663,8 @@ async def test_lift_signals_report_a_settled_undershoot(db: SharedDatabase) -> N
         telegram_client=client,
     )
     saturday, _ = _upcoming_weekend()
+    if saturday == datetime.now(UTC).date():
+        saturday += timedelta(days=7)
     poll = await service.create_poll(
         PollSetup(service_date=saturday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
         pin_after_send=False,
@@ -845,12 +851,8 @@ async def test_new_polls_reopen_the_monitor_at_the_bottom_of_the_admin_chat(
     assert monitor.telegram_message_id != monitor_message_id
 
 
-async def test_a_posted_notice_picks_up_changed_money_rules(db: SharedDatabase) -> None:
-    """A price or rule change must reach notices already posted.
-
-    Recreating the polls would carry the new text but throw away live votes, so
-    the notice is re-rendered in place instead.
-    """
+async def test_a_posted_notice_keeps_its_snapshotted_money_rules(db: SharedDatabase) -> None:
+    """A redeploy must not rewrite the price riders already agreed for this day."""
     service_settings = settings()
     client = FakeTelegramClient()
     service = PollPostingService(
@@ -872,10 +874,44 @@ async def test_a_posted_notice_picks_up_changed_money_rules(db: SharedDatabase) 
     edits = [
         text for message_id, text in client.edited_texts if message_id == result.notice_message_id
     ]
-    assert "20 GEL per seat." in edits[-1]
+    assert "15 GEL per seat." in edits[-1]
     # Once per day per process: a second pass would spend an API call to change
     # nothing, and Telegram edits are silent anyway.
     assert await service.refresh_poll_notices() == 0
+
+
+async def test_runtime_defaults_apply_only_to_newly_published_days(db: SharedDatabase) -> None:
+    service_settings = settings()
+    defaults = ServiceDayDefaultsStore(settings=service_settings, session_factory=db.session)
+    await defaults.adjust_price(5, admin_user_id=1)
+    await defaults.adjust_deadline(-30, admin_user_id=1)
+    service = PollPostingService(
+        settings=service_settings,
+        session_factory=db.session,
+        telegram_client=FakeTelegramClient(),
+        service_day_defaults=defaults,
+    )
+    saturday, sunday = _upcoming_weekend()
+
+    await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1),
+        pin_after_send=False,
+    )
+    await defaults.adjust_price(5, admin_user_id=1)
+    await defaults.adjust_deadline(30, admin_user_id=1)
+    await service.create_poll(
+        PollSetup(service_date=sunday, created_by_user_id=1),
+        pin_after_send=False,
+    )
+
+    async with db.session() as session:
+        rows = (
+            await session.scalars(select(ServiceDayTerms).order_by(ServiceDayTerms.service_date))
+        ).all()
+    assert [(row.price_gel, row.deadline_time, row.timezone) for row in rows] == [
+        (20, "19:30", "Asia/Tbilisi"),
+        (25, "20:00", "Asia/Tbilisi"),
+    ]
 
 
 async def test_a_revived_day_does_not_inherit_hand_added_riders(db: SharedDatabase) -> None:
@@ -2317,6 +2353,7 @@ async def test_lift_history_counts_finished_days_from_the_frozen_roster(
                 telegram_user_id=200,
                 full_name="Frozen 0",
                 seats=2,
+                amount_gel=30,
             )
         )
         await session.commit()

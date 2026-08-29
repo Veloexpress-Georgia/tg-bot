@@ -1,11 +1,16 @@
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import time
 from typing import Any, cast
 
 import pytest
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from veloexpress_bot.config import Settings
+from veloexpress_bot.db.base import Base
+from veloexpress_bot.db.models import WorkerCheckpoint
+from veloexpress_bot.db.session import create_session_factory
 from veloexpress_bot.health import (
     HEARTBEAT_FILE_ENV,
     HEARTBEAT_INTERVAL_SECONDS_ENV,
@@ -76,3 +81,31 @@ async def test_run_healthcheck_checks_database_and_heartbeat(
         check_db=True,
         check_heartbeat=True,
     )
+
+
+@pytest.mark.asyncio
+async def test_run_healthcheck_rejects_a_stale_required_worker(tmp_path: Path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'health.db'}"
+    settings = make_settings(database_url=database_url, app_env="test")
+    engine = create_async_engine(database_url)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    await engine.dispose()
+    session_factory = create_session_factory(settings)
+    async with session_factory() as session:
+        session.add(
+            WorkerCheckpoint(
+                environment="test",
+                name="auto_scheduler",
+                last_success_at=datetime.now(UTC) - timedelta(minutes=10),
+            )
+        )
+        await session.commit()
+
+    with pytest.raises(HealthCheckError, match="scheduler checkpoint is stale"):
+        await run_healthcheck(
+            settings=settings,
+            check_db=True,
+            check_heartbeat=False,
+            check_worker=True,
+        )

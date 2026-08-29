@@ -15,6 +15,22 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: veloexpress_ci
+          POSTGRES_USER: veloexpress
+          POSTGRES_PASSWORD: veloexpress
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U veloexpress -d veloexpress_ci"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgresql+asyncpg://veloexpress:veloexpress@localhost:5432/veloexpress_ci
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -41,6 +57,9 @@ jobs:
 
       - name: Tests
         run: uv run pytest
+
+      - name: Migrate empty Postgres database
+        run: uv run alembic upgrade head
 
       - name: Docker build
         run: docker compose -f docker-compose.local.yml build bot

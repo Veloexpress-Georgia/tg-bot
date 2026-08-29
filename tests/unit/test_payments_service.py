@@ -15,10 +15,13 @@ from veloexpress_bot.db.base import Base
 from veloexpress_bot.db.models import (
     DeadlineRoster,
     PaymentClaim,
+    PaymentEntry,
     PaymentsBoard,
     PollOptionSnapshot,
     PollVote,
+    RefundReport,
     RiderCard,
+    ServiceDayTerms,
 )
 from veloexpress_bot.payments.service import (
     ALREADY_SETTLED_TEXT,
@@ -169,7 +172,7 @@ def settings(
 
 
 def _saturday() -> date:
-    today = datetime.now(UTC).date()
+    today = datetime.now(UTC).astimezone(ZoneInfo("Asia/Tbilisi")).date()
     return today + timedelta(days=(5 - today.weekday()) % 7)
 
 
@@ -248,7 +251,7 @@ async def test_the_board_appears_once_a_lift_runs_and_is_then_edited_in_place(
     await payments.sync_boards()
     boards = client.payments_sends()
     assert len(boards) == 1
-    assert "Running: 8:30" in boards[0].text
+    assert "Payment open: 8:30" in boards[0].text
     assert boards[0].markup is not None
 
     # A second tick must edit the same message, never post another board.
@@ -788,6 +791,33 @@ async def test_cancelling_a_day_reports_every_payment_as_a_refund(db: SharedData
     # carry neither "still on" nor a per-rider refund note.
     assert "still on" not in report
     assert "nothing left" not in report
+    async with db.session() as session:
+        entries = (await session.scalars(select(PaymentEntry).order_by(PaymentEntry.id))).all()
+    assert sum(entry.amount_gel for entry in entries) == 0
+    assert [entry.kind for entry in entries].count("refund") == 2
+
+
+async def test_scheduler_finishes_an_interrupted_day_cancellation(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="stas",
+        full_name="Stas",
+    )
+    # Simulate a process crash immediately after the poll side committed.
+    await poll_service.cancel_day(service_date=saturday, admin_user_id=1)
+
+    assert await payments.reconcile_cancelled_days() == 1
+    assert await payments.reconcile_cancelled_days() == 0
+
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentClaim)) is None
+        reports = (await session.scalars(select(RefundReport))).all()
+        entries = (await session.scalars(select(PaymentEntry))).all()
+    assert len(reports) == 1
+    assert sum(entry.amount_gel for entry in entries) == 0
 
 
 async def test_cancelling_one_lift_separates_refunds_from_riders_who_stay(
@@ -961,7 +991,7 @@ async def test_a_lift_that_filled_by_the_deadline_keeps_running(db: SharedDataba
     await payments.sync_boards()
 
     board_text = [text for message_id, text in client.edits if message_id == board.message_id][-1]
-    assert "Running: 8:30" in board_text
+    assert "Payment open: 8:30" in board_text
 
 
 async def test_a_lift_short_at_the_deadline_owes_nothing(db: SharedDatabase) -> None:
@@ -1141,7 +1171,7 @@ async def test_an_underfunded_lift_is_chased_not_cancelled(db: SharedDatabase) -
     # And the lift is still running: nobody's forgotten tap calls off a van.
     board = client.payments_sends()[0]
     board_text = [text for message_id, text in client.edits if message_id == board.message_id][-1]
-    assert "Running: 8:30" in board_text
+    assert "Payment open: 8:30" in board_text
 
 
 async def test_a_fully_paid_lift_is_not_chased(db: SharedDatabase) -> None:
@@ -1691,3 +1721,129 @@ async def test_dropping_a_lift_and_taking_it_again_goes_to_the_back(db: SharedDa
     day = await payments._day(saturday)
     assert day is not None
     assert day.seat_holders_by_lift["8:30"][-1] == 100
+
+
+async def test_payment_follows_a_changed_lift_before_the_deadline(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await _fill(poll_service, poll_id, 1, riders=5, first_user_id=200)
+    first = await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+    )
+    assert "15 GEL" in first.text
+
+    await _vote(poll_service, poll_id, 100, 1)
+    moved = await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+    )
+
+    assert moved.text == ALREADY_SETTLED_TEXT
+    async with db.session() as session:
+        entries = (await session.scalars(select(PaymentEntry))).all()
+    assert [(entry.amount_gel, entry.kind) for entry in entries] == [(15, "received")]
+
+
+async def test_adding_a_lift_records_only_the_top_up(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await _fill(poll_service, poll_id, 1, riders=5, first_user_id=200)
+    await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+    )
+
+    await _vote(poll_service, poll_id, 100, 0, 1)
+    topped_up = await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+    )
+
+    assert "30 GEL" in topped_up.text
+    async with db.session() as session:
+        entries = (await session.scalars(select(PaymentEntry).order_by(PaymentEntry.id))).all()
+    assert [entry.amount_gel for entry in entries] == [15, 15]
+
+
+async def test_cash_top_up_keeps_the_original_transfer_method(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await _fill(poll_service, poll_id, 1, riders=5, first_user_id=200)
+    await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+        method="transfer",
+    )
+    await _vote(poll_service, poll_id, 100, 0, 1)
+
+    await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+        method=CASH_METHOD,
+    )
+
+    async with db.session() as session:
+        claim = await session.scalar(select(PaymentClaim))
+        entries = (await session.scalars(select(PaymentEntry).order_by(PaymentEntry.id))).all()
+    assert claim is not None
+    assert (claim.amount_gel, claim.cash_amount_gel, claim.method) == (30, 15, "mixed")
+    assert [(entry.amount_gel, entry.method) for entry in entries] == [
+        (15, "transfer"),
+        (15, "cash"),
+    ]
+
+
+async def test_service_day_keeps_the_price_it_was_published_with(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    payments._settings.payment_price_gel = 20
+
+    outcome = await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+    )
+
+    assert "15 GEL" in outcome.text
+    async with db.session() as session:
+        terms = await session.scalar(select(ServiceDayTerms))
+        entry = await session.scalar(select(PaymentEntry))
+    assert terms is not None and terms.price_gel == 15
+    assert entry is not None and entry.amount_gel == 15
+
+
+async def test_undo_appends_a_reversal_instead_of_erasing_money_history(
+    db: SharedDatabase,
+) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+    )
+
+    assert await payments.undo(service_date=saturday, telegram_user_id=100) == "Removed."
+
+    async with db.session() as session:
+        entries = (await session.scalars(select(PaymentEntry).order_by(PaymentEntry.id))).all()
+    assert [(entry.amount_gel, entry.kind) for entry in entries] == [
+        (15, "received"),
+        (-15, "reversal"),
+    ]
+    assert entries[1].reversed_entry_id == entries[0].id

@@ -3,8 +3,9 @@ import logging
 from asyncio import Lock
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
+from hashlib import sha256
 from time import perf_counter
 from typing import Protocol
 from uuid import uuid4
@@ -52,8 +53,10 @@ from veloexpress_bot.db.models import (
     PollVoteEvent,
     RefundReport,
     ServiceDayNotice,
+    ServiceDayTerms,
 )
 from veloexpress_bot.deeplinks import message_link, topic_link
+from veloexpress_bot.payments.coverage import CoverageTarget, reconcile_coverage
 
 # Safe despite payments importing polls: `myday` reaches only `polls.render`, and
 # `payments/__init__` pulls in `render`, never `service`. Kept next to its parser
@@ -99,6 +102,8 @@ from veloexpress_bot.polls.schedule import (
     suggested_cancelled_lift_times,
 )
 from veloexpress_bot.polls.seating import SeatCandidate, allocate_seats
+from veloexpress_bot.service_day_defaults import ServiceDayDefaultsStore
+from veloexpress_bot.telegram.outbox import TelegramOutboxDispatcher
 
 
 class DuplicatePollError(RuntimeError):
@@ -248,10 +253,20 @@ class PollPostingService:
         session_factory: SessionFactory,
         telegram_client: TelegramPollClient,
         bot_username: str = "",
+        service_day_defaults: ServiceDayDefaultsStore | None = None,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
         self._telegram_client = telegram_client
+        self._service_day_defaults = service_day_defaults or ServiceDayDefaultsStore(
+            settings=settings,
+            session_factory=session_factory,
+        )
+        self._outbox = TelegramOutboxDispatcher(
+            environment=settings.app_env,
+            session_factory=session_factory,
+            sender=telegram_client,
+        )
         self._bot_username = bot_username
         self._availability_locks: dict[str, Lock] = {}
         # Notices already reconciled in this process; see refresh_poll_notices.
@@ -260,9 +275,24 @@ class PollPostingService:
         self._zone = ZoneInfo(settings.schedule_timezone)
 
     async def _payment_terms(self, *, service_date: date | None = None) -> PaymentTerms:
+        defaults = await self._service_day_defaults.values()
+        price_gel = defaults.price_gel
+        deadline_time = defaults.deadline_time
+        if service_date is not None and self._settings.telegram_target_chat_id is not None:
+            async with self._session_factory() as session:
+                terms = await session.scalar(
+                    select(ServiceDayTerms)
+                    .where(ServiceDayTerms.environment == self._settings.app_env)
+                    .where(ServiceDayTerms.chat_id == self._settings.telegram_target_chat_id)
+                    .where(ServiceDayTerms.thread_id == self._settings.telegram_target_thread_id)
+                    .where(ServiceDayTerms.service_date == service_date)
+                )
+            if terms is not None:
+                price_gel = terms.price_gel
+                deadline_time = terms.deadline_time
         return PaymentTerms(
-            price_gel=self._settings.payment_price_gel,
-            deadline_time=self._settings.booking_deadline_time,
+            price_gel=price_gel,
+            deadline_time=deadline_time,
             link=await self._payments_link(service_date),
         )
 
@@ -592,7 +622,7 @@ class PollPostingService:
             ).all()
             claims = (
                 await session.execute(
-                    select(PaymentClaim.service_date, PaymentClaim.seats)
+                    select(PaymentClaim.service_date, PaymentClaim.amount_gel)
                     .where(PaymentClaim.environment == self._settings.app_env)
                     .where(PaymentClaim.chat_id == self._settings.telegram_target_chat_id)
                     .where(PaymentClaim.service_date.in_(service_dates))
@@ -609,9 +639,9 @@ class PollPostingService:
                 key = (vote.poll_id, option_index)
                 votes_by_poll_option[key] = votes_by_poll_option.get(key, 0) + 1
         cancelled_date_time = {(row.service_date, row.lift_time) for row in cancelled}
-        paid_seats_by_date: dict[date, int] = {}
-        for claim_date, claim_seats in claims:
-            paid_seats_by_date[claim_date] = paid_seats_by_date.get(claim_date, 0) + claim_seats
+        paid_gel_by_date: dict[date, int] = {}
+        for claim_date, claim_amount_gel in claims:
+            paid_gel_by_date[claim_date] = paid_gel_by_date.get(claim_date, 0) + claim_amount_gel
 
         history_days: list[LiftHistoryDay] = []
         for service_date, batch in past_batches.items():
@@ -641,8 +671,7 @@ class PollPostingService:
                     ran_count=ran,
                     lift_count=lifts,
                     seat_count=seats,
-                    paid_gel=paid_seats_by_date.get(service_date, 0)
-                    * self._settings.payment_price_gel,
+                    paid_gel=paid_gel_by_date.get(service_date, 0),
                 )
             )
 
@@ -910,6 +939,13 @@ class PollPostingService:
             votes = (
                 await session.scalars(select(PollVote).where(PollVote.poll_id == snapshot.poll_id))
             ).all()
+            day_snapshots = (
+                await session.scalars(
+                    select(PollOptionSnapshot)
+                    .where(PollOptionSnapshot.batch_id == snapshot.batch_id)
+                    .where(PollOptionSnapshot.lift_time.is_not(None))
+                )
+            ).all()
             lift_votes = [
                 vote
                 for vote in votes
@@ -926,6 +962,20 @@ class PollPostingService:
                 )
             ).all()
             claim_by_user = {claim.telegram_user_id: claim for claim in claims}
+            paid_lifts_by_user: dict[int, set[str]] = {}
+            for vote in votes:
+                selected = sorted(
+                    (
+                        option.lift_time
+                        for option in day_snapshots
+                        if option.lift_time is not None
+                        and option.option_index in decode_option_ids(vote.option_ids)
+                    ),
+                    key=lift_minutes,
+                )
+                claim = claim_by_user.get(vote.telegram_user_id)
+                if claim is not None:
+                    paid_lifts_by_user[vote.telegram_user_id] = set(selected[: claim.seats])
             guest_rows = (
                 await session.scalars(
                     select(GuestSeat)
@@ -963,7 +1013,7 @@ class PollPostingService:
                         LiftRider(
                             telegram_user_id=vote.telegram_user_id,
                             label=_rider_label(vote),
-                            paid=vote.telegram_user_id in claim_by_user,
+                            paid=lift_time in paid_lifts_by_user.get(vote.telegram_user_id, set()),
                             cash=(claim := claim_by_user.get(vote.telegram_user_id)) is not None
                             and claim.method == "cash"
                             and claim.verified_by_user_id is None,
@@ -1211,17 +1261,22 @@ class PollPostingService:
                 for user_id, label in mentions.items()
             )
             text = f"{text}\n\n{tags}"
-        try:
-            sent = await self._telegram_client.send_text(
-                chat_id=self._settings.telegram_target_chat_id,
-                message_thread_id=self._settings.telegram_target_thread_id,
-                text=text,
-                parse_mode="HTML",
-            )
-        except Exception:
-            logger.exception(log_label)
-            return None
-        return sent.message_id
+        operation_key = f"{log_label}:{sha256(text.encode()).hexdigest()[:32]}"
+        await self._outbox.enqueue_text(
+            operation_key=operation_key,
+            chat_id=self._settings.telegram_target_chat_id,
+            thread_id=self._settings.telegram_target_thread_id,
+            text=text,
+            parse_mode="HTML",
+        )
+        await self._outbox.deliver_pending()
+        message_id = await self._outbox.message_id(operation_key)
+        if message_id is None:
+            logger.warning(log_label)
+        return message_id
+
+    async def deliver_pending_notifications(self) -> int:
+        return await self._outbox.deliver_pending()
 
     async def refresh_poll_notices(self, *, now: datetime | None = None) -> int:
         """Re-render the route/payment notice of every upcoming day, in place.
@@ -1234,11 +1289,15 @@ class PollPostingService:
         if self._settings.telegram_target_chat_id is None:
             return 0
         today = (now or datetime.now(UTC)).astimezone(self._zone).date()
-        terms = await self._payment_terms()
         async with self._session_factory() as session:
             rows = (
                 await session.execute(
-                    select(PollBatch.id, PollBatch.first_lift_location, PollMessage)
+                    select(
+                        PollBatch.id,
+                        PollBatch.service_date,
+                        PollBatch.first_lift_location,
+                        PollMessage,
+                    )
                     .join(PollMessage, PollMessage.batch_id == PollBatch.id)
                     .where(PollBatch.environment == self._settings.app_env)
                     .where(PollBatch.chat_id == self._settings.telegram_target_chat_id)
@@ -1250,10 +1309,11 @@ class PollPostingService:
             ).all()
 
         updated = 0
-        for batch_id, location, message in rows:
+        for batch_id, service_date, location, message in rows:
             if batch_id in self._reconciled_notice_batch_ids:
                 continue
             self._reconciled_notice_batch_ids.add(batch_id)
+            terms = await self._payment_terms(service_date=service_date)
             if await self._telegram_client.edit_text(
                 chat_id=self._settings.telegram_target_chat_id,
                 message_id=message.telegram_message_id,
@@ -1292,11 +1352,8 @@ class PollPostingService:
         act on. After the deadline it stops moving and stands as the final list.
         """
         signals = _day_signals(day)
-        deadline_at = booking_deadline_at(
-            day.service_date,
-            self._settings.booking_deadline_time,
-            zone=self._zone,
-        )
+        terms = await self._payment_terms(service_date=day.service_date)
+        deadline_at = booking_deadline_at(day.service_date, terms.deadline_time, zone=self._zone)
         async with self._session_factory() as session:
             notice = await self._service_day_notice(session=session, service_date=day.service_date)
             already_reminded = notice is not None and notice.deadline_reminded_at is not None
@@ -1309,7 +1366,6 @@ class PollPostingService:
             ):
                 return
 
-        terms = await self._payment_terms(service_date=day.service_date)
         deadline_passed = now > deadline_at
         text = render_deadline_reminder(
             day.service_date,
@@ -1333,6 +1389,8 @@ class PollPostingService:
             {},
             log_label="booking_deadline_reminder_failed",
         )
+        if sent_message_id is None:
+            return
         async with self._session_factory() as session:
             notice = await self._service_day_notice(session=session, service_date=day.service_date)
             if notice is None:
@@ -1641,6 +1699,7 @@ class PollPostingService:
         idempotency_key = (
             f"{base_idempotency_key}:manual:{uuid4()}" if allow_duplicate else base_idempotency_key
         )
+        defaults = await self._service_day_defaults.values()
 
         async with self._session_factory() as session:
             active_statuses = (
@@ -1687,6 +1746,25 @@ class PollPostingService:
                     idempotency_key=idempotency_key,
                 )
                 session.add(batch)
+            terms = await session.scalar(
+                select(ServiceDayTerms)
+                .where(ServiceDayTerms.environment == self._settings.app_env)
+                .where(ServiceDayTerms.chat_id == self._settings.telegram_target_chat_id)
+                .where(ServiceDayTerms.thread_id == self._settings.telegram_target_thread_id)
+                .where(ServiceDayTerms.service_date == setup.service_date)
+            )
+            if terms is None:
+                session.add(
+                    ServiceDayTerms(
+                        environment=self._settings.app_env,
+                        chat_id=self._settings.telegram_target_chat_id,
+                        thread_id=self._settings.telegram_target_thread_id,
+                        service_date=setup.service_date,
+                        price_gel=defaults.price_gel,
+                        deadline_time=defaults.deadline_time,
+                        timezone=defaults.timezone,
+                    )
+                )
             # A fresh poll for this date starts with a clean slate: drop lift
             # cancellations and the record of which notices already went out, or a
             # re-posted day would never announce itself again.
@@ -1727,7 +1805,7 @@ class PollPostingService:
                         message_thread_id=self._settings.telegram_target_thread_id,
                         text=render_poll_notice(
                             setup.first_lift_location,
-                            terms=await self._payment_terms(),
+                            terms=await self._payment_terms(service_date=setup.service_date),
                         ),
                         parse_mode=PAYMENT_TERMS_PARSE_MODE,
                     )
@@ -2289,10 +2367,6 @@ class PollPostingService:
                 days,
                 selected_service_date=days[0].service_date if days else None,
             )
-            await self._telegram_client.delete_message(
-                chat_id=row.private_chat_id,
-                message_id=row.telegram_message_id,
-            )
             try:
                 sent = await self._telegram_client.send_text(
                     chat_id=row.private_chat_id,
@@ -2307,6 +2381,10 @@ class PollPostingService:
                     extra={"admin_user_id": row.admin_user_id},
                 )
                 continue
+            await self._telegram_client.delete_message(
+                chat_id=row.private_chat_id,
+                message_id=row.telegram_message_id,
+            )
             await self._store_booking_monitor(
                 admin_user_id=row.admin_user_id,
                 private_chat_id=row.private_chat_id,
@@ -2632,6 +2710,15 @@ class PollPostingService:
                     .where(DeadlineRoster.service_date.in_(selected_dates))
                 )
             ).all()
+            terms_rows = (
+                await session.scalars(
+                    select(ServiceDayTerms)
+                    .where(ServiceDayTerms.environment == self._settings.app_env)
+                    .where(ServiceDayTerms.chat_id == self._settings.telegram_target_chat_id)
+                    .where(ServiceDayTerms.thread_id == self._settings.telegram_target_thread_id)
+                    .where(ServiceDayTerms.service_date.in_(selected_dates))
+                )
+            ).all()
             vote_events = (
                 await session.scalars(
                     select(PollVoteEvent)
@@ -2660,6 +2747,7 @@ class PollPostingService:
             key = (guest.service_date, guest.lift_time)
             guests_by_date_time[key] = guests_by_date_time.get(key, 0) + guest.count
         capacity_by_time = {lift.time: lift.capacity for lift in DEFAULT_LIFTS}
+        terms_by_date = {row.service_date: row for row in terms_rows}
         today = datetime.now(UTC).astimezone(self._zone).date()
         days: list[BookingMonitorDay] = []
         for batch in selected_batches:
@@ -2673,6 +2761,8 @@ class PollPostingService:
             day_deadline_rows = [
                 row for row in deadline_rows if row.service_date == batch.service_date
             ]
+            terms = terms_by_date.get(batch.service_date)
+            day_price = terms.price_gel if terms is not None else self._settings.payment_price_gel
             roster_running_times = {
                 lift_time
                 for lift_time in {row.lift_time for row in day_deadline_rows}
@@ -2757,18 +2847,61 @@ class PollPostingService:
                                 owed_seats_by_user.get(guest.host_user_id, 0) + guest.count
                             )
 
+            covered_by_lift: dict[str, int] = {
+                lift.time: lift.manual_count for lift in lifts if not lift.cancelled
+            }
+            if day_deadline_rows:
+                for row in day_deadline_rows:
+                    covered_by_lift[row.lift_time] = (
+                        covered_by_lift.get(row.lift_time, 0) + row.covered_seats
+                    )
+            else:
+                guests_by_host_lift = {
+                    (guest.host_user_id, guest.lift_time): guest.count
+                    for guest in day_guests
+                    if guest.count > 0
+                }
+                for user_id, held_lifts in held_lifts_by_user.items():
+                    claim = claim_by_user.get(user_id)
+                    coverage = reconcile_coverage(
+                        received_gel=claim.amount_gel if claim is not None else 0,
+                        price_gel=day_price,
+                        targets=tuple(
+                            CoverageTarget(
+                                lift_time,
+                                1 + guests_by_host_lift.get((user_id, lift_time), 0),
+                            )
+                            for lift_time in sorted(held_lifts, key=lift_minutes)
+                        ),
+                    )
+                    for target in coverage.targets:
+                        covered_by_lift[target.lift_time] = (
+                            covered_by_lift.get(target.lift_time, 0) + target.covered_seats
+                        )
+            lifts = [
+                replace(
+                    lift,
+                    covered_count=covered_by_lift.get(lift.time, 0),
+                    deadline_closed=bool(day_deadline_rows),
+                )
+                for lift in lifts
+            ]
+
             unpaid_riders = tuple(
                 sorted(
                     (
                         MonitorRider(
                             telegram_user_id=user_id,
                             label=label_by_user.get(user_id, f"Rider {user_id}"),
-                            amount_gel=max(owed - (claim.seats if claim is not None else 0), 0)
-                            * self._settings.payment_price_gel,
+                            amount_gel=max(
+                                owed * day_price - (claim.amount_gel if claim is not None else 0),
+                                0,
+                            ),
                             lift_times=tuple(held_lifts_by_user.get(user_id, ())),
                         )
                         for user_id, owed in owed_seats_by_user.items()
-                        if (claim := claim_by_user.get(user_id)) is None or claim.seats < owed
+                        if (claim := claim_by_user.get(user_id)) is None
+                        or claim.amount_gel < owed * day_price
                     ),
                     key=lambda rider: rider.label,
                 )
@@ -2782,11 +2915,11 @@ class PollPostingService:
                                 claim.telegram_user_id,
                                 _rider_label_from_parts(claim.username, claim.full_name),
                             ),
-                            amount_gel=claim.seats * self._settings.payment_price_gel,
+                            amount_gel=claim.cash_amount_gel,
                             lift_times=tuple(held_lifts_by_user.get(claim.telegram_user_id, ())),
                         )
                         for claim in day_claims
-                        if claim.method == "cash" and claim.verified_by_user_id is None
+                        if claim.cash_amount_gel > 0 and claim.verified_by_user_id is None
                     ),
                     key=lambda rider: rider.label,
                 )
@@ -2820,14 +2953,13 @@ class PollPostingService:
                     lifts=tuple(lifts),
                     paid_rider_count=sum(user_id in claim_by_user for user_id in booked_user_ids),
                     booked_rider_count=len(booked_user_ids),
-                    expected_gel=sum(claim.seats for claim in day_claims)
-                    * self._settings.payment_price_gel,
+                    expected_gel=sum(claim.amount_gel for claim in day_claims),
                     # Seats on lifts that are actually running, capped at capacity:
                     # nobody on a waitlist is billed, so nobody on one is owed for.
                     owed_gel=sum(
                         min(lift.total_count, lift.capacity) for lift in lifts if lift.running
                     )
-                    * self._settings.payment_price_gel,
+                    * day_price,
                     past=batch.service_date < today,
                     has_refund_reports=has_refund_reports,
                     unpaid_riders=unpaid_riders,

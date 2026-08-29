@@ -1,3 +1,1 @@
-from veloexpress_bot.telegram.client import AiogramTelegramClient
-
-__all__ = ["AiogramTelegramClient"]
+"""Telegram adapters. Import concrete adapters from their defining modules."""

@@ -15,6 +15,7 @@ from veloexpress_bot.payments.service import PaymentsService
 from veloexpress_bot.polls.autoposter import PollAutoScheduler
 from veloexpress_bot.polls.planner import WeekendPlanner
 from veloexpress_bot.polls.service import PollPostingService
+from veloexpress_bot.service_day_defaults import ServiceDayDefaultsStore
 from veloexpress_bot.telegram.client import AiogramTelegramClient
 
 
@@ -25,6 +26,7 @@ def build_dispatcher(
     auto_scheduler: PollAutoScheduler,
     planner: WeekendPlanner,
     payments_service: PaymentsService,
+    service_day_defaults: ServiceDayDefaultsStore,
 ) -> Dispatcher:
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher.include_router(router)
@@ -33,6 +35,7 @@ def build_dispatcher(
     dispatcher["auto_scheduler"] = auto_scheduler
     dispatcher["planner"] = planner
     dispatcher["payments_service"] = payments_service
+    dispatcher["service_day_defaults"] = service_day_defaults
     return dispatcher
 
 
@@ -50,6 +53,10 @@ async def run_polling() -> None:
         session_factory = create_session_factory(settings)
         await check_database(session_factory)
         telegram_client = AiogramTelegramClient(bot)
+        service_day_defaults = ServiceDayDefaultsStore(
+            settings=settings,
+            session_factory=session_factory,
+        )
         # Every "pay" link is a deep link, which needs the bot's own username.
         # Read once from Telegram rather than kept in config, so there is one source.
         bot_username = (await bot.me()).username or ""
@@ -58,6 +65,7 @@ async def run_polling() -> None:
             session_factory=session_factory,
             telegram_client=telegram_client,
             bot_username=bot_username,
+            service_day_defaults=service_day_defaults,
         )
         payments_service = PaymentsService(
             settings=settings,
@@ -85,6 +93,7 @@ async def run_polling() -> None:
             auto_scheduler=auto_scheduler,
             planner=planner,
             payments_service=payments_service,
+            service_day_defaults=service_day_defaults,
         )
         await register_bot_commands(bot)
         await register_default_admin_rights(bot)

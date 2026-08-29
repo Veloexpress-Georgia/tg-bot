@@ -16,6 +16,7 @@ from veloexpress_bot.db.models import (
     LiftSeatState,
     ManualBookingCount,
     PaymentClaim,
+    PaymentEntry,
     PaymentsBoard,
     PaymentsTopicPost,
     PollBatch,
@@ -24,7 +25,9 @@ from veloexpress_bot.db.models import (
     RefundReport,
     RiderCard,
     ServiceDayNotice,
+    ServiceDayTerms,
 )
+from veloexpress_bot.payments.coverage import CoverageTarget, reconcile_coverage
 from veloexpress_bot.payments.myday import (
     CASH_LINK_PREFIX,
     DEEP_LINK_PREFIX,
@@ -113,6 +116,8 @@ class DayBookings:
     running_lift_times: tuple[str, ...]
     cancelled: bool
     polls_created_at: datetime
+    price_gel: int = 15
+    deadline_time: str = "20:00"
     lift_times_by_user: dict[int, tuple[str, ...]] = field(default_factory=dict)
     # Every non-cancelled lift a rider booked, including ones still short of the
     # minimum: a refund question must not treat "not full yet" as "gone".
@@ -128,6 +133,7 @@ class DayBookings:
     seat_holders_by_lift: dict[str, tuple[int, ...]] = field(default_factory=dict)
     waitlist_by_lift: dict[str, tuple[int, ...]] = field(default_factory=dict)
     paid_seats_by_user: dict[int, int] = field(default_factory=dict)
+    paid_amount_by_user: dict[int, int] = field(default_factory=dict)
 
     def pending_lift_times(self, telegram_user_id: int) -> tuple[str, ...]:
         """Lifts the rider booked that have not reached the minimum yet."""
@@ -253,7 +259,8 @@ class PaymentsService:
             )
             guests = day.guest_seats(telegram_user_id, lift_times=paying_for)
             owed = len(paying_for) + guests
-            if claim is not None and claim.seats >= owed:
+            owed_amount = owed * day.price_gel
+            if claim is not None and claim.amount_gel >= owed_amount:
                 return ClaimOutcome(ALREADY_SETTLED_TEXT)
             if not acknowledged:
                 if day.is_waitlisted(telegram_user_id):
@@ -265,8 +272,8 @@ class PaymentsService:
                         _partial_booking_warning(
                             confirmed=lift_times,
                             pending=pending,
-                            due_now=self._amount(len(lift_times) + guests),
-                            due_later=self._amount(len(pending)),
+                            due_now=(len(lift_times) + guests) * day.price_gel,
+                            due_later=len(pending) * day.price_gel,
                         ),
                         needs_confirmation=True,
                     )
@@ -281,13 +288,38 @@ class PaymentsService:
                     telegram_user_id=telegram_user_id,
                     username=username,
                     full_name=full_name,
+                    amount_gel=0,
+                    cash_amount_gel=0,
                 )
                 session.add(claim)
             claim.username = username
             claim.full_name = full_name
             claim.seats = owed
-            claim.method = method
-            claim.updated_at = datetime.now(UTC)
+            received_delta = owed_amount - (claim.amount_gel or 0)
+            claim.amount_gel = owed_amount
+            if method == CASH_METHOD:
+                claim.cash_amount_gel = (claim.cash_amount_gel or 0) + received_delta
+            if claim.cash_amount_gel == claim.amount_gel:
+                claim.method = CASH_METHOD
+            elif claim.cash_amount_gel:
+                claim.method = "mixed"
+            else:
+                claim.method = TRANSFER_METHOD
+            recorded_at = datetime.now(UTC)
+            claim.updated_at = recorded_at
+            session.add(
+                PaymentEntry(
+                    environment=self._settings.app_env,
+                    chat_id=self._require_chat_id(),
+                    thread_id=self._settings.telegram_target_thread_id,
+                    service_date=service_date,
+                    telegram_user_id=telegram_user_id,
+                    amount_gel=received_delta,
+                    method=method,
+                    kind="received",
+                    recorded_at=recorded_at,
+                )
+            )
             await session.commit()
 
         await self._announce_claim(day, telegram_user_id)
@@ -297,7 +329,7 @@ class PaymentsService:
         how = " in cash" if method == CASH_METHOD else ""
         guest_note = f" +{guests} guest(s)" if guests else ""
         return ClaimOutcome(
-            f"Thanks! {', '.join(paying_for)}{guest_note} · {self._amount(owed)} GEL{how}."
+            f"Thanks! {', '.join(paying_for)}{guest_note} · {owed_amount} GEL{how}."
         )
 
     async def my_day_card(
@@ -418,13 +450,14 @@ class PaymentsService:
         guests_all = day.guest_seats(telegram_user_id, include_pending=True)
         return RiderDayView(
             service_date=day.service_date,
+            price_gel=day.price_gel,
             rows=rows,
             pending_lift_times=pending,
-            due_now_gel=self._amount(len(running) + guests_now),
+            due_now_gel=(len(running) + guests_now) * day.price_gel,
             # Settling the whole day covers the guests waiting on it as well;
             # leaving them out quoted an amount the next tap would not accept.
-            due_all_gel=self._amount(len(running) + len(pending) + guests_all),
-            paid_gel=self._amount(day.paid_seats_by_user.get(telegram_user_id, 0)),
+            due_all_gel=(len(running) + len(pending) + guests_all) * day.price_gel,
+            paid_gel=day.paid_amount_by_user.get(telegram_user_id, 0),
         )
 
     async def adjust_guest_seats(
@@ -511,6 +544,33 @@ class PaymentsService:
             if notice is not None and notice.roster_captured_at is not None:
                 return UNDO_AFTER_DEADLINE_TEXT
             posted_message_id = claim.posted_message_id
+            entries = (
+                await session.scalars(
+                    select(PaymentEntry)
+                    .where(PaymentEntry.environment == self._settings.app_env)
+                    .where(PaymentEntry.chat_id == self._require_chat_id())
+                    .where(PaymentEntry.service_date == service_date)
+                    .where(PaymentEntry.telegram_user_id == telegram_user_id)
+                    .where(PaymentEntry.kind == "received")
+                )
+            ).all()
+            now = datetime.now(UTC)
+            for entry in entries:
+                session.add(
+                    PaymentEntry(
+                        environment=entry.environment,
+                        chat_id=entry.chat_id,
+                        thread_id=entry.thread_id,
+                        service_date=entry.service_date,
+                        telegram_user_id=entry.telegram_user_id,
+                        amount_gel=-entry.amount_gel,
+                        method=entry.method,
+                        kind="reversal",
+                        reference_key=f"undo:{entry.id}",
+                        reversed_entry_id=entry.id,
+                        recorded_at=now,
+                    )
+                )
             await session.delete(claim)
             await session.commit()
 
@@ -568,17 +628,90 @@ class PaymentsService:
             # admin's chat message is the only list of who is owed money, and a
             # stray delete takes it with them.
             async with self._session_factory() as session:
-                session.add(
-                    RefundReport(
-                        environment=self._settings.app_env,
-                        chat_id=self._require_chat_id(),
-                        service_date=service_date,
-                        lift_time=cancelled_lift_time,
-                        text=report,
-                    )
+                existing_report = await session.scalar(
+                    select(RefundReport.id)
+                    .where(RefundReport.environment == self._settings.app_env)
+                    .where(RefundReport.chat_id == self._require_chat_id())
+                    .where(RefundReport.service_date == service_date)
+                    .where(RefundReport.lift_time == cancelled_lift_time)
+                    .where(RefundReport.text == report)
+                    .limit(1)
                 )
+                existing_references = set(
+                    (
+                        await session.scalars(
+                            select(PaymentEntry.reference_key)
+                            .where(PaymentEntry.environment == self._settings.app_env)
+                            .where(PaymentEntry.chat_id == self._require_chat_id())
+                            .where(PaymentEntry.service_date == service_date)
+                            .where(PaymentEntry.kind == "refund")
+                        )
+                    ).all()
+                )
+                if existing_report is None:
+                    session.add(
+                        RefundReport(
+                            environment=self._settings.app_env,
+                            chat_id=self._require_chat_id(),
+                            service_date=service_date,
+                            lift_time=cancelled_lift_time,
+                            text=report,
+                        )
+                    )
+                cancelled_key = cancelled_lift_time or "day"
+                for claim, row in zip(claims, rows, strict=True):
+                    if row.refund_gel <= 0:
+                        continue
+                    reference_key = f"refund:{service_date}:{cancelled_key}:{claim.id}"
+                    if reference_key in existing_references:
+                        continue
+                    session.add(
+                        PaymentEntry(
+                            environment=self._settings.app_env,
+                            chat_id=self._require_chat_id(),
+                            thread_id=self._settings.telegram_target_thread_id,
+                            service_date=service_date,
+                            telegram_user_id=claim.telegram_user_id,
+                            amount_gel=-row.refund_gel,
+                            method=claim.method
+                            if claim.method in {CASH_METHOD, TRANSFER_METHOD}
+                            else None,
+                            kind="refund",
+                            reference_key=reference_key,
+                        )
+                    )
                 await session.commit()
         return report
+
+    async def reconcile_cancelled_days(self) -> int:
+        """Finish a day cancellation interrupted before refunds were persisted."""
+        if not self.enabled:
+            return 0
+        async with self._session_factory() as session:
+            service_dates = tuple(
+                (
+                    await session.scalars(
+                        select(PollBatch.service_date)
+                        .join(
+                            PaymentClaim,
+                            PaymentClaim.service_date == PollBatch.service_date,
+                        )
+                        .where(PollBatch.environment == self._settings.app_env)
+                        .where(PollBatch.chat_id == self._require_chat_id())
+                        .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
+                        .where(PollBatch.status == "cancelled")
+                        .where(PaymentClaim.environment == self._settings.app_env)
+                        .where(PaymentClaim.chat_id == self._require_chat_id())
+                        .distinct()
+                    )
+                ).all()
+            )
+        reconciled = 0
+        for service_date in service_dates:
+            await self.cancellation_report(service_date=service_date)
+            await self.forget_day(service_date=service_date)
+            reconciled += 1
+        return reconciled
 
     def _refund_row(
         self,
@@ -608,9 +741,12 @@ class PaymentsService:
             label=_rider_label(claim.username, claim.full_name),
             telegram_user_id=claim.telegram_user_id,
             seats=claim.seats,
-            amount_gel=self._amount(claim.seats),
+            amount_gel=claim.amount_gel,
             remaining_lift_times=remaining,
-            refund_gel=self._amount(max(claim.seats - held, 0)),
+            refund_gel=min(
+                claim.amount_gel,
+                max(claim.seats - held, 0) * (claim.amount_gel // max(claim.seats, 1)),
+            ),
         )
 
     async def recent_refund_reports(self, *, limit: int = 5) -> tuple[str, ...]:
@@ -708,6 +844,10 @@ class PaymentsService:
                 ):
                     return
                 username, full_name = day.labels_by_user.get(telegram_user_id, (None, "Rider"))
+                seats = len(day.lift_times_by_user[telegram_user_id]) + day.guest_seats(
+                    telegram_user_id
+                )
+                amount_gel = seats * day.price_gel
                 session.add(
                     PaymentClaim(
                         environment=self._settings.app_env,
@@ -717,10 +857,22 @@ class PaymentsService:
                         telegram_user_id=telegram_user_id,
                         username=username,
                         full_name=full_name,
-                        seats=(
-                            len(day.lift_times_by_user[telegram_user_id])
-                            + day.guest_seats(telegram_user_id)
-                        ),
+                        seats=seats,
+                        amount_gel=amount_gel,
+                        cash_amount_gel=0,
+                    )
+                )
+                session.add(
+                    PaymentEntry(
+                        environment=self._settings.app_env,
+                        chat_id=self._require_chat_id(),
+                        thread_id=self._settings.telegram_target_thread_id,
+                        service_date=day.service_date,
+                        telegram_user_id=telegram_user_id,
+                        amount_gel=amount_gel,
+                        method=None,
+                        kind="received",
+                        recorded_at=posted_at,
                     )
                 )
                 await session.commit()
@@ -741,6 +893,7 @@ class PaymentsService:
             guests = day.guest_seats(telegram_user_id)
             label = _rider_label(claim.username, claim.full_name)
             cash = claim.method == CASH_METHOD
+            cash_gel = claim.cash_amount_gel
             posted_message_id = claim.posted_message_id
             self_posted = await self._posted_in_topic_since(
                 session=session,
@@ -756,18 +909,20 @@ class PaymentsService:
             service_date=day.service_date,
             seats=seats,
             guests=guests,
-            amount_gel=self._amount(seats),
+            amount_gel=claim.amount_gel,
             user_id=telegram_user_id,
             cash=cash,
+            cash_gel=cash_gel,
         )
         if posted_message_id is not None:
-            await self._telegram_client.edit_text(
+            updated = await self._telegram_client.edit_text(
                 chat_id=self._require_chat_id(),
                 message_id=posted_message_id,
                 text=text,
                 parse_mode=PAYMENTS_PARSE_MODE,
             )
-            return
+            if updated:
+                return
 
         sent = await self._telegram_client.send_text(
             chat_id=self._require_chat_id(),
@@ -798,14 +953,15 @@ class PaymentsService:
             board_message_id = board.telegram_message_id if board is not None else None
 
         if board_message_id is not None:
-            await self._telegram_client.edit_text(
+            updated = await self._telegram_client.edit_text(
                 chat_id=self._require_chat_id(),
                 message_id=board_message_id,
                 text=draft.text,
                 reply_markup=draft.reply_markup,
                 parse_mode=PAYMENTS_PARSE_MODE,
             )
-            return
+            if updated:
+                return
         if draft.reply_markup is None:
             # Nothing actionable yet: stay out of the payments topic entirely.
             return
@@ -818,14 +974,25 @@ class PaymentsService:
             parse_mode=PAYMENTS_PARSE_MODE,
         )
         async with self._session_factory() as session:
-            session.add(
-                PaymentsBoard(
-                    environment=self._settings.app_env,
-                    chat_id=self._require_chat_id(),
-                    service_date=day.service_date,
-                    telegram_message_id=sent.message_id,
-                )
+            board = await session.scalar(
+                select(PaymentsBoard)
+                .where(PaymentsBoard.environment == self._settings.app_env)
+                .where(PaymentsBoard.chat_id == self._require_chat_id())
+                .where(PaymentsBoard.service_date == day.service_date)
+                .with_for_update()
             )
+            if board is None:
+                session.add(
+                    PaymentsBoard(
+                        environment=self._settings.app_env,
+                        chat_id=self._require_chat_id(),
+                        service_date=day.service_date,
+                        telegram_message_id=sent.message_id,
+                    )
+                )
+            else:
+                board.telegram_message_id = sent.message_id
+                board.updated_at = datetime.now(UTC)
             await session.commit()
         # The board is the payments menu, so it belongs at the top of the topic
         # rather than wherever the day's chatter pushed it.
@@ -851,18 +1018,19 @@ class PaymentsService:
                     .order_by(PaymentClaim.claimed_at, PaymentClaim.id)
                 )
             ).all()
-        paid_user_ids = {claim.telegram_user_id for claim in claims}
+        claim_by_user = {claim.telegram_user_id: claim for claim in claims}
         return PaymentsBoardView(
             service_date=day.service_date,
             running_lift_times=day.running_lift_times,
-            price_gel=self._settings.payment_price_gel,
+            price_gel=day.price_gel,
             payments=tuple(
                 RiderPayment(
                     label=_rider_label(claim.username, claim.full_name),
                     seats=claim.seats,
-                    amount_gel=self._amount(claim.seats),
-                    due_gel=self._amount(self._owed_seats(day, claim)),
+                    amount_gel=claim.amount_gel,
+                    due_gel=self._owed_seats(day, claim) * day.price_gel,
                     cash=claim.method == CASH_METHOD,
+                    cash_gel=claim.cash_amount_gel,
                     prepaid=bool(day.pending_lift_times(claim.telegram_user_id)),
                 )
                 for claim in claims
@@ -873,7 +1041,11 @@ class PaymentsService:
                     label=_rider_label(*day.labels_by_user.get(user_id, (None, "Rider"))),
                 )
                 for user_id in day.lift_times_by_user
-                if user_id not in paid_user_ids and not day.is_waitlisted(user_id)
+                if (
+                    (claim := claim_by_user.get(user_id)) is None
+                    or claim.amount_gel < self._owed_seats(day, claim) * day.price_gel
+                )
+                and not day.is_waitlisted(user_id)
             ),
             guests_url=self._deep_link(day.service_date, DEEP_LINK_PREFIX),
             # Behind a setting, so paying stays a single in-group tap that records
@@ -882,7 +1054,7 @@ class PaymentsService:
             # private chat, because only a form can show one row per lift.
             paid_url=self._payment_link(day.service_date, PAID_LINK_PREFIX),
             cash_url=self._payment_link(day.service_date, CASH_LINK_PREFIX),
-            deadline_time=self._settings.booking_deadline_time,
+            deadline_time=day.deadline_time,
             cancelled=day.cancelled,
         )
 
@@ -975,10 +1147,20 @@ class PaymentsService:
                         PaymentClaim.service_date,
                         PaymentClaim.telegram_user_id,
                         PaymentClaim.seats,
+                        PaymentClaim.amount_gel,
                     )
                     .where(PaymentClaim.environment == self._settings.app_env)
                     .where(PaymentClaim.chat_id == chat_id)
                     .where(PaymentClaim.service_date.in_(service_dates))
+                )
+            ).all()
+            terms_rows = (
+                await session.scalars(
+                    select(ServiceDayTerms)
+                    .where(ServiceDayTerms.environment == self._settings.app_env)
+                    .where(ServiceDayTerms.chat_id == chat_id)
+                    .where(ServiceDayTerms.thread_id == self._settings.telegram_target_thread_id)
+                    .where(ServiceDayTerms.service_date.in_(service_dates))
                 )
             ).all()
 
@@ -989,10 +1171,13 @@ class PaymentsService:
         cancelled_date_time = {(row.service_date, row.lift_time) for row in cancelled_lifts}
         paid_by_date: dict[date, set[int]] = {}
         paid_seats_by_date: dict[date, dict[int, int]] = {}
-        for claim_date, claim_user_id, claim_seats in claim_keys:
+        paid_amount_by_date: dict[date, dict[int, int]] = {}
+        for claim_date, claim_user_id, claim_seats, claim_amount in claim_keys:
             paid_by_date.setdefault(claim_date, set()).add(claim_user_id)
             paid_seats_by_date.setdefault(claim_date, {})[claim_user_id] = claim_seats
+            paid_amount_by_date.setdefault(claim_date, {})[claim_user_id] = claim_amount
         frozen_by_date: dict[date, DeadlineSnapshot] = {}
+        terms_by_date = {row.service_date: row for row in terms_rows}
         for roster_row in roster_rows:
             previous = frozen_by_date.get(roster_row.service_date, DeadlineSnapshot(rows=()))
             frozen_by_date[roster_row.service_date] = DeadlineSnapshot(
@@ -1004,6 +1189,7 @@ class PaymentsService:
                         label=roster_row.label,
                         seats=roster_row.seats,
                         guests=roster_row.guests,
+                        covered_seats=roster_row.covered_seats,
                     ),
                 )
             )
@@ -1011,12 +1197,22 @@ class PaymentsService:
         capacity_by_time = {lift.time: lift.capacity for lift in DEFAULT_LIFTS}
         days: list[DayBookings] = []
         for service_date, batch in latest_by_date.items():
+            terms = terms_by_date.get(service_date)
             day = DayBookings(
                 service_date=service_date,
                 running_lift_times=(),
                 cancelled=batch.status == "cancelled",
                 polls_created_at=_as_utc(batch.created_at),
+                price_gel=terms.price_gel
+                if terms is not None
+                else self._settings.payment_price_gel,
+                deadline_time=(
+                    terms.deadline_time
+                    if terms is not None
+                    else self._settings.booking_deadline_time
+                ),
                 paid_seats_by_user=dict(paid_seats_by_date.get(service_date, {})),
+                paid_amount_by_user=dict(paid_amount_by_date.get(service_date, {})),
             )
             running: list[str] = []
             for snapshot in (s for s in snapshots if s.batch_id == batch.id):
@@ -1218,7 +1414,7 @@ class PaymentsService:
                 continue
             deadline_at = booking_deadline_at(
                 day.service_date,
-                self._settings.booking_deadline_time,
+                day.deadline_time,
                 zone=self._zone,
             )
             if moment < deadline_at:
@@ -1247,18 +1443,6 @@ class PaymentsService:
         shortfall, tags whoever is missing from it, and leaves the decision with
         Misho. Sent once, at the freeze, because the roster is captured once.
         """
-        async with self._session_factory() as session:
-            paid_user_ids = set(
-                (
-                    await session.scalars(
-                        select(PaymentClaim.telegram_user_id)
-                        .where(PaymentClaim.environment == self._settings.app_env)
-                        .where(PaymentClaim.chat_id == self._require_chat_id())
-                        .where(PaymentClaim.service_date == day.service_date)
-                    )
-                ).all()
-            )
-
         short: list[UnpaidLift] = []
         unpaid: dict[int, str] = {}
         for lift_time in sorted({row.lift_time for row in rows}, key=lift_minutes):
@@ -1269,18 +1453,12 @@ class PaymentsService:
                 continue
             # Manual bookings count as paid: Misho took them himself and settles
             # them himself, and there is no button for them to tap.
-            paid_seats = sum(
-                row.seats
-                for row in lift_rows
-                if row.telegram_user_id == MANUAL_USER_ID or row.telegram_user_id in paid_user_ids
-            )
+            paid_seats = sum(row.covered_seats for row in lift_rows)
             if paid_seats >= MINIMUM_RIDERS:
                 continue
             short.append(UnpaidLift(lift_time=lift_time, paid_seats=paid_seats))
             for row in lift_rows:
-                if row.telegram_user_id != MANUAL_USER_ID and (
-                    row.telegram_user_id not in paid_user_ids
-                ):
+                if row.telegram_user_id != MANUAL_USER_ID and row.covered_seats < row.seats:
                     unpaid[row.telegram_user_id] = row.label
         if not short:
             return
@@ -1316,7 +1494,15 @@ class PaymentsService:
             notice = await self._service_day_notice(session=session, service_date=day.service_date)
             if notice is not None and notice.roster_captured_at is not None:
                 return None
-            rows = _roster_rows(day)
+            claims = (
+                await session.scalars(
+                    select(PaymentClaim)
+                    .where(PaymentClaim.environment == self._settings.app_env)
+                    .where(PaymentClaim.chat_id == self._require_chat_id())
+                    .where(PaymentClaim.service_date == day.service_date)
+                )
+            ).all()
+            rows = _covered_roster_rows(day, _roster_rows(day), claims=tuple(claims))
             for row in rows:
                 session.add(
                     DeadlineRoster(
@@ -1329,6 +1515,7 @@ class PaymentsService:
                         label=row.label,
                         seats=row.seats,
                         guests=row.guests,
+                        covered_seats=row.covered_seats,
                     )
                 )
             if notice is None:
@@ -1410,9 +1597,6 @@ class PaymentsService:
             prefix=prefix,
         )
 
-    def _amount(self, seats: int) -> int:
-        return seats * self._settings.payment_price_gel
-
     def _require_chat_id(self) -> int:
         chat_id = self._settings.telegram_target_chat_id
         if chat_id is None:
@@ -1462,6 +1646,50 @@ def _roster_rows(day: DayBookings) -> tuple[RosterSeat, ...]:
                 )
             )
     return tuple(rows)
+
+
+def _covered_roster_rows(
+    day: DayBookings,
+    rows: tuple[RosterSeat, ...],
+    *,
+    claims: tuple[PaymentClaim, ...],
+) -> tuple[RosterSeat, ...]:
+    """Freeze movable day money onto the seats it covered at the deadline."""
+    lift_totals: dict[str, int] = {}
+    for row in rows:
+        lift_totals[row.lift_time] = lift_totals.get(row.lift_time, 0) + row.seats
+    running = {lift_time for lift_time, seats in lift_totals.items() if seats >= MINIMUM_RIDERS}
+    amount_by_user = {claim.telegram_user_id: claim.amount_gel for claim in claims}
+    result: list[RosterSeat] = []
+    for user_id in {row.telegram_user_id for row in rows}:
+        user_rows = [row for row in rows if row.telegram_user_id == user_id]
+        ordered = sorted(
+            user_rows,
+            key=lambda row: (row.lift_time not in running, lift_minutes(row.lift_time)),
+        )
+        received = (
+            sum(row.seats for row in ordered) * day.price_gel
+            if user_id == MANUAL_USER_ID
+            else amount_by_user.get(user_id, 0)
+        )
+        coverage = reconcile_coverage(
+            received_gel=received,
+            price_gel=day.price_gel,
+            targets=tuple(CoverageTarget(row.lift_time, row.seats) for row in ordered),
+        )
+        remaining_by_lift = {target.lift_time: target.covered_seats for target in coverage.targets}
+        for row in user_rows:
+            result.append(
+                RosterSeat(
+                    lift_time=row.lift_time,
+                    telegram_user_id=row.telegram_user_id,
+                    label=row.label,
+                    seats=row.seats,
+                    guests=row.guests,
+                    covered_seats=remaining_by_lift.get(row.lift_time, 0),
+                )
+            )
+    return tuple(result)
 
 
 def _apply_snapshot(

@@ -54,6 +54,7 @@ class RiderLiftRow:
 @dataclass(frozen=True)
 class RiderDayView:
     service_date: date
+    price_gel: int = 15
     rows: tuple[RiderLiftRow, ...] = ()
     # Lifts the rider booked that have not reached the minimum yet. Paying for these
     # is optional, which is why the whole-day button only appears when some exist.
@@ -107,7 +108,7 @@ def render_rider_card(view: RiderCardView) -> MyDayDraft:
     lines = [
         f"🚲 My rides · {_long_day_label(day.service_date)}",
         "",
-        f"{view.price_gel} GEL per seat. Someone riding with you? Add a seat.",
+        f"{day.price_gel} GEL per seat. Someone riding with you? Add a seat.",
         "",
     ]
     lines.extend(_row_line(row) for row in day.rows)

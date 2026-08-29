@@ -56,6 +56,11 @@ from veloexpress_bot.polls.service import (
     PollSetup,
 )
 from veloexpress_bot.polls.weekendplan import PlanCardView
+from veloexpress_bot.service_day_defaults import (
+    DEADLINE_STEP_MINUTES,
+    PRICE_STEP_GEL,
+    ServiceDayDefaultsStore,
+)
 from veloexpress_bot.telegram.errors import TelegramPollPostError, TelegramTargetForbiddenError
 
 router = Router(name="admin_poll_setup")
@@ -356,6 +361,58 @@ async def open_booking_monitor(
         admin_user_id=callback.from_user.id,
         private_chat_id=message.chat.id,
     )
+
+
+@router.callback_query(F.data == "menu:service_defaults")
+async def open_service_day_defaults(
+    callback: CallbackQuery,
+    settings: Settings,
+    service_day_defaults: ServiceDayDefaultsStore,
+) -> None:
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+    card = await service_day_defaults.card()
+    await _edit_card(message, card.text, card.reply_markup)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("defaults:"))
+async def handle_service_day_defaults(
+    callback: CallbackQuery,
+    settings: Settings,
+    poll_service: PollPostingService,
+    auto_scheduler: PollAutoScheduler,
+    service_day_defaults: ServiceDayDefaultsStore,
+) -> None:
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+    action, value = _split_callback(callback.data)
+    if action == "menu":
+        await _show_menu(message, poll_service, auto_scheduler)
+        await callback.answer()
+        return
+    try:
+        if action == "price":
+            await service_day_defaults.adjust_price(
+                PRICE_STEP_GEL if value == "add" else -PRICE_STEP_GEL,
+                admin_user_id=callback.from_user.id,
+            )
+        elif action == "deadline":
+            await service_day_defaults.adjust_deadline(
+                DEADLINE_STEP_MINUTES if value == "add" else -DEADLINE_STEP_MINUTES,
+                admin_user_id=callback.from_user.id,
+            )
+        else:
+            await callback.answer()
+            return
+    except ValueError as error:
+        await callback.answer(str(error), show_alert=True)
+        return
+    card = await service_day_defaults.card()
+    await _edit_card(message, card.text, card.reply_markup)
+    await callback.answer("Defaults updated.")
 
 
 @router.callback_query(F.data.startswith("mon:day:"))

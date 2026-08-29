@@ -1,10 +1,10 @@
 # Veloexpress Bot
 
-Telegram bot for the Veloexpress shuttle group: it runs the weekend lift polls, tells the group which lifts actually happen, and keeps track of who has paid.
+Telegram bot for the Veloexpress shuttle group: it runs the weekend lift polls, shows which lifts reached the rider minimum and which are funded, and keeps an append-only record of reported money.
 
 Admins work from a single private menu — `📋 Weekend` plans and schedules what gets posted, `📊 Booking monitor` is the live view during a weekend, `➕ Extra lift day` covers midweek rides. A background worker posts the polls on time, announces a lift once it reaches the rider minimum, reminds the group before the booking deadline, and pings the day's first lift before it leaves. Riders confirm payment with a button in the group or simply by writing in the payments topic.
 
-Still out of scope: balances, automatic waitlist management, miniapp, website, and template editing.
+Still out of scope: balances across service days, fines, automatic removal of Telegram votes, miniapp, website, and template editing.
 
 ## Product Principle
 
@@ -58,6 +58,8 @@ PAYMENTS_VIA_PRIVATE_CHAT=false
 
 `TELEGRAM_PAYMENTS_THREAD_ID` is the payments topic. Leave it empty to switch the payments board off entirely.
 
+`SCHEDULE_TIMEZONE` defaults to `Asia/Tbilisi`. `PAYMENT_PRICE_GEL=15` and `BOOKING_DEADLINE_TIME=20:00` are bootstrap defaults; admins can change the price and deadline at runtime from `⚙️ Service defaults`. Runtime changes apply only to days published afterwards.
+
 For a forum topic, set `TELEGRAM_TARGET_THREAD_ID` to the topic message thread id. Leave it empty for a normal group.
 
 Start the local development environment:
@@ -82,7 +84,7 @@ just down
 Use `just run` only when Postgres is already running and you want a one-shot bot
 process without hot reload.
 
-All admin controls live in a private chat with the bot. There is no Close button on any card: `/start` posts a fresh card and then deletes the command echo along with whatever card an earlier `/start` left behind, so exactly one card is ever live and the bot tidies up instead of asking. `/start` answers rather than greets: it opens with each active day's state — how many lifts are running, how many riders have paid — and when the next polls appear, with the menu underneath. `/create_lift_poll` still jumps straight to the weekend card but is no longer suggested, so the menu stays the single way in instead of a second, drifting copy of it. Polls are always posted to `TELEGRAM_TARGET_CHAT_ID` and, when configured, `TELEGRAM_TARGET_THREAD_ID`.
+All admin controls live in a private chat with the bot. There is no Close button on any card: `/start` posts a fresh card and then deletes the command echo along with whatever card an earlier `/start` left behind, so exactly one card is ever live and the bot tidies up instead of asking. `/start` answers rather than greets: it opens with each active day's state — how many lifts reached the minimum, how many are funded, how many riders reported payment — and when the next polls appear, with the menu underneath. `⚙️ Service defaults` changes the price in 5 GEL steps and the deadline in 30-minute steps without a redeploy. `/create_lift_poll` still jumps straight to the weekend card but is no longer suggested. Polls are always posted to `TELEGRAM_TARGET_CHAT_ID` and, when configured, `TELEGRAM_TARGET_THREAD_ID`.
 
 `📋 Weekend` is the single source of truth for what gets posted: it shows the upcoming weekend, the lift-time range (learned from recent weeks), which days are enabled, and when the polls will open automatically. Edits are saved as a plan — nothing posts until the scheduled time or an explicit `🚀 Post now`. Posted days are marked and protected; `♻️ Recreate polls` (with confirmation) replaces an already-posted weekend and reports tracked votes first. A `⏭ Skip weekend` toggle suppresses one auto run.
 
@@ -94,15 +96,15 @@ All admin controls live in a private chat with the bot. There is no Close button
 
 The monitor keeps one reusable live message per admin, with day tabs and `➖`/`➕` controls for people booked outside Telegram. Tapping a lift opens its detail (riders, manual and guest counts) with `🚫 Cancel lift` / `♻️ Restore lift` — a single lift is reversible. A `🚫 Cancel all` button retires the whole day: the polls close, the board shows all lifts cancelled, the day leaves the monitor, and the date is freed so an admin can post a fresh poll if it comes back (there is no in-place "restore day"). The day takes its hand-added riders and its payments with it — nobody can tell whether a manually added rider still intends to come, and the money is going back, so a revived poll opens genuinely empty rather than with seats and cash the bot no longer holds. Cancelling a lift marks it `❌ cancelled` on the public board; cancelling the day marks the whole board cancelled. Either way the bot immediately tags the affected voters in the group thread so they know it is off. Public availability counts Telegram votes, manual bookings and guest seats, and shows each lift's state in words (`needs N more`, `N left`, `full`, `waitlist +N`, `❌ cancelled`). A lift with a waitlist names it on the next line, so `waitlist +2` stops being a riddle; the board is edited in place and a Telegram edit sends no notification, so naming informs without pinging. The seat order itself lives in one pure module used by both the board and the payments side, because two copies of that rule would drift and then disagree about who owes money. All admin monitors refresh when votes, manual counts, or cancellations change. An admin must open the private bot chat before Telegram will allow the monitor to be delivered.
 
-A lift runs once it reaches the rider minimum — five, the point where the trip covers the driver's cost. No admin taps anything to confirm it; the background worker watches bookings and posts one group message tagging that lift's seat holders when it crosses the line — never the waitlist, who have no seat and so are not being asked to pay. The message is one line with a link to the day's payments board rather than a restatement of the rules, which live in the pinned notice; three lines of money talk per confirmed lift read as spam in the lift topic. Each lift announces this at most once, ever. If the count later falls back below the minimum the bot says so too, but only after the number has held for ten minutes: a drop is usually one rider re-picking slots, and a "running / short / running" burst is worse than silence. Recovering back above the minimum is silent. Cancelled lifts never signal. The day's earliest running lift also gets a single departure reminder shortly before it leaves — lateness is what kills the opening run, while later lifts self-correct because the van is already cycling. All of these are batched per worker tick, so a tick that trips several lifts still sends one message per kind. Because they ride on the same 30-second tick as auto-posting, a notice can lag a vote by up to half a minute, and they run even when no posting schedule was ever configured.
+A lift opens payment once it reaches the rider minimum — five, the point where the trip can cover the driver's cost. The background worker tags the seat holders when it crosses that line; the monitor then distinguishes `payment open`, `funded`, and `decision needed` instead of promising that the lift is already running. If the booking count later falls below five, the bot reports it after a ten-minute debounce. The day's earliest viable lift also gets one departure reminder shortly before it leaves.
 
 One `PaymentTerms` object carries the money rules — price, deadline, link — so the poll notice, the ✅ message and the payments board all state them identically instead of drifting apart. The poll notice says a lift runs from five riders and that there is nothing to pay before the ✅ message; the ✅ message itself asks for the money and links to the board, without repeating the rulebook. It says *pay to lock it in* rather than *is running*, because five bookings only make the money due — what the group agreed actually settles a lift is five prepayments by the deadline, and promising a van nobody has paid for is the kind of over-promise that gets the bot ignored. The link is a deep link into the bot's private chat, not a jump to the group. It is the most-tapped link the bot has, and pointing it at a shared message wastes it: tapping a deep link *is* pressing Start, so one tap both shows the rider their own day — their lifts, their amount, no scrolling a board looking for themselves — and leaves the bot able to message them ever after. Most of the 166 members never opened the bot, and nothing else in the group converts them. It settles nothing by itself; tapping a link is not paying. Without a bot username it falls back to the day's board and then to the payments topic, derived from the chat and thread ids, so there is nothing to configure; with no payments topic set the link line is simply omitted.
 
-The notice is re-rendered in place once per process for every upcoming day, so a changed price or rule reaches notices that were already posted. Recreating the polls would also carry the new text but would throw away live votes; a Telegram edit is silent and costs nothing.
+Price, deadline and timezone are snapshotted when a service day is first published. A later deploy or default-price change cannot rewrite an amount riders already agreed to; new defaults apply to newly published days.
 
 `BOOKING_DEADLINE_TIME` is when booking and paying closes, on the evening *before* a lift day. Two hours before it, each service day gets one reminder in the lift topic naming the deadline and what every lift still needs. It is sent once and then kept fresh in place: riders book after it lands, and a stale count is worse than none in the message people act on. It stays live past the deadline too, because nothing actually closes — the Telegram poll stays open and the bot enforces nothing — so only the call to action changes, to say the deadline passed and late changes are Misho's call. Editing costs nothing when the text has not moved. It is sent only while at least one lift is short of the minimum — when everything already runs there is nothing to ask the group for, and when everything is cancelled there is nothing to save. The reminder tags nobody: whoever is booked is already booked, and tagging the whole group is the spam this bot exists to avoid.
 
-The board is pinned in the payments topic, because it is the payments menu and belongs at the top rather than wherever the day's chatter pushed it. Once a day has a running lift, the bot posts one payments board for that day into `TELEGRAM_PAYMENTS_THREAD_ID` and keeps editing it: which lifts are running, the per-seat price, who has paid, and how many riders are still outstanding — as a count, never a name list. Nothing appears in the payments topic before a lift reaches the minimum.
+The board is pinned in the payments topic, because it is the payments menu and belongs at the top rather than wherever the day's chatter pushed it. Once a lift reaches the rider minimum, the bot posts one payments board into `TELEGRAM_PAYMENTS_THREAD_ID` and keeps editing it: which lifts have payment open, the snapshotted price, reported payments, and the riders still outstanding. Nothing appears before a lift reaches the minimum.
 
 `💸 I paid` and `💵 Cash` record the payment in place, as in-group callbacks. `PAYMENTS_VIA_PRIVATE_CHAT` turns them into deep links instead: paying is the most frequent thing anybody does here, so routing it through the private chat converts nearly the whole paying group within a weekend, and nothing else can reach the ~160 members Telegram will not let the bot message. Unlike the ✅ message's `Pay` link, which only invites somebody to go and pay, these two are the rider asserting that money has moved, so acting on arrival is exactly the promise the button already made.
 
@@ -110,9 +112,9 @@ It is off by default because the trade is real: a callback records the claim the
 
 When the setting is on, arriving by one of those links settles up immediately, unless something needs saying first. A partial booking or a waitlist place records nothing and opens the card instead: the board has to squeeze those warnings into a 200-character toast and a second tap, while the card has room to lay out which lifts filled, what is due now and what the whole day costs, with the buttons underneath. Explaining beats charging quietly, and it retires the two-tap gesture.
 
-Riders act on the board with inline buttons rather than a command, because a button in the group works for the many riders who never opened a private chat with the bot. `💸 I paid` records a claim priced as seats × `PAYMENT_PRICE_GEL`, defaulting to the number of running lifts that rider booked; `➕ Guest` and `➖ Seat` adjust the seat count, which is also how someone who booked two lifts but will only ride one corrects their total. `↩️ Undo` withdraws the claim. The labels are deliberately impersonal — one shared keyboard serves everyone — and each tap answers with a private toast.
+Riders act on the board with inline buttons rather than a command. `💸 I paid` and `💵 Cash` append only the outstanding amount to the rider's day ledger. `👤 Guests` opens the private rider card, where guest seats are adjusted per lift. Before the deadline, `↩️ Undo` appends a reversal rather than erasing financial history.
 
-When a rider claims, the bot posts their payment line to the payments topic on their behalf, tagged with amount and lifts, so Misho reads one format instead of a mix of screenshots and free text. If that rider already wrote in the payments topic since this weekend's polls were created, the bot stays silent and only records the claim: it checks that a message exists, never what it says. A later seat change edits the line the bot already posted instead of adding another. Payments are tracked per rider per day, not per lift, because a rider who booked two lifts may only ride one.
+When a rider reports payment, the bot posts their day and amount to the payments topic on their behalf, without a fixed lift list: coverage follows their current bookings before the deadline. If that rider already wrote in the payments topic since the poll was created, the bot stays silent and records the report only once.
 
 Cancelling something people already paid for sends the admin a refund list in their private chat: who paid, how much, and the total to return. That list is also kept, because cancelling clears the day's claims — without a stored copy the chat message is the only surviving record of who is owed money, and one stray delete destroys it. `🧾 Past refunds` in the monitor re-sends the last few. They are stored rendered rather than as rows: a refund list is a snapshot of the moment it was made and must keep saying what the admin was shown, not re-derive itself from a world that has moved on. Because payment covers the day rather than a single lift, cancelling one lift is not automatically a refund — riders still booked on another lift that day are listed as staying, and only riders left with nothing appear as refunds. Cancelling the whole day makes every payment a refund. Nobody paid means no message.
 
@@ -136,9 +138,9 @@ Capacity is filled in a fixed order: manual bookings and guests hold their seats
 
 Cash has its own `💵 Cash` button beside `💸 I paid`. Telling riders to press the transfer button anyway is a rule most of a 166-person group will not follow, and the method is worth recording in its own right: Misho reconciles against his bank statement, so a cash line is the one he must *not* go hunting for. Cash is named on the board and in the posted line; a transfer is not, because its absence already means "expect it in the bank". An admin mark leaves the method unset — guessing "cash" there could send Misho looking for a transfer that never existed.
 
-Some riders pay cash or message Misho directly and never touch the bot at all. Tapping a rider in the monitor's lift detail records their payment; tapping again clears it. That admin mark posts nothing to the payments topic — whoever took the cash already knows — and the board shows it exactly like a rider's own claim, because who recorded a payment is bookkeeping the group does not need to read. There is no separate "verify a claim" step: with no enforcement behind it, a tap per rider would be work without a consequence.
+Some riders pay cash or write in the payments topic instead of using the transfer button. Those paths create the same immutable money entries, with the payment method kept for reconciliation. There is no separate verification workflow.
 
-Paid and owed are two different numbers, because re-voting is free until the deadline. A claim stores what the rider has settled for; what they owe is derived from the lifts they currently hold plus the guests they declared. When the two differ the board says so — `+15 due` or `15 back` — rather than restating the paid figure, which would make the bot lie about money. Tapping 💸 or 💵 again settles the difference; tapping with nothing outstanding just says you are already settled. ➕ Guest raises the bill rather than claiming the extra seat is paid.
+Paid and owed are two different numbers, because re-voting is free until the deadline. Payments are immutable money entries for a rider and service day; coverage is recalculated over the lifts and guests they currently hold. Changing one lift for another keeps the same coverage, while adding a seat creates a top-up. At the deadline the covered roster is frozen; later additional seats require additional payment.
 
 Deriving from live votes is right up to the deadline and wrong after it. The group's rule is that once a lift is full by `BOOKING_DEADLINE_TIME` the trip is happening and the money is spent, so the first worker tick past the deadline freezes the day into a **deadline roster**: one row per rider per lift, own seat and guests, plus a row for the manual bookings that also count towards five. Written once, never updated — a live table cannot answer "who was on this at eight o'clock" — and marked on the service day even when it comes out empty, so "nobody booked" is not retried every thirty seconds as "not captured yet".
 
@@ -236,7 +238,12 @@ TELEGRAM_BOT_TOKEN=123456:...
 TELEGRAM_ADMIN_IDS=123456789
 TELEGRAM_TARGET_CHAT_ID=-1001234567890
 TELEGRAM_TARGET_THREAD_ID=
+TELEGRAM_PAYMENTS_THREAD_ID=
 TELEGRAM_PIN_POLL=true
+SCHEDULE_TIMEZONE=Asia/Tbilisi
+PAYMENT_PRICE_GEL=15
+BOOKING_DEADLINE_TIME=20:00
+PAYMENTS_VIA_PRIVATE_CHAT=false
 ```
 
 By default the bot connects to the bundled `db` service. Later, if you move Postgres to a separate managed/write database, set `DATABASE_URL` explicitly:
@@ -258,10 +265,11 @@ python -m veloexpress_bot.healthcheck
 ```
 
 It does not expose an HTTP port. The bot still runs in Telegram long-polling mode.
-The healthcheck verifies two things:
+The production healthcheck verifies three things:
 
 - the bot event loop is alive by checking a heartbeat file updated by the running process;
 - Postgres is reachable with a lightweight `select 1`.
+- the required scheduler completed a fully successful tick recently; a live event loop with repeatedly failing business jobs is unhealthy.
 
 Defaults are suitable for Coolify and Uptime Kuma Docker-container monitoring:
 
@@ -269,6 +277,8 @@ Defaults are suitable for Coolify and Uptime Kuma Docker-container monitoring:
 APP_HEALTH_HEARTBEAT_FILE=/tmp/veloexpress-bot-heartbeat.json
 APP_HEALTH_HEARTBEAT_INTERVAL_SECONDS=15
 APP_HEALTH_MAX_AGE_SECONDS=90
+APP_HEALTH_REQUIRE_WORKER=true
+APP_HEALTH_WORKER_MAX_AGE_SECONDS=120
 ```
 
 In Uptime Kuma, use a Docker Container monitor for the Coolify bot container and treat Docker health status as the signal. To debug manually:
@@ -276,6 +286,8 @@ In Uptime Kuma, use a Docker Container monitor for the Coolify bot container and
 ```sh
 docker compose -f docker-compose.coolify.yml exec bot python -m veloexpress_bot.healthcheck
 ```
+
+Backups and restore drills are documented in [`docs/operations/postgres-backup.md`](docs/operations/postgres-backup.md).
 
 For a local DB-only check outside Docker, run:
 
