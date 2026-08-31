@@ -7,31 +7,39 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from hashlib import sha256
 from time import perf_counter
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from aiogram.types import InlineKeyboardMarkup
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import Select, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from veloexpress_bot.bookings.render import (
+    EN_SHORT_WEEKDAYS,
     BookingLiftStatus,
     BookingMonitorDay,
     BookingMonitorDraft,
+    LiftDayAudit,
+    LiftDayAuditLift,
+    LiftDayAuditSeat,
     LiftHistory,
     LiftHistoryDay,
     LiftRider,
+    LiftTrend,
     MonitorGuest,
     MonitorLateExit,
     MonitorRider,
     MonitorWaitlistRider,
+    TrendRow,
     render_all_riders,
     render_booking_management,
     render_booking_monitor,
     render_cancel_day_confirmation,
+    render_lift_day_audit,
     render_lift_history,
+    render_lift_trend,
 )
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.models import (
@@ -40,9 +48,12 @@ from veloexpress_bot.db.models import (
     CancelledLift,
     DeadlineRoster,
     GuestSeat,
+    LiftDayResult,
+    LiftDaySeat,
     LiftSignalState,
     ManualBookingCount,
     PaymentClaim,
+    PaymentEntry,
     PaymentsBoard,
     PollAutoSchedule,
     PollBatch,
@@ -531,7 +542,14 @@ class PollPostingService:
         """The monitor card. With no live days it becomes the midweek way in, so
         it needs the schedule line and the last weekend's figures."""
         if days:
-            return render_booking_monitor(days, selected_service_date=selected_service_date)
+            # Carried on a live week too, only to decide whether the history
+            # button is worth a row. Two indexed reads against a table with one
+            # row per finished lift, so it costs nothing to always know.
+            return render_booking_monitor(
+                days,
+                selected_service_date=selected_service_date,
+                history=await self.lift_history(),
+            )
         return render_booking_monitor(
             (),
             selected_service_date=None,
@@ -553,138 +571,289 @@ class PollPostingService:
             zone=self._zone,
         )
 
-    async def lift_history(self, *, limit: int = 8) -> LiftHistory:
-        """What the finished lift days came to, newest first.
+    async def lift_history(
+        self,
+        *,
+        limit: int = 8,
+        before: date | None = None,
+    ) -> LiftHistory:
+        """A page of finished lift days, newest first, with the season under it.
 
-        Built from the deadline roster rather than live votes: the roster is who
-        held a seat when booking closed, which is what actually rode. Days that
-        finished without a roster — the bot was down at 20:00, or they predate the
-        freeze — fall back to the votes that are still on file, which is the best
-        record there is for them.
+        Read straight off what the bot wrote down the morning after each day.
+        This used to be recomputed from live votes on every open — but Telegram
+        polls are never closed, so a vote changed weeks later rewrote a weekend
+        that had already happened, and no query could tell that a van Misho took
+        out with four riders had run at all.
+
+        Only ever a page: the totals come from an aggregate over the whole
+        season, so a truncated list never turns into a truncated total.
         """
+        empty = LiftHistory(days=(), total_days=0, total_ran=0, total_seats=0, total_gel=0)
         if self._settings.telegram_target_chat_id is None:
-            return LiftHistory(days=(), total_days=0, total_ran=0, total_seats=0, total_gel=0)
-        today = datetime.now(UTC).astimezone(self._zone).date()
+            return empty
+
         async with self._session_factory() as session:
-            batches = (
+            page_query = self._history_scope(select(LiftDayResult.service_date).distinct())
+            if before is not None:
+                page_query = page_query.where(LiftDayResult.service_date < before)
+            page_dates = (
                 await session.scalars(
-                    select(PollBatch)
-                    .where(PollBatch.environment == self._settings.app_env)
-                    .where(PollBatch.chat_id == self._settings.telegram_target_chat_id)
-                    .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
-                    .where(PollBatch.status == "posted")
-                    .where(PollBatch.service_date < today)
-                    .order_by(PollBatch.service_date.desc(), PollBatch.id.desc())
+                    page_query.order_by(LiftDayResult.service_date.desc())
+                    # One more than asked for, purely to learn whether an "Older"
+                    # button has anywhere to go.
+                    .limit(limit + 1)
                 )
             ).all()
-            past_batches: dict[date, PollBatch] = {}
-            for batch in batches:
-                past_batches.setdefault(batch.service_date, batch)
-            if not past_batches:
-                return LiftHistory(days=(), total_days=0, total_ran=0, total_seats=0, total_gel=0)
+            if not page_dates:
+                return empty
+            has_older = len(page_dates) > limit
+            page_dates = list(page_dates[:limit])
 
-            service_dates = tuple(past_batches)
-            roster_rows = (
+            rows = (
                 await session.scalars(
-                    select(DeadlineRoster)
-                    .where(DeadlineRoster.environment == self._settings.app_env)
-                    .where(DeadlineRoster.chat_id == self._settings.telegram_target_chat_id)
-                    .where(DeadlineRoster.thread_id == self._settings.telegram_target_thread_id)
-                    .where(DeadlineRoster.service_date.in_(service_dates))
+                    self._history_scope(select(LiftDayResult)).where(
+                        LiftDayResult.service_date.in_(tuple(page_dates))
+                    )
                 )
             ).all()
-            snapshots = (
-                await session.scalars(
-                    select(PollOptionSnapshot)
-                    .where(
-                        PollOptionSnapshot.batch_id.in_(
-                            tuple(batch.id for batch in past_batches.values())
+            # The ledger, not the claim projection: entries are append-only and
+            # reversals are negative rows, so the sum is what actually came in.
+            paid_by_date: dict[date, int] = {
+                row[0]: row[1]
+                for row in (
+                    await session.execute(
+                        select(
+                            PaymentEntry.service_date,
+                            func.coalesce(func.sum(PaymentEntry.amount_gel), 0),
                         )
+                        .where(PaymentEntry.environment == self._settings.app_env)
+                        .where(PaymentEntry.chat_id == self._settings.telegram_target_chat_id)
+                        .where(PaymentEntry.service_date.in_(tuple(page_dates)))
+                        .group_by(PaymentEntry.service_date)
                     )
-                    .where(PollOptionSnapshot.lift_time.is_not(None))
-                )
-            ).all()
-            votes = (
-                await session.scalars(
-                    select(PollVote).where(
-                        PollVote.poll_id.in_(tuple({snapshot.poll_id for snapshot in snapshots}))
-                    )
-                )
-            ).all()
-            cancelled = (
-                await session.scalars(
-                    select(CancelledLift)
-                    .where(CancelledLift.environment == self._settings.app_env)
-                    .where(CancelledLift.chat_id == self._settings.telegram_target_chat_id)
-                    .where(CancelledLift.thread_id == self._settings.telegram_target_thread_id)
-                    .where(CancelledLift.service_date.in_(service_dates))
-                )
-            ).all()
-            claims = (
+                ).all()
+            }
+            totals = (
                 await session.execute(
-                    select(PaymentClaim.service_date, PaymentClaim.amount_gel)
-                    .where(PaymentClaim.environment == self._settings.app_env)
-                    .where(PaymentClaim.chat_id == self._settings.telegram_target_chat_id)
-                    .where(PaymentClaim.service_date.in_(service_dates))
+                    self._history_scope(
+                        select(
+                            func.count(func.distinct(LiftDayResult.service_date)),
+                            func.coalesce(func.sum(LiftDayResult.seats), 0),
+                        )
+                    ).where(LiftDayResult.ran.is_(True))
                 )
-            ).all()
-
-        seats_by_date_time: dict[tuple[date, str], int] = {}
-        for row in roster_rows:
-            key = (row.service_date, row.lift_time)
-            seats_by_date_time[key] = seats_by_date_time.get(key, 0) + row.seats
-        votes_by_poll_option: dict[tuple[str, int], int] = {}
-        for vote in votes:
-            for option_index in decode_option_ids(vote.option_ids):
-                key = (vote.poll_id, option_index)
-                votes_by_poll_option[key] = votes_by_poll_option.get(key, 0) + 1
-        cancelled_date_time = {(row.service_date, row.lift_time) for row in cancelled}
-        paid_gel_by_date: dict[date, int] = {}
-        for claim_date, claim_amount_gel in claims:
-            paid_gel_by_date[claim_date] = paid_gel_by_date.get(claim_date, 0) + claim_amount_gel
-
-        history_days: list[LiftHistoryDay] = []
-        for service_date, batch in past_batches.items():
-            day_snapshots = [
-                snapshot
-                for snapshot in snapshots
-                if snapshot.batch_id == batch.id and snapshot.lift_time is not None
-            ]
-            ran = 0
-            seats = 0
-            lifts = 0
-            for snapshot in day_snapshots:
-                lift_time = snapshot.lift_time
-                if lift_time is None or (service_date, lift_time) in cancelled_date_time:
-                    continue
-                lifts += 1
-                lift_seats = seats_by_date_time.get(
-                    (service_date, lift_time),
-                    votes_by_poll_option.get((snapshot.poll_id, snapshot.option_index), 0),
+            ).one()
+            total_ran = await session.scalar(
+                self._history_scope(select(func.count()).select_from(LiftDayResult)).where(
+                    LiftDayResult.ran.is_(True)
                 )
-                if lift_seats >= MINIMUM_RIDERS:
-                    ran += 1
-                    seats += lift_seats
-            history_days.append(
-                LiftHistoryDay(
-                    service_date=service_date,
-                    ran_count=ran,
-                    lift_count=lifts,
-                    seat_count=seats,
-                    paid_gel=paid_gel_by_date.get(service_date, 0),
+            )
+            # Every day the bot has a record of, not only the page — otherwise the
+            # season line would quietly mean "the last eight days". As a subquery
+            # rather than a list of dates, which by October would be a hundred.
+            total_gel = await session.scalar(
+                select(func.coalesce(func.sum(PaymentEntry.amount_gel), 0))
+                .where(PaymentEntry.environment == self._settings.app_env)
+                .where(PaymentEntry.chat_id == self._settings.telegram_target_chat_id)
+                .where(
+                    PaymentEntry.service_date.in_(
+                        self._history_scope(
+                            select(LiftDayResult.service_date).distinct()
+                        ).scalar_subquery()
+                    )
                 )
             )
 
+        rows_by_date: dict[date, list[LiftDayResult]] = {}
+        for row in rows:
+            rows_by_date.setdefault(row.service_date, []).append(row)
+        days = tuple(
+            self._history_day(
+                service_date,
+                rows_by_date[service_date],
+                paid_gel=paid_by_date.get(service_date, 0),
+            )
+            for service_date in page_dates
+        )
         return LiftHistory(
-            days=tuple(history_days[:limit]),
-            total_days=sum(day.ran_count > 0 for day in history_days),
-            total_ran=sum(day.ran_count for day in history_days),
-            total_seats=sum(day.seat_count for day in history_days),
-            total_gel=sum(day.paid_gel for day in history_days),
+            days=days,
+            total_days=totals[0],
+            total_ran=total_ran or 0,
+            total_seats=totals[1],
+            total_gel=total_gel or 0,
+            older_before=page_dates[-1] if has_older else None,
+            has_newer=before is not None,
         )
 
-    async def lift_history_view(self) -> BookingMonitorDraft:
-        return render_lift_history(await self.lift_history())
+    @staticmethod
+    def _history_day(
+        service_date: date,
+        rows: list[LiftDayResult],
+        *,
+        paid_gel: int,
+    ) -> LiftHistoryDay:
+        return LiftHistoryDay(
+            service_date=service_date,
+            ran_count=sum(row.ran for row in rows),
+            lift_count=len(rows),
+            # Only the vans that went. A lift nobody filled contributed nobody.
+            seat_count=sum(row.seats for row in rows if row.ran),
+            paid_gel=paid_gel,
+            cancelled=all(row.cancelled for row in rows),
+            reconstructed=any(row.source != "closed" for row in rows),
+        )
+
+    def _history_scope(self, statement: Select[Any]) -> Select[Any]:
+        return (
+            statement.where(LiftDayResult.environment == self._settings.app_env)
+            .where(LiftDayResult.chat_id == self._settings.telegram_target_chat_id)
+            .where(LiftDayResult.thread_id == self._settings.telegram_target_thread_id)
+        )
+
+    async def lift_history_view(self, *, before: date | None = None) -> BookingMonitorDraft:
+        return render_lift_history(await self.lift_history(before=before))
+
+    async def lift_day_audit(self, *, service_date: date) -> LiftDayAudit | None:
+        """One finished day in full — which vans went, who was on them, what came in.
+
+        The seat list is who held a place when the day closed, which is not the
+        same as who paid: somebody who turned up without paying is on it, and the
+        🔴 beside them is the reason to open this screen at all.
+        """
+        if self._settings.telegram_target_chat_id is None:
+            return None
+        async with self._session_factory() as session:
+            rows = (
+                await session.scalars(
+                    self._history_scope(select(LiftDayResult)).where(
+                        LiftDayResult.service_date == service_date
+                    )
+                )
+            ).all()
+            if not rows:
+                return None
+            seats = (
+                await session.scalars(
+                    select(LiftDaySeat)
+                    .where(LiftDaySeat.environment == self._settings.app_env)
+                    .where(LiftDaySeat.chat_id == self._settings.telegram_target_chat_id)
+                    .where(LiftDaySeat.thread_id == self._settings.telegram_target_thread_id)
+                    .where(LiftDaySeat.service_date == service_date)
+                )
+            ).all()
+            received = await session.scalar(
+                select(func.coalesce(func.sum(PaymentEntry.amount_gel), 0))
+                .where(PaymentEntry.environment == self._settings.app_env)
+                .where(PaymentEntry.chat_id == self._settings.telegram_target_chat_id)
+                .where(PaymentEntry.service_date == service_date)
+            )
+            refunded = await session.scalar(
+                select(func.coalesce(func.sum(PaymentEntry.amount_gel), 0))
+                .where(PaymentEntry.environment == self._settings.app_env)
+                .where(PaymentEntry.chat_id == self._settings.telegram_target_chat_id)
+                .where(PaymentEntry.service_date == service_date)
+                .where(PaymentEntry.kind == "refund")
+            )
+
+        seats_by_lift: dict[str, list[LiftDaySeat]] = {}
+        for seat in seats:
+            seats_by_lift.setdefault(seat.lift_time, []).append(seat)
+        ordered = sorted(rows, key=lambda row: lift_minutes(row.lift_time))
+        return LiftDayAudit(
+            service_date=service_date,
+            lifts=tuple(
+                LiftDayAuditLift(
+                    lift_time=row.lift_time,
+                    ran=row.ran,
+                    seats=row.seats,
+                    capacity=row.capacity,
+                    covered_seats=row.covered_seats,
+                    manual_seats=row.manual_seats,
+                    guest_seats=row.guest_seats,
+                    riders=tuple(
+                        LiftDayAuditSeat(
+                            label=seat.label,
+                            seats=seat.seats,
+                            guests=seat.guests,
+                            covered_seats=seat.covered_seats,
+                        )
+                        for seat in sorted(
+                            seats_by_lift.get(row.lift_time, ()),
+                            key=lambda seat: seat.label.lower(),
+                        )
+                    ),
+                )
+                for row in ordered
+            ),
+            price_gel=ordered[0].price_gel,
+            received_gel=received or 0,
+            # Stored as negative movements; an admin wants the size of the hole.
+            refunded_gel=-(refunded or 0),
+            cancelled=all(row.cancelled for row in ordered),
+            reconstructed=any(row.source != "closed" for row in ordered),
+        )
+
+    async def lift_day_audit_view(self, *, service_date: date) -> BookingMonitorDraft:
+        audit = await self.lift_day_audit(service_date=service_date)
+        if audit is None:
+            return await self.lift_history_view()
+        return render_lift_day_audit(audit)
+
+    async def lift_trend(self) -> LiftTrend:
+        """Which departures earn their place in the template, and which days carry them.
+
+        Cancelled lifts are not in the record at all, so "offered" means days the
+        departure was actually on the poll — which is the denominator that makes
+        "ran 2 of 14" mean something.
+        """
+        if self._settings.telegram_target_chat_id is None:
+            return LiftTrend(by_lift=(), by_weekday=())
+        async with self._session_factory() as session:
+            rows = (await session.scalars(self._history_scope(select(LiftDayResult)))).all()
+        if not rows:
+            return LiftTrend(by_lift=(), by_weekday=())
+
+        by_lift: dict[str, list[LiftDayResult]] = {}
+        for row in rows:
+            by_lift.setdefault(row.lift_time, []).append(row)
+        # A weekday runs a day, not a lift: five vans on one Saturday is one
+        # Saturday, and counting it five times would say nothing about Saturdays.
+        by_weekday: dict[int, dict[date, list[LiftDayResult]]] = {}
+        for row in rows:
+            by_weekday.setdefault(row.service_date.weekday(), {}).setdefault(
+                row.service_date, []
+            ).append(row)
+
+        dates = sorted({row.service_date for row in rows})
+        return LiftTrend(
+            by_lift=tuple(
+                TrendRow(
+                    label=lift_time,
+                    days_ran=sum(row.ran for row in lift_rows),
+                    days_offered=len(lift_rows),
+                    total_seats=sum(row.seats for row in lift_rows if row.ran),
+                )
+                for lift_time, lift_rows in sorted(
+                    by_lift.items(), key=lambda item: lift_minutes(item[0])
+                )
+            ),
+            by_weekday=tuple(
+                TrendRow(
+                    label=EN_SHORT_WEEKDAYS[weekday],
+                    days_ran=sum(any(row.ran for row in day_rows) for day_rows in day_map.values()),
+                    days_offered=len(day_map),
+                    total_seats=sum(
+                        row.seats for day_rows in day_map.values() for row in day_rows if row.ran
+                    ),
+                )
+                for weekday, day_map in sorted(by_weekday.items())
+            ),
+            since=dates[0],
+            until=dates[-1],
+        )
+
+    async def lift_trend_view(self) -> BookingMonitorDraft:
+        return render_lift_trend(await self.lift_trend())
 
     async def all_riders_view(
         self,

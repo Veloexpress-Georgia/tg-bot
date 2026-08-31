@@ -16,8 +16,11 @@ from veloexpress_bot.db.models import (
     AdminBookingMonitor,
     DeadlineRoster,
     GuestSeat,
+    LiftDayResult,
+    LiftDaySeat,
     ManualBookingCount,
     PaymentClaim,
+    PaymentEntry,
     PollBatch,
     PollMessage,
     PollOptionSnapshot,
@@ -2305,11 +2308,71 @@ async def test_the_monitor_is_not_reposted_before_the_morning_or_off_lift_days(
     )
 
 
-async def test_lift_history_counts_finished_days_from_the_frozen_roster(
+async def _freeze_lift_day(
+    db: SharedDatabase,
+    *,
+    service_date: date,
+    lifts: tuple[tuple[str, bool, int], ...],
+    source: str = "closed",
+    riders: tuple[tuple[str, int, str, int], ...] = (),
+    received_gel: int = 0,
+) -> None:
+    """Write a finished day straight into the record, as the worker would have."""
+    async with db.session() as session:
+        for lift_time, ran, seats in lifts:
+            session.add(
+                LiftDayResult(
+                    environment="test",
+                    chat_id=-100123,
+                    thread_id=7,
+                    service_date=service_date,
+                    lift_time=lift_time,
+                    ran=ran,
+                    seats=seats,
+                    covered_seats=seats,
+                    capacity=10,
+                    price_gel=15,
+                    source=source,
+                    frozen_at=datetime.now(UTC),
+                )
+            )
+        for lift_time, user_id, label, seats in riders:
+            session.add(
+                LiftDaySeat(
+                    environment="test",
+                    chat_id=-100123,
+                    thread_id=7,
+                    service_date=service_date,
+                    lift_time=lift_time,
+                    telegram_user_id=user_id,
+                    label=label,
+                    seats=seats,
+                    covered_seats=seats,
+                )
+            )
+        if received_gel:
+            session.add(
+                PaymentEntry(
+                    environment="test",
+                    chat_id=-100123,
+                    thread_id=7,
+                    service_date=service_date,
+                    telegram_user_id=200,
+                    amount_gel=received_gel,
+                    kind="received",
+                )
+            )
+        await session.commit()
+
+
+async def test_lift_history_reads_the_frozen_day_not_the_votes_still_on_file(
     db: SharedDatabase,
 ) -> None:
-    """The roster is who held a seat when booking closed, which is what rode. Live
-    votes only ever describe now — by Monday they have late drop-outs in them."""
+    """Polls are never closed, so a vote changed weeks later must not move history.
+
+    The frozen row says four seats and that the van went anyway; six riders are
+    still sitting in the poll. History has to answer with the four.
+    """
     client = FakeTelegramClient()
     service = PollPostingService(
         settings=settings(),
@@ -2330,50 +2393,31 @@ async def test_lift_history_counts_finished_days_from_the_frozen_roster(
             full_name=f"Rider {index}",
             option_ids=(0,),
         )
-    async with db.session() as session:
-        for index in range(5):
-            session.add(
-                DeadlineRoster(
-                    environment="test",
-                    chat_id=-100123,
-                    thread_id=7,
-                    service_date=yesterday,
-                    lift_time="8:30",
-                    telegram_user_id=200 + index,
-                    label=f"@frozen{index}",
-                    seats=1,
-                )
-            )
-        session.add(
-            PaymentClaim(
-                environment="test",
-                chat_id=-100123,
-                thread_id=7,
-                service_date=yesterday,
-                telegram_user_id=200,
-                full_name="Frozen 0",
-                seats=2,
-                amount_gel=30,
-            )
-        )
-        await session.commit()
+    await _freeze_lift_day(
+        db,
+        service_date=yesterday,
+        # Misho took the 8:30 out with four. No count of votes can say that.
+        lifts=(("8:30", True, 4), ("10:00", False, 2)),
+        received_gel=30,
+    )
 
     history = await service.lift_history()
 
     assert [day.service_date for day in history.days] == [yesterday]
     day = history.days[0]
-    # Five frozen seats on 8:30, not the six who happen to still be voting.
-    assert (day.ran_count, day.seat_count) == (1, 5)
-    assert day.lift_count == 5
+    assert (day.ran_count, day.lift_count, day.seat_count) == (1, 2, 4)
     assert day.paid_gel == 30
     assert (history.total_days, history.total_ran, history.total_gel) == (1, 1, 30)
 
 
-async def test_lift_history_falls_back_to_votes_when_no_roster_was_frozen(
+async def test_lift_history_says_nothing_about_a_day_it_never_wrote_down(
     db: SharedDatabase,
 ) -> None:
-    """Days from before the freeze existed, or where the bot was down at 20:00,
-    still have their votes on file — the best record there is for them."""
+    """Days from before the freeze have only live votes, and those are not history.
+
+    Reading them back would let a vote cast next month rewrite last month, which
+    is the whole reason the record exists. Silence is the honest answer.
+    """
     client = FakeTelegramClient()
     service = PollPostingService(
         settings=settings(),
@@ -2397,8 +2441,7 @@ async def test_lift_history_falls_back_to_votes_when_no_roster_was_frozen(
 
     history = await service.lift_history()
 
-    assert history.days[0].seat_count == 7
-    assert history.total_ran == 1
+    assert history.days == ()
 
 
 async def test_lift_history_ignores_days_that_have_not_happened_yet(
@@ -2419,3 +2462,162 @@ async def test_lift_history_ignores_days_that_have_not_happened_yet(
     history = await service.lift_history()
 
     assert history.days == ()
+
+
+async def test_lift_history_pages_without_shrinking_the_season_totals(
+    db: SharedDatabase,
+) -> None:
+    """A page is a page; "all time" has to keep meaning all time."""
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=FakeTelegramClient(),
+    )
+    today = datetime.now(UTC).date()
+    for offset in range(1, 6):
+        await _freeze_lift_day(
+            db,
+            service_date=today - timedelta(days=offset),
+            lifts=(("8:30", True, 6),),
+            received_gel=90,
+        )
+
+    first = await service.lift_history(limit=2)
+
+    assert [day.service_date for day in first.days] == [
+        today - timedelta(days=1),
+        today - timedelta(days=2),
+    ]
+    assert first.older_before == today - timedelta(days=2)
+    assert first.has_newer is False
+    # Five days, not the two on screen.
+    assert (first.total_days, first.total_ran, first.total_gel) == (5, 5, 450)
+
+    older = await service.lift_history(limit=2, before=first.older_before)
+
+    assert [day.service_date for day in older.days] == [
+        today - timedelta(days=3),
+        today - timedelta(days=4),
+    ]
+    assert older.has_newer is True
+    assert (older.total_days, older.total_gel) == (5, 450)
+
+
+async def test_lift_history_marks_a_day_written_down_late(db: SharedDatabase) -> None:
+    """Backfilled figures were read off votes days later. Never quietly."""
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=FakeTelegramClient(),
+    )
+    yesterday = datetime.now(UTC).date() - timedelta(days=1)
+    await _freeze_lift_day(
+        db,
+        service_date=yesterday,
+        lifts=(("8:30", True, 6),),
+        source="backfilled",
+    )
+
+    history = await service.lift_history()
+
+    assert history.days[0].reconstructed is True
+
+
+async def test_lift_day_audit_names_who_was_on_the_van_and_who_had_not_paid(
+    db: SharedDatabase,
+) -> None:
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=FakeTelegramClient(),
+    )
+    yesterday = datetime.now(UTC).date() - timedelta(days=1)
+    async with db.session() as session:
+        session.add(
+            LiftDayResult(
+                environment="test",
+                chat_id=-100123,
+                thread_id=7,
+                service_date=yesterday,
+                lift_time="8:30",
+                ran=True,
+                seats=3,
+                covered_seats=2,
+                capacity=10,
+                price_gel=15,
+                frozen_at=datetime.now(UTC),
+            )
+        )
+        for user_id, label, covered in ((100, "@paid", 1), (101, "@owing", 0)):
+            session.add(
+                LiftDaySeat(
+                    environment="test",
+                    chat_id=-100123,
+                    thread_id=7,
+                    service_date=yesterday,
+                    lift_time="8:30",
+                    telegram_user_id=user_id,
+                    label=label,
+                    seats=1,
+                    covered_seats=covered,
+                )
+            )
+        session.add(
+            PaymentEntry(
+                environment="test",
+                chat_id=-100123,
+                thread_id=7,
+                service_date=yesterday,
+                telegram_user_id=100,
+                amount_gel=15,
+                kind="received",
+            )
+        )
+        await session.commit()
+
+    audit = await service.lift_day_audit(service_date=yesterday)
+
+    assert audit is not None
+    assert audit.received_gel == 15
+    assert audit.price_gel == 15
+    lift = audit.lifts[0]
+    assert (lift.lift_time, lift.ran, lift.seats) == ("8:30", True, 3)
+    assert [(seat.label, seat.covered) for seat in lift.riders] == [
+        ("@owing", False),
+        ("@paid", True),
+    ]
+
+
+async def test_lift_trend_counts_a_weekend_day_once_not_once_per_van(
+    db: SharedDatabase,
+) -> None:
+    """Five vans on one Saturday is one Saturday; counting five says nothing."""
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=FakeTelegramClient(),
+    )
+    saturday = date(2026, 8, 29)
+    sunday = date(2026, 8, 30)
+    await _freeze_lift_day(
+        db,
+        service_date=saturday,
+        lifts=(("8:30", True, 8), ("10:00", True, 6), ("15:30", False, 2)),
+    )
+    await _freeze_lift_day(
+        db,
+        service_date=sunday,
+        lifts=(("8:30", True, 6), ("10:00", False, 3), ("15:30", False, 1)),
+    )
+
+    trend = await service.lift_trend()
+
+    by_lift = {row.label: row for row in trend.by_lift}
+    assert (by_lift["8:30"].days_ran, by_lift["8:30"].days_offered) == (2, 2)
+    assert by_lift["8:30"].average_seats == 7.0
+    # Offered on both days and never filled — the point of the screen.
+    assert (by_lift["15:30"].days_ran, by_lift["15:30"].days_offered) == (0, 2)
+    by_weekday = {row.label: row for row in trend.by_weekday}
+    assert (by_weekday["Sat"].days_ran, by_weekday["Sat"].days_offered) == (1, 1)
+    assert by_weekday["Sat"].total_seats == 14
+    assert (trend.since, trend.until) == (saturday, sunday)

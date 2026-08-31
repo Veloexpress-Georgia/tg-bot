@@ -142,6 +142,19 @@ async def handle_guest_form(
     if action == "noop":
         await callback.answer()
         return
+    # Neither of these belongs to a day, so they are answered before the date
+    # below is parsed — a season spans them all, and the card picks its own tab.
+    if action == "season":
+        draft = await payments_service.rider_season_card(telegram_user_id=callback.from_user.id)
+        message = _accessible_message(callback)
+        if message is not None:
+            await _edit_card(message, draft.text, draft.reply_markup, parse_mode=MY_DAY_PARSE_MODE)
+        await callback.answer()
+        return
+    if action == "card":
+        await _refresh_rider_card(callback, payments_service, service_date=None)
+        await callback.answer()
+        return
 
     parts = value.split(":")
     try:
@@ -225,7 +238,7 @@ async def _refresh_rider_card(
     callback: CallbackQuery,
     payments_service: PaymentsService,
     *,
-    service_date: date,
+    service_date: date | None,
 ) -> None:
     card = await payments_service.my_day_card(
         service_date=service_date,
@@ -511,23 +524,70 @@ async def open_all_riders(
     await callback.answer()
 
 
-@router.callback_query(F.data.in_({"mon:history", "mon:menu"}))
+@router.callback_query(F.data.startswith("mon:history"))
 async def open_lift_history(
     callback: CallbackQuery,
     settings: Settings,
     poll_service: PollPostingService,
 ) -> None:
-    """History, and the way back out of it — neither belongs to a day."""
+    """A page of finished days. Bare for the newest, dated for an older page."""
     message = await _admin_private_message(callback, settings)
     if message is None:
         return
-    if callback.data == "mon:history":
-        draft = await poll_service.lift_history_view()
-    else:
-        draft = await poll_service.booking_monitor_view(
-            admin_user_id=callback.from_user.id,
-            selected_service_date=None,
-        )
+    cursor = (callback.data or "").removeprefix("mon:history").lstrip(":")
+    try:
+        before = decode_monitor_date(cursor) if cursor else None
+    except ValueError:
+        before = None
+    draft = await poll_service.lift_history_view(before=before)
+    await _edit_card(message, draft.text, draft.reply_markup)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("mon:past:"))
+async def open_lift_day_audit(
+    callback: CallbackQuery,
+    settings: Settings,
+    poll_service: PollPostingService,
+) -> None:
+    """One finished day in full, from what the bot wrote down the morning after."""
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+    service_date = decode_monitor_date((callback.data or "").removeprefix("mon:past:"))
+    draft = await poll_service.lift_day_audit_view(service_date=service_date)
+    await _edit_card(message, draft.text, draft.reply_markup)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "mon:trend")
+async def open_lift_trend(
+    callback: CallbackQuery,
+    settings: Settings,
+    poll_service: PollPostingService,
+) -> None:
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+    draft = await poll_service.lift_trend_view()
+    await _edit_card(message, draft.text, draft.reply_markup)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "mon:menu")
+async def close_lift_history(
+    callback: CallbackQuery,
+    settings: Settings,
+    poll_service: PollPostingService,
+) -> None:
+    """The way back out of history, which belongs to no day in particular."""
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+    draft = await poll_service.booking_monitor_view(
+        admin_user_id=callback.from_user.id,
+        selected_service_date=None,
+    )
     await _edit_card(message, draft.text, draft.reply_markup)
     await callback.answer()
 

@@ -14,6 +14,8 @@ from veloexpress_bot.config import Settings
 from veloexpress_bot.db.base import Base
 from veloexpress_bot.db.models import (
     DeadlineRoster,
+    LiftDayResult,
+    LiftDaySeat,
     PaymentClaim,
     PaymentEntry,
     PaymentsBoard,
@@ -23,6 +25,7 @@ from veloexpress_bot.db.models import (
     RiderCard,
     ServiceDayTerms,
 )
+from veloexpress_bot.payments.myday import RiderSeason
 from veloexpress_bot.payments.service import (
     ALREADY_SETTLED_TEXT,
     CASH_METHOD,
@@ -33,6 +36,7 @@ from veloexpress_bot.payments.service import (
     WAITLIST_WARNING_TEXT,
     PaymentsService,
 )
+from veloexpress_bot.polls.autoposter import PollAutoScheduler
 from veloexpress_bot.polls.liftsignals import booking_deadline_at
 from veloexpress_bot.polls.render import PollDraft
 from veloexpress_bot.polls.service import (
@@ -1847,3 +1851,168 @@ async def test_undo_appends_a_reversal_instead_of_erasing_money_history(
         (-15, "reversal"),
     ]
     assert entries[1].reversed_entry_id == entries[0].id
+
+
+def _morning_after(service_date: date) -> datetime:
+    return datetime.combine(
+        service_date + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=ZoneInfo("Asia/Tbilisi"),
+    ) + timedelta(hours=4)
+
+
+async def test_freezing_a_finished_day_stops_later_votes_rewriting_it(
+    db: SharedDatabase,
+) -> None:
+    """The polls are never closed, so this is the only thing that holds a day still."""
+    saturday = _future_saturday()
+    poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="rider100", full_name="Rider 100"
+    )
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+
+    await payments.freeze_day_results(now=_morning_after(saturday))
+
+    async with db.session() as session:
+        rows = (
+            await session.scalars(select(LiftDayResult).order_by(LiftDayResult.lift_time))
+        ).all()
+    ran = [row for row in rows if row.ran]
+    assert [(row.lift_time, row.seats, row.covered_seats) for row in ran] == [("8:30", 5, 1)]
+    # Every offered lift is recorded, so "1 of 4" has a denominator. 15:30 was
+    # cancelled by template and is not one of them.
+    assert len(rows) == 4
+    assert all(row.price_gel == 15 for row in rows)
+    assert all(row.source == "closed" for row in rows)
+
+    # Three riders walk away from a day that already happened.
+    for user_id in (101, 102, 103):
+        await _vote(poll_service, poll_id, user_id)
+
+    history = await poll_service.lift_history()
+    assert history.days[0].seat_count == 5
+
+
+async def test_a_finished_day_is_written_down_once(db: SharedDatabase) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+
+    await payments.freeze_day_results(now=_morning_after(saturday))
+    await payments.freeze_day_results(now=_morning_after(saturday) + timedelta(hours=3))
+
+    async with db.session() as session:
+        rows = (await session.scalars(select(LiftDayResult))).all()
+        seats = (await session.scalars(select(LiftDaySeat))).all()
+    assert len(rows) == 4
+    assert len(seats) == 5
+
+
+async def test_a_day_still_running_is_not_written_down_yet(db: SharedDatabase) -> None:
+    """Riders join the morning van and drop out late; that is the day, not an error."""
+    saturday = _future_saturday()
+    poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+
+    await payments.freeze_day_results(
+        now=datetime.combine(saturday, datetime.min.time(), tzinfo=ZoneInfo("Asia/Tbilisi"))
+        + timedelta(hours=23)
+    )
+
+    async with db.session() as session:
+        assert (await session.scalars(select(LiftDayResult))).all() == []
+
+
+async def test_the_record_follows_the_day_not_the_deadline_roster(
+    db: SharedDatabase,
+) -> None:
+    """Somebody joins on the morning; somebody unpaid drops out too late to ride.
+
+    The deadline roster answers a money question the evening before and cannot
+    know either of them. The record of who rode has to.
+    """
+    saturday = _future_saturday()
+    poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=6)
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+    # 105 never paid and is not coming. 200 decides on the day that they are.
+    await _vote(poll_service, poll_id, 105)
+    await _vote(poll_service, poll_id, 200, 0)
+
+    await payments.freeze_day_results(now=_morning_after(saturday))
+
+    async with db.session() as session:
+        labels = (
+            await session.scalars(select(LiftDaySeat.label).where(LiftDaySeat.lift_time == "8:30"))
+        ).all()
+    assert "@rider200" in labels
+    assert "@rider105" not in labels
+
+
+async def test_a_day_caught_up_late_is_marked_as_reconstructed(db: SharedDatabase) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+
+    await payments.freeze_day_results(now=_morning_after(saturday) + timedelta(days=9))
+
+    async with db.session() as session:
+        rows = (await session.scalars(select(LiftDayResult))).all()
+    assert all(row.source == "backfilled" for row in rows)
+
+
+async def test_my_past_rides_counts_the_vans_that_went_and_nothing_else(
+    db: SharedDatabase,
+) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    # 8:30 fills; 10:00 has the same rider and three others, so it never runs.
+    await _fill(poll_service, poll_id, 0, riders=4, first_user_id=100)
+    await _vote(poll_service, poll_id, 100, 0, 1)
+    await _vote(poll_service, poll_id, 110, 0)
+    await _fill(poll_service, poll_id, 1, riders=2, first_user_id=120)
+    await payments.sync_boards()
+    # Acknowledged: holding a lift that never filled makes this a partial booking,
+    # which the bot warns about once before taking the money.
+    await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+        acknowledged=True,
+    )
+    await payments.freeze_day_results(now=_morning_after(saturday))
+
+    season = await payments.rider_season(telegram_user_id=100)
+
+    assert [day.service_date for day in season.days] == [saturday]
+    assert season.days[0].lift_times == ("8:30",)
+    assert (season.total_days, season.total_rides, season.total_gel) == (1, 1, 15)
+
+    # And somebody who only ever booked the van that never went has no season.
+    assert await payments.rider_season(telegram_user_id=120) == RiderSeason(
+        days=(), total_days=0, total_rides=0, total_seats=0, total_gel=0
+    )
+
+
+async def test_the_worker_tick_writes_yesterday_down(db: SharedDatabase) -> None:
+    """The freeze is only worth anything if the tick actually reaches it."""
+    saturday = _future_saturday()
+    poll_service, payments, client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    scheduler = PollAutoScheduler(
+        settings=settings(),
+        session_factory=db.session,
+        poll_service=poll_service,
+        telegram_client=cast(Any, client),
+        payments_service=payments,
+    )
+
+    await scheduler.tick(now=_morning_after(saturday))
+
+    async with db.session() as session:
+        rows = (await session.scalars(select(LiftDayResult))).all()
+    assert [row.lift_time for row in rows if row.ran] == ["8:30"]

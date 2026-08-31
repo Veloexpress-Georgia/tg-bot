@@ -139,13 +139,17 @@ class BookingMonitorDay:
 
 @dataclass(frozen=True)
 class LiftHistoryDay:
-    """A day that already happened, as the deadline roster left it."""
+    """A finished day, as it was written down the morning after."""
 
     service_date: date
     ran_count: int
     lift_count: int
     seat_count: int
     paid_gel: int
+    cancelled: bool = False
+    # Written down late — a deploy, or a worker down over the weekend — so it was
+    # read off votes that had already had time to move.
+    reconstructed: bool = False
 
 
 @dataclass(frozen=True)
@@ -155,6 +159,10 @@ class LiftHistory:
     total_ran: int
     total_seats: int
     total_gel: int
+    # Set when there are older days than this page shows.
+    older_before: date | None = None
+    # False on the first page, where "latest" would go nowhere.
+    has_newer: bool = False
 
     @property
     def last_weekend(self) -> tuple[LiftHistoryDay, ...]:
@@ -163,6 +171,61 @@ class LiftHistory:
             return ()
         newest = self.days[0].service_date
         return tuple(day for day in self.days if (newest - day.service_date).days <= 1)
+
+
+@dataclass(frozen=True)
+class LiftDayAuditSeat:
+    label: str
+    seats: int
+    guests: int
+    covered_seats: int
+
+    @property
+    def covered(self) -> bool:
+        return self.covered_seats >= self.seats
+
+
+@dataclass(frozen=True)
+class LiftDayAuditLift:
+    lift_time: str
+    ran: bool
+    seats: int
+    capacity: int
+    covered_seats: int
+    manual_seats: int
+    guest_seats: int
+    riders: tuple[LiftDayAuditSeat, ...] = ()
+
+
+@dataclass(frozen=True)
+class LiftDayAudit:
+    service_date: date
+    lifts: tuple[LiftDayAuditLift, ...]
+    price_gel: int
+    received_gel: int
+    refunded_gel: int
+    cancelled: bool = False
+    reconstructed: bool = False
+
+
+@dataclass(frozen=True)
+class TrendRow:
+    label: str
+    days_ran: int
+    days_offered: int
+    total_seats: int
+
+    @property
+    def average_seats(self) -> float:
+        return self.total_seats / self.days_ran if self.days_ran else 0.0
+
+
+@dataclass(frozen=True)
+class LiftTrend:
+    by_lift: tuple[TrendRow, ...]
+    by_weekday: tuple[TrendRow, ...]
+    since: date | None = None
+    until: date | None = None
 
 
 @dataclass(frozen=True)
@@ -231,6 +294,11 @@ def render_booking_monitor(
         # the only surviving list of who is owed. One deleted message should not
         # be the end of it.
         rows.append([InlineKeyboardButton(text="🧾 Past refunds", callback_data="mon:refunds")])
+    if history is not None and history.days:
+        # Also here, not only on the quiet-week card. The weeks an admin is
+        # actually in the bot are the weeks with lifts running, and history used
+        # to be unreachable on every one of them.
+        rows.append([InlineKeyboardButton(text="📜 Lift history", callback_data="mon:history")])
 
     return BookingMonitorDraft(
         text="\n".join(lines),
@@ -270,7 +338,12 @@ def _render_quiet_week(
 
 
 def render_lift_history(history: LiftHistory) -> BookingMonitorDraft:
-    """Every lift day the bot has seen, newest first, with the season under it."""
+    """A page of finished days, newest first, with the season under it.
+
+    The list is the readable part; the buttons under it are how you get into a
+    day. Naming each day twice would be shorter to write and worse to read, so
+    the buttons stay compact and the lines carry the figures.
+    """
     lines = ["📜 Lift history", ""]
     if not history.days:
         lines.append("No lift day has finished yet.")
@@ -283,21 +356,163 @@ def render_lift_history(history: LiftHistory) -> BookingMonitorDraft:
                 f"{history.total_seats} seats · {history.total_gel} GEL",
             )
         )
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for chunk in _chunked(history.days, size=4):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=_short_day_label(day.service_date),
+                    callback_data=f"mon:past:{_compact_date(day.service_date)}",
+                )
+                for day in chunk
+            ]
+        )
+    pager: list[InlineKeyboardButton] = []
+    if history.has_newer:
+        pager.append(InlineKeyboardButton(text="⏮ Latest", callback_data="mon:history"))
+    if history.older_before is not None:
+        pager.append(
+            InlineKeyboardButton(
+                text="📅 Older",
+                callback_data=f"mon:history:{_compact_date(history.older_before)}",
+            )
+        )
+    if pager:
+        rows.append(pager)
+    if history.days:
+        rows.append([InlineKeyboardButton(text="📈 Trend", callback_data="mon:trend")])
+    rows.append([InlineKeyboardButton(text="⬅️ Back", callback_data="mon:menu")])
+    return BookingMonitorDraft(
+        text="\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+def render_lift_day_audit(audit: LiftDayAudit) -> BookingMonitorDraft:
+    """One finished day in full: which vans went, who was on them, what came in.
+
+    The seat list says "on the van" rather than "paid up", and those are not the
+    same list — an unpaid rider who came anyway is on it, and the 🔴 next to them
+    is the whole point of the screen.
+    """
+    lines = [f"🗓 {_long_day_label(audit.service_date)}", ""]
+    if audit.cancelled:
+        lines.extend(("❌ The whole day was cancelled.", ""))
+    if audit.reconstructed:
+        # Never quietly: these figures were read off votes days later, and an
+        # admin comparing them against a bank statement deserves to know.
+        lines.extend(("⚠️ Written down late — figures reconstructed from votes.", ""))
+    lines.append(_audit_money_line(audit))
+
+    if not audit.lifts:
+        lines.extend(("", "No lifts were offered on this day."))
+    for lift in audit.lifts:
+        lines.extend(("", _audit_lift_line(lift)))
+        lines.extend(_audit_seat_line(seat) for seat in lift.riders)
+        if not lift.riders:
+            lines.append("—")
+
     return BookingMonitorDraft(
         text="\n".join(lines),
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Back", callback_data="mon:menu")],
+                [InlineKeyboardButton(text="⬅️ Back to history", callback_data="mon:history")],
             ]
         ),
     )
 
 
+def render_lift_trend(trend: LiftTrend) -> BookingMonitorDraft:
+    """Which departures earn their place in the template, and which days carry them."""
+    lines = ["📈 Trend"]
+    if trend.since is not None and trend.until is not None:
+        lines.append(_range_label(trend.since, trend.until))
+    if not trend.by_lift:
+        lines.extend(("", "No finished lift day to read a trend from yet."))
+    if trend.by_lift:
+        lines.extend(("", "By departure"))
+        lines.extend(_trend_line(row) for row in trend.by_lift)
+    if trend.by_weekday:
+        lines.extend(("", "By day"))
+        lines.extend(_trend_line(row) for row in trend.by_weekday)
+    return BookingMonitorDraft(
+        text="\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Back to history", callback_data="mon:history")],
+            ]
+        ),
+    )
+
+
+def _trend_line(row: TrendRow) -> str:
+    if not row.days_ran:
+        return f"{row.label} — never ran in {row.days_offered}"
+    return (
+        f"{row.label} — ran {row.days_ran} of {row.days_offered} · "
+        f"{row.average_seats:.1f} seats avg"
+    )
+
+
+def _audit_money_line(audit: LiftDayAudit) -> str:
+    parts = [f"{audit.price_gel} GEL per seat", f"{audit.received_gel} GEL received"]
+    if audit.refunded_gel:
+        parts.append(f"{audit.refunded_gel} GEL refunded")
+    return " · ".join(parts)
+
+
+def _audit_lift_line(lift: LiftDayAuditLift) -> str:
+    marker = "🚐" if lift.ran else "💤"
+    state = "ran" if lift.ran else "did not run"
+    parts = [f"{marker} {lift.lift_time}", state, f"{lift.seats}/{lift.capacity}"]
+    parts.append(f"{lift.covered_seats} paid")
+    if lift.manual_seats:
+        parts.append(f"{lift.manual_seats} manual")
+    if lift.guest_seats == 1:
+        parts.append("1 guest")
+    elif lift.guest_seats > 1:
+        parts.append(f"{lift.guest_seats} guests")
+    return " · ".join(parts)
+
+
+def _audit_seat_line(seat: LiftDayAuditSeat) -> str:
+    marker = "✅" if seat.covered else "🔴"
+    guests = ""
+    if seat.guests == 1:
+        guests = " · +1 guest"
+    elif seat.guests > 1:
+        guests = f" · +{seat.guests} guests"
+    return f"{marker} {seat.label}{guests}"
+
+
 def _history_day_line(day: LiftHistoryDay) -> str:
+    if day.cancelled:
+        return f"{_long_day_label(day.service_date)} · ❌ cancelled"
+    mark = " ⚠️" if day.reconstructed else ""
     return (
         f"{_long_day_label(day.service_date)} · {day.ran_count}/{day.lift_count} lifts · "
-        f"{day.seat_count} seats · {day.paid_gel} GEL"
+        f"{day.seat_count} seats · {day.paid_gel} GEL{mark}"
     )
+
+
+def _range_label(since: date, until: date) -> str:
+    if since.year != until.year:
+        return f"{since.day} {EN_SHORT_MONTHS[since.month]} {since.year} – {_long_date(until)}"
+    return f"{since.day} {EN_SHORT_MONTHS[since.month]} – {_long_date(until)}"
+
+
+def _long_date(value: date) -> str:
+    return f"{value.day} {EN_SHORT_MONTHS[value.month]}"
+
+
+def _chunked(
+    days: tuple[LiftHistoryDay, ...],
+    *,
+    size: int,
+) -> Iterable[tuple[LiftHistoryDay, ...]]:
+    for start in range(0, len(days), size):
+        yield days[start : start + size]
 
 
 def _day_span_label(days: tuple[LiftHistoryDay, ...]) -> str:

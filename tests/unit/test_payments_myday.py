@@ -7,12 +7,15 @@ from veloexpress_bot.payments.myday import (
     RiderCardView,
     RiderDayView,
     RiderLiftRow,
+    RiderSeason,
+    RiderSeasonDay,
     decode_guest_date,
     decode_guest_time,
     deep_link,
     encode_guest_date,
     parse_deep_link,
     render_rider_card,
+    render_rider_season,
 )
 
 SATURDAY = date(2026, 8, 1)
@@ -226,3 +229,52 @@ def test_callback_encodings_round_trip() -> None:
     assert decode_guest_date(encode_guest_date(SATURDAY)) == SATURDAY
     assert decode_guest_time("0830") == "8:30"
     assert decode_guest_time("1000") == "10:00"
+
+
+def test_a_rider_who_has_ridden_before_is_not_left_at_a_dead_end() -> None:
+    """Midweek is exactly when somebody idly opens their card and finds nothing."""
+    draft = render_rider_card(
+        RiderCardView(days=(), price_gel=15, selected_service_date=None, has_history=True)
+    )
+
+    assert "not booked on any lift yet" in draft.text
+    assert draft.reply_markup is not None
+    assert ("📜 My past rides", "guest:season") in _buttons(draft.reply_markup)[0]
+
+
+def test_my_past_rides_lists_the_days_and_the_season_under_them() -> None:
+    draft = render_rider_season(
+        RiderSeason(
+            days=(
+                RiderSeasonDay(
+                    service_date=SATURDAY,
+                    lift_times=("8:30", "13:30"),
+                    seats=3,
+                    paid_gel=45,
+                ),
+                RiderSeasonDay(
+                    service_date=SUNDAY,
+                    lift_times=("10:00",),
+                    seats=1,
+                    paid_gel=15,
+                ),
+            ),
+            total_days=2,
+            total_rides=3,
+            total_seats=4,
+            total_gel=60,
+        )
+    )
+
+    assert "Sat, 1 Aug · 8:30, 13:30 · 3 seats · 45 GEL" in draft.text
+    assert "Sun, 2 Aug · 10:00 · 1 seat · 15 GEL" in draft.text
+    assert "2 days · 3 lifts · 4 seats · 60 GEL" in draft.text
+    assert ("⬅️ Back", "guest:card") in _buttons(draft.reply_markup)[0]
+
+
+def test_my_past_rides_before_the_first_one() -> None:
+    draft = render_rider_season(
+        RiderSeason(days=(), total_days=0, total_rides=0, total_seats=0, total_gel=0)
+    )
+
+    assert "No finished lift yet." in draft.text

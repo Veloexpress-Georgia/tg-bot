@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from veloexpress_bot.config import Settings
@@ -13,6 +13,8 @@ from veloexpress_bot.db.models import (
     CancelledLift,
     DeadlineRoster,
     GuestSeat,
+    LiftDayResult,
+    LiftDaySeat,
     LiftSeatState,
     ManualBookingCount,
     PaymentClaim,
@@ -37,8 +39,11 @@ from veloexpress_bot.payments.myday import (
     RiderCardView,
     RiderDayView,
     RiderLiftRow,
+    RiderSeason,
+    RiderSeasonDay,
     deep_link,
     render_rider_card,
+    render_rider_season,
 )
 from veloexpress_bot.payments.render import (
     PAYMENTS_PARSE_MODE,
@@ -108,6 +113,14 @@ class ClaimOutcome:
 
 CASH_METHOD = "cash"
 TRANSFER_METHOD = "transfer"
+
+# A finished day is written down on the next tick, so the backlog is normally one
+# day. These bound the exception: a first deploy with a season behind it, or a
+# worker that was down across several weekends.
+FREEZE_DAYS_PER_TICK = 20
+# Past this, votes have had time to drift away from what the day actually was, so
+# the row is marked as reconstructed rather than observed.
+FRESH_FREEZE_DAYS = 2
 
 
 @dataclass
@@ -335,8 +348,8 @@ class PaymentsService:
     async def my_day_card(
         self,
         *,
-        service_date: date,
         telegram_user_id: int,
+        service_date: date | None = None,
         today: date | None = None,
     ) -> MyDayDraft:
         """The rider's own weekend, with `service_date` as the open tab.
@@ -347,6 +360,7 @@ class PaymentsService:
         day moved.
         """
         days: list[RiderDayView] = []
+        has_history = False
         if self.enabled:
             moment = today or datetime.now(UTC).astimezone(self._zone).date()
             for day in await self._active_days(today=moment):
@@ -355,13 +369,108 @@ class PaymentsService:
                 view = self._rider_day_view(day, telegram_user_id)
                 if view is not None:
                     days.append(view)
+            has_history = await self._has_ridden_before(telegram_user_id=telegram_user_id)
         return render_rider_card(
             RiderCardView(
                 days=tuple(days),
                 price_gel=self._settings.payment_price_gel,
                 selected_service_date=service_date,
+                has_history=has_history,
             )
         )
+
+    async def _has_ridden_before(self, *, telegram_user_id: int) -> bool:
+        async with self._session_factory() as session:
+            return (
+                await session.scalar(
+                    select(LiftDaySeat.id)
+                    .where(LiftDaySeat.environment == self._settings.app_env)
+                    .where(LiftDaySeat.chat_id == self._require_chat_id())
+                    .where(LiftDaySeat.telegram_user_id == telegram_user_id)
+                    .limit(1)
+                )
+            ) is not None
+
+    async def rider_season(self, *, telegram_user_id: int, limit: int = 12) -> RiderSeason:
+        """Every lift this rider actually rode, newest first.
+
+        Off the frozen day rather than the deadline roster, because the two
+        disagree exactly where it matters to a rider: a van they joined on the
+        morning counts, and a booking they dropped before it went does not.
+        """
+        empty = RiderSeason(days=(), total_days=0, total_rides=0, total_seats=0, total_gel=0)
+        if not self.enabled:
+            return empty
+        async with self._session_factory() as session:
+            ridden = (
+                await session.execute(
+                    select(LiftDaySeat.service_date, LiftDaySeat.lift_time, LiftDaySeat.seats)
+                    .join(
+                        LiftDayResult,
+                        (LiftDayResult.environment == LiftDaySeat.environment)
+                        & (LiftDayResult.chat_id == LiftDaySeat.chat_id)
+                        # Coalesced rather than compared directly: the thread is
+                        # nullable, and NULL never equals NULL in a join.
+                        & (
+                            func.coalesce(LiftDayResult.thread_id, 0)
+                            == func.coalesce(LiftDaySeat.thread_id, 0)
+                        )
+                        & (LiftDayResult.service_date == LiftDaySeat.service_date)
+                        & (LiftDayResult.lift_time == LiftDaySeat.lift_time),
+                    )
+                    .where(LiftDaySeat.environment == self._settings.app_env)
+                    .where(LiftDaySeat.chat_id == self._require_chat_id())
+                    .where(LiftDaySeat.thread_id == self._settings.telegram_target_thread_id)
+                    .where(LiftDaySeat.telegram_user_id == telegram_user_id)
+                    .where(LiftDayResult.ran.is_(True))
+                    .order_by(LiftDaySeat.service_date.desc())
+                )
+            ).all()
+            if not ridden:
+                return empty
+            service_dates = tuple({row[0] for row in ridden})
+            paid_by_date: dict[date, int] = {
+                row[0]: row[1]
+                for row in (
+                    await session.execute(
+                        select(
+                            PaymentEntry.service_date,
+                            func.coalesce(func.sum(PaymentEntry.amount_gel), 0),
+                        )
+                        .where(PaymentEntry.environment == self._settings.app_env)
+                        .where(PaymentEntry.chat_id == self._require_chat_id())
+                        .where(PaymentEntry.telegram_user_id == telegram_user_id)
+                        .where(PaymentEntry.service_date.in_(service_dates))
+                        .group_by(PaymentEntry.service_date)
+                    )
+                ).all()
+            }
+
+        lifts_by_date: dict[date, list[str]] = {}
+        seats_by_date: dict[date, int] = {}
+        for service_date, lift_time, seats in ridden:
+            lifts_by_date.setdefault(service_date, []).append(lift_time)
+            seats_by_date[service_date] = seats_by_date.get(service_date, 0) + seats
+        ordered = sorted(lifts_by_date, reverse=True)
+        days = tuple(
+            RiderSeasonDay(
+                service_date=service_date,
+                lift_times=tuple(sorted(lifts_by_date[service_date], key=lift_minutes)),
+                seats=seats_by_date[service_date],
+                paid_gel=paid_by_date.get(service_date, 0),
+            )
+            for service_date in ordered
+        )
+        return RiderSeason(
+            days=days[:limit],
+            total_days=len(ordered),
+            total_rides=len(ridden),
+            total_seats=sum(seats_by_date.values()),
+            total_gel=sum(paid_by_date.get(service_date, 0) for service_date in ordered),
+        )
+
+    async def rider_season_card(self, *, telegram_user_id: int) -> MyDayDraft:
+        return render_rider_season(await self.rider_season(telegram_user_id=telegram_user_id))
 
     async def open_rider_card(
         self,
@@ -1536,6 +1645,187 @@ class PaymentsService:
             extra={"service_date": day.service_date.isoformat(), "rows": len(rows)},
         )
         return rows
+
+    async def freeze_day_results(self, *, now: datetime | None = None) -> None:
+        """Write down what each finished lift day came to, once it can no longer change.
+
+        Deliberately not the deadline. The evening before answers a money
+        question and nothing else: riders still put themselves on the morning
+        van, an unpaid rider still drops out too late to matter, and Misho still
+        decides on the day whether a van short of five goes out. All of that is
+        the day happening, not error. It is the *next* day that nothing can move
+        any more, and that is the moment worth recording.
+
+        Until this ran, history was recomputed from live votes on every read —
+        and the polls are never closed, so a vote changed weeks later silently
+        rewrote a weekend the group had already lived through.
+
+        Cancelled lifts are left out rather than recorded as cancelled: 15:30 is
+        switched off on most weekends by template, so writing them down would put
+        a line about a van nobody planned on every day in the history.
+        """
+        if not self.enabled:
+            return
+        moment = (now or datetime.now(UTC)).astimezone(self._zone)
+        pending = await self._unfrozen_service_dates(today=moment.date())
+        if not pending:
+            return
+        if len(pending) > FREEZE_DAYS_PER_TICK:
+            # A first deploy, or an outage over several weekends. Oldest first, a
+            # bounded slice per tick, and said out loud — a silent cap here would
+            # read as "the season is all there" when most of it is still missing.
+            logger.info(
+                "lift_day_results_backlog pending=%s freezing=%s",
+                len(pending),
+                FREEZE_DAYS_PER_TICK,
+                extra={"pending": len(pending), "freezing": FREEZE_DAYS_PER_TICK},
+            )
+            pending = pending[:FREEZE_DAYS_PER_TICK]
+
+        days = {day.service_date: day for day in await self._active_days(today=min(pending))}
+        for service_date in pending:
+            day = days.get(service_date)
+            if day is None:
+                # The batch went away under us — nothing to record, but the day is
+                # over, so mark it done rather than retrying it every tick forever.
+                await self._mark_results_frozen(service_date=service_date, now=moment)
+                continue
+            await self._freeze_day(day, now=moment)
+
+    async def _unfrozen_service_dates(self, *, today: date) -> list[date]:
+        """Finished lift days the bot has not written down yet, oldest first.
+
+        Answered by the database rather than by pulling both tables into memory
+        and subtracting: this runs on every worker tick for the whole life of the
+        chat, and the normal answer is nothing at all.
+        """
+        already_written = (
+            select(ServiceDayNotice.id)
+            .where(ServiceDayNotice.environment == self._settings.app_env)
+            .where(ServiceDayNotice.chat_id == self._require_chat_id())
+            .where(ServiceDayNotice.thread_id == self._settings.telegram_target_thread_id)
+            .where(ServiceDayNotice.service_date == PollBatch.service_date)
+            .where(ServiceDayNotice.results_frozen_at.is_not(None))
+            .exists()
+        )
+        async with self._session_factory() as session:
+            service_dates = (
+                await session.scalars(
+                    select(PollBatch.service_date)
+                    .distinct()
+                    .where(PollBatch.environment == self._settings.app_env)
+                    .where(PollBatch.chat_id == self._require_chat_id())
+                    .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
+                    .where(PollBatch.status.in_(("posted", "cancelled")))
+                    .where(PollBatch.service_date < today)
+                    .where(~already_written)
+                    .order_by(PollBatch.service_date)
+                )
+            ).all()
+        return list(service_dates)
+
+    async def _freeze_day(self, day: DayBookings, *, now: datetime) -> None:
+        age_days = (now.date() - day.service_date).days
+        source = "closed" if age_days <= FRESH_FREEZE_DAYS else "backfilled"
+        async with self._session_factory() as session:
+            claims = (
+                await session.scalars(
+                    select(PaymentClaim)
+                    .where(PaymentClaim.environment == self._settings.app_env)
+                    .where(PaymentClaim.chat_id == self._require_chat_id())
+                    .where(PaymentClaim.service_date == day.service_date)
+                )
+            ).all()
+            seat_rows = _covered_roster_rows(day, _roster_rows(day), claims=tuple(claims))
+            by_lift: dict[str, list[RosterSeat]] = {}
+            for row in seat_rows:
+                by_lift.setdefault(row.lift_time, []).append(row)
+
+            for lift_time in sorted(day.seats_by_lift, key=lift_minutes):
+                rows = by_lift.get(lift_time, [])
+                session.add(
+                    LiftDayResult(
+                        environment=self._settings.app_env,
+                        chat_id=self._require_chat_id(),
+                        thread_id=self._settings.telegram_target_thread_id,
+                        service_date=day.service_date,
+                        lift_time=lift_time,
+                        # A cancelled day retires every lift on it, whatever the
+                        # seats said before somebody called it off.
+                        ran=not day.cancelled and lift_time in day.running_lift_times,
+                        cancelled=day.cancelled,
+                        # Counted off the same rows the seat list is written from,
+                        # so the total and the names can never disagree.
+                        seats=sum(row.seats for row in rows),
+                        guest_seats=sum(row.guests for row in rows),
+                        manual_seats=sum(
+                            row.seats for row in rows if row.telegram_user_id == MANUAL_USER_ID
+                        ),
+                        covered_seats=sum(row.covered_seats for row in rows),
+                        capacity=day.capacity_by_lift.get(lift_time, 10),
+                        price_gel=day.price_gel,
+                        source=source,
+                        frozen_at=now.astimezone(UTC),
+                    )
+                )
+                for row in rows:
+                    session.add(
+                        LiftDaySeat(
+                            environment=self._settings.app_env,
+                            chat_id=self._require_chat_id(),
+                            thread_id=self._settings.telegram_target_thread_id,
+                            service_date=day.service_date,
+                            lift_time=lift_time,
+                            telegram_user_id=row.telegram_user_id,
+                            label=row.label,
+                            seats=row.seats,
+                            guests=row.guests,
+                            covered_seats=row.covered_seats,
+                        )
+                    )
+
+            notice = await self._service_day_notice(
+                session=session,
+                service_date=day.service_date,
+            )
+            if notice is None:
+                notice = ServiceDayNotice(
+                    environment=self._settings.app_env,
+                    chat_id=self._require_chat_id(),
+                    thread_id=self._settings.telegram_target_thread_id,
+                    service_date=day.service_date,
+                )
+                session.add(notice)
+            notice.results_frozen_at = now.astimezone(UTC)
+            notice.updated_at = now.astimezone(UTC)
+            await session.commit()
+        logger.info(
+            "lift_day_results_frozen service_date=%s lifts=%s seats=%s source=%s",
+            day.service_date.isoformat(),
+            len(day.seats_by_lift),
+            len(seat_rows),
+            source,
+            extra={
+                "service_date": day.service_date.isoformat(),
+                "lifts": len(day.seats_by_lift),
+                "source": source,
+            },
+        )
+
+    async def _mark_results_frozen(self, *, service_date: date, now: datetime) -> None:
+        async with self._session_factory() as session:
+            notice = await self._service_day_notice(session=session, service_date=service_date)
+            if notice is None:
+                notice = ServiceDayNotice(
+                    environment=self._settings.app_env,
+                    chat_id=self._require_chat_id(),
+                    thread_id=self._settings.telegram_target_thread_id,
+                    service_date=service_date,
+                )
+                session.add(notice)
+            notice.results_frozen_at = now.astimezone(UTC)
+            notice.updated_at = now.astimezone(UTC)
+            await session.commit()
 
     async def _service_day_notice(
         self,

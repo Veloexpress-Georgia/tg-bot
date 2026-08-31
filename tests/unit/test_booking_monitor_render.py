@@ -3,13 +3,18 @@ from datetime import UTC, date, datetime
 from veloexpress_bot.bookings.render import (
     BookingLiftStatus,
     BookingMonitorDay,
+    LiftDayAudit,
+    LiftDayAuditLift,
+    LiftDayAuditSeat,
     LiftHistory,
     LiftHistoryDay,
     LiftRider,
+    LiftTrend,
     MonitorGuest,
     MonitorLateExit,
     MonitorRider,
     MonitorWaitlistRider,
+    TrendRow,
     decode_monitor_date,
     decode_monitor_time,
     render_all_riders,
@@ -18,8 +23,10 @@ from veloexpress_bot.bookings.render import (
     render_bumped_report,
     render_cancel_day_confirmation,
     render_cancel_lift_confirmation,
+    render_lift_day_audit,
     render_lift_detail,
     render_lift_history,
+    render_lift_trend,
     render_start_status,
 )
 
@@ -502,3 +509,168 @@ def test_a_host_with_the_same_guest_all_day_is_named_once() -> None:
     )
 
     assert "👥 Guests: @vitaly +1 (10:00, 11:45)" in draft.text
+
+
+def _history_day(service_date: date, **overrides: object) -> LiftHistoryDay:
+    fields: dict[str, object] = {
+        "service_date": service_date,
+        "ran_count": 3,
+        "lift_count": 5,
+        "seat_count": 28,
+        "paid_gel": 420,
+    }
+    fields.update(overrides)
+    return LiftHistoryDay(**fields)  # type: ignore[arg-type]
+
+
+def test_a_live_week_can_still_reach_the_history() -> None:
+    """It used to hang off the quiet-week card alone — unreachable on exactly the
+    weeks an admin is in the bot."""
+    draft = render_booking_monitor(
+        (
+            BookingMonitorDay(
+                service_date=date(2026, 8, 29),
+                lifts=(BookingLiftStatus(time="8:30", vote_count=6, manual_count=0),),
+            ),
+        ),
+        selected_service_date=date(2026, 8, 29),
+        history=LiftHistory(
+            days=(_history_day(date(2026, 8, 23)),),
+            total_days=1,
+            total_ran=3,
+            total_seats=28,
+            total_gel=420,
+        ),
+    )
+
+    assert _button_map(draft.reply_markup)["mon:history"] == "📜 Lift history"
+
+
+def test_lift_history_opens_each_day_and_offers_the_older_page() -> None:
+    draft = render_lift_history(
+        LiftHistory(
+            days=(_history_day(date(2026, 8, 23)), _history_day(date(2026, 8, 22))),
+            total_days=12,
+            total_ran=47,
+            total_seats=380,
+            total_gel=5700,
+            older_before=date(2026, 8, 22),
+            has_newer=True,
+        )
+    )
+
+    buttons = _button_map(draft.reply_markup)
+    assert buttons["mon:past:20260823"] == "Sun 23"
+    assert buttons["mon:past:20260822"] == "Sat 22"
+    assert buttons["mon:history:20260822"] == "📅 Older"
+    assert buttons["mon:history"] == "⏮ Latest"
+    assert buttons["mon:trend"] == "📈 Trend"
+    # A page is a page; the season line still counts the whole season.
+    assert "All time · 12 days · 47 lifts · 380 seats · 5700 GEL" in draft.text
+
+
+def test_the_newest_page_of_history_offers_no_way_forward() -> None:
+    draft = render_lift_history(
+        LiftHistory(
+            days=(_history_day(date(2026, 8, 23)),),
+            total_days=1,
+            total_ran=3,
+            total_seats=28,
+            total_gel=420,
+        )
+    )
+
+    buttons = _button_map(draft.reply_markup)
+    assert "⏮ Latest" not in buttons.values()
+    assert "📅 Older" not in buttons.values()
+
+
+def test_history_flags_a_day_it_wrote_down_late() -> None:
+    draft = render_lift_history(
+        LiftHistory(
+            days=(_history_day(date(2026, 8, 23), reconstructed=True),),
+            total_days=1,
+            total_ran=3,
+            total_seats=28,
+            total_gel=420,
+        )
+    )
+
+    assert "Sun, 23 Aug · 3/5 lifts · 28 seats · 420 GEL ⚠️" in draft.text
+
+
+def test_the_day_audit_names_the_van_and_who_had_not_paid() -> None:
+    draft = render_lift_day_audit(
+        LiftDayAudit(
+            service_date=date(2026, 8, 23),
+            lifts=(
+                LiftDayAuditLift(
+                    lift_time="8:30",
+                    ran=True,
+                    seats=9,
+                    capacity=10,
+                    covered_seats=8,
+                    manual_seats=1,
+                    guest_seats=1,
+                    riders=(
+                        LiftDayAuditSeat(label="@stas", seats=2, guests=1, covered_seats=2),
+                        LiftDayAuditSeat(label="@misho", seats=1, guests=0, covered_seats=0),
+                    ),
+                ),
+                LiftDayAuditLift(
+                    lift_time="13:30",
+                    ran=False,
+                    seats=3,
+                    capacity=10,
+                    covered_seats=0,
+                    manual_seats=0,
+                    guest_seats=0,
+                ),
+            ),
+            price_gel=15,
+            received_gel=120,
+            refunded_gel=30,
+        )
+    )
+
+    assert "🗓 Sun, 23 Aug" in draft.text
+    assert "15 GEL per seat · 120 GEL received · 30 GEL refunded" in draft.text
+    assert "🚐 8:30 · ran · 9/10 · 8 paid · 1 manual · 1 guest" in draft.text
+    assert "✅ @stas · +1 guest" in draft.text
+    assert "🔴 @misho" in draft.text
+    assert "💤 13:30 · did not run · 3/10 · 0 paid" in draft.text
+    assert _button_map(draft.reply_markup)["mon:history"] == "⬅️ Back to history"
+
+
+def test_the_day_audit_says_when_its_figures_were_reconstructed() -> None:
+    draft = render_lift_day_audit(
+        LiftDayAudit(
+            service_date=date(2026, 8, 23),
+            lifts=(),
+            price_gel=15,
+            received_gel=0,
+            refunded_gel=0,
+            reconstructed=True,
+        )
+    )
+
+    assert "⚠️ Written down late — figures reconstructed from votes." in draft.text
+
+
+def test_the_trend_names_a_departure_that_never_runs() -> None:
+    draft = render_lift_trend(
+        LiftTrend(
+            by_lift=(
+                TrendRow(label="8:30", days_ran=12, days_offered=14, total_seats=89),
+                TrendRow(label="15:30", days_ran=0, days_offered=14, total_seats=0),
+            ),
+            by_weekday=(TrendRow(label="Sat", days_ran=7, days_offered=7, total_seats=140),),
+            since=date(2026, 7, 25),
+            until=date(2026, 8, 23),
+        )
+    )
+
+    assert "25 Jul – 23 Aug" in draft.text
+    assert "8:30 — ran 12 of 14 · 7.4 seats avg" in draft.text
+    assert "15:30 — never ran in 14" in draft.text
+    assert "Sat — ran 7 of 7 · 20.0 seats avg" in draft.text

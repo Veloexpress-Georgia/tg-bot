@@ -77,6 +77,9 @@ class RiderCardView:
     days: tuple[RiderDayView, ...]
     price_gel: int
     selected_service_date: date | None = None
+    # Whether this rider has ridden before. The card is otherwise a dead end
+    # midweek, which is exactly when somebody idly opens it.
+    has_history: bool = False
 
     @property
     def selected(self) -> RiderDayView | None:
@@ -86,6 +89,23 @@ class RiderCardView:
             if day.service_date == self.selected_service_date:
                 return day
         return self.days[0]
+
+
+@dataclass(frozen=True)
+class RiderSeasonDay:
+    service_date: date
+    lift_times: tuple[str, ...]
+    seats: int
+    paid_gel: int
+
+
+@dataclass(frozen=True)
+class RiderSeason:
+    days: tuple[RiderSeasonDay, ...]
+    total_days: int
+    total_rides: int
+    total_seats: int
+    total_gel: int
 
 
 @dataclass(frozen=True)
@@ -102,7 +122,7 @@ def render_rider_card(view: RiderCardView) -> MyDayDraft:
                 "🚲 My rides\n\nYou are not booked on any lift yet. "
                 "Vote in the lift poll and come back here."
             ),
-            reply_markup=_day_tabs_only(view),
+            reply_markup=_empty_card_keyboard(view),
         )
 
     lines = [
@@ -177,7 +197,55 @@ def _keyboard(view: RiderCardView, day: RiderDayView) -> InlineKeyboardMarkup:
             rows.append(_all_lifts_row(day, encoded_date=encoded_date))
         rows.extend(_lift_row(row, encoded_date=encoded_date) for row in seated)
     rows.extend(_day_tabs(view))
+    rows.extend(_season_row(view))
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _season_row(view: RiderCardView) -> list[list[InlineKeyboardButton]]:
+    if not view.has_history:
+        return []
+    return [[InlineKeyboardButton(text="📜 My past rides", callback_data="guest:season")]]
+
+
+def _empty_card_keyboard(view: RiderCardView) -> InlineKeyboardMarkup | None:
+    rows = [*_day_tabs(view), *_season_row(view)]
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+def render_rider_season(season: RiderSeason) -> MyDayDraft:
+    """Every lift this rider actually rode, and what they paid for it.
+
+    Built from the days after they closed, so it counts the van they joined on
+    the morning and leaves out the booking they dropped before it went.
+    """
+    lines = ["📜 My past rides", ""]
+    if not season.days:
+        lines.append("No finished lift yet. Once you ride one, it shows up here.")
+    else:
+        lines.extend(_season_day_line(day) for day in season.days)
+        lines.extend(
+            (
+                "",
+                f"{season.total_days} days · {season.total_rides} lifts · "
+                f"{season.total_seats} seats · {season.total_gel} GEL",
+            )
+        )
+    return MyDayDraft(
+        text="\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Back", callback_data="guest:card")],
+            ]
+        ),
+    )
+
+
+def _season_day_line(day: RiderSeasonDay) -> str:
+    seats = "1 seat" if day.seats == 1 else f"{day.seats} seats"
+    return (
+        f"{_long_day_label(day.service_date)} · {', '.join(day.lift_times)} · "
+        f"{seats} · {day.paid_gel} GEL"
+    )
 
 
 def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyboardButton]]:
@@ -215,11 +283,6 @@ def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyb
             [InlineKeyboardButton(text="↩️ Undo", callback_data=f"guest:undo:{encoded_date}")]
         )
     return rows
-
-
-def _day_tabs_only(view: RiderCardView) -> InlineKeyboardMarkup | None:
-    tabs = _day_tabs(view)
-    return InlineKeyboardMarkup(inline_keyboard=tabs) if tabs else None
 
 
 def _day_tabs(view: RiderCardView) -> list[list[InlineKeyboardButton]]:

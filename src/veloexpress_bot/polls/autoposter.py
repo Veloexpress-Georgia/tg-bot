@@ -124,6 +124,15 @@ class PollAutoScheduler:
                 logger.exception("deadline_roster_capture_failed")
                 failures.append("deadline_roster_capture")
 
+            # Yesterday cannot change any more, so this is where it stops being a
+            # live day and becomes history. After the roster capture, which is
+            # what the day's seats mean by then.
+            try:
+                await self._payments_service.freeze_day_results(now=now_local)
+            except Exception:
+                logger.exception("lift_day_results_freeze_failed")
+                failures.append("lift_day_results_freeze")
+
             # A freed seat is good news for whoever was waiting, but only if they
             # hear it — the board that shows the new order is edited silently.
             try:

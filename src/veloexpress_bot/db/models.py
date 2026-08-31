@@ -241,6 +241,9 @@ class ServiceDayNotice(Base):
     # When the roster below was frozen. Set even for a day nobody booked, so an
     # empty roster is "nobody was on it" rather than "not captured yet".
     roster_captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When the day stopped being live and became history. Set even for a day
+    # nothing ran on, so an empty result is "nothing ran" rather than "not yet".
+    results_frozen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
@@ -464,6 +467,75 @@ class GuestSeat(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
+
+
+class LiftDayResult(Base):
+    """What one lift came to, written down once the day can no longer change.
+
+    The lift day itself stays live all the way through: riders put themselves on
+    the morning van, and somebody who never showed up unbooks too late to matter.
+    None of that is an error — it is the day happening. The next day it stops
+    moving, and that is when the bot writes down what it came to.
+
+    Everything here could be re-derived from votes, and that is exactly the
+    problem: the polls are never closed, so a vote changed weeks later would
+    silently rewrite a day the group already lived through. `ran` in particular
+    is a judgement — a van Misho took out with four riders ran — and no count of
+    votes can be asked about it afterwards.
+    """
+
+    __tablename__ = "lift_day_result"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    lift_time: Mapped[str] = mapped_column(String(16))
+    ran: Mapped[bool] = mapped_column(Boolean, default=False)
+    cancelled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Total seats held at close, of which guests and manual bookings.
+    seats: Mapped[int] = mapped_column(Integer, default=0)
+    guest_seats: Mapped[int] = mapped_column(Integer, default=0)
+    manual_seats: Mapped[int] = mapped_column(Integer, default=0)
+    covered_seats: Mapped[int] = mapped_column(Integer, default=0)
+    # Both copied rather than looked up: lift templates get edited and the
+    # fallback price lives in settings, so neither can be trusted to still
+    # describe a day months later.
+    capacity: Mapped[int] = mapped_column(Integer, default=10)
+    price_gel: Mapped[int] = mapped_column(Integer, default=0)
+    # "closed" the morning after, or "backfilled" when the bot caught up later —
+    # a deploy, or an outage over a weekend. Backfilled rows were read off votes
+    # that had already had time to drift, and the screens say so.
+    source: Mapped[str] = mapped_column(String(16), default="closed")
+    frozen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class LiftDaySeat(Base):
+    """One rider's place on one finished lift, frozen with the day.
+
+    Distinct from `DeadlineRoster`, which answers a money question at 20:00 the
+    night before. This answers "who rode", which the evening before cannot know:
+    riders join on the day, and an unpaid rider who drops out late genuinely did
+    not go.
+    """
+
+    __tablename__ = "lift_day_seat"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    lift_time: Mapped[str] = mapped_column(String(16))
+    # 0 for manual bookings, exactly as in the deadline roster.
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger)
+    label: Mapped[str] = mapped_column(Text, default="")
+    seats: Mapped[int] = mapped_column(Integer, default=1)
+    guests: Mapped[int] = mapped_column(Integer, default=0)
+    covered_seats: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class PaymentsBoard(Base):
@@ -733,6 +805,47 @@ Index(
     GuestSeat.lift_time,
     GuestSeat.host_user_id,
     unique=True,
+)
+
+
+Index(
+    "uq_lift_day_result_scope_date_time",
+    LiftDayResult.environment,
+    LiftDayResult.chat_id,
+    func.coalesce(LiftDayResult.thread_id, 0),
+    LiftDayResult.service_date,
+    LiftDayResult.lift_time,
+    unique=True,
+)
+
+
+# History reads a page of days newest-first and nothing else, so the date leads.
+Index(
+    "ix_lift_day_result_scope_date",
+    LiftDayResult.environment,
+    LiftDayResult.chat_id,
+    LiftDayResult.service_date,
+)
+
+
+Index(
+    "uq_lift_day_seat_scope_date_time_user",
+    LiftDaySeat.environment,
+    LiftDaySeat.chat_id,
+    func.coalesce(LiftDaySeat.thread_id, 0),
+    LiftDaySeat.service_date,
+    LiftDaySeat.lift_time,
+    LiftDaySeat.telegram_user_id,
+    unique=True,
+)
+
+
+# "My rides" asks for one rider across every day, which is the opposite shape.
+Index(
+    "ix_lift_day_seat_scope_user",
+    LiftDaySeat.environment,
+    LiftDaySeat.chat_id,
+    LiftDaySeat.telegram_user_id,
 )
 
 
