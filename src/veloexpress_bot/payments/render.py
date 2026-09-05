@@ -89,48 +89,27 @@ def render_cancellation_report(
     """
     if not rows:
         return None
-    if cancelled_lift_time is not None:
-        # Day payments include unrelated lifts. Show only money to return, so
-        # neither a full day payment nor a retained payment reads as a refund.
-        heading = f"💸 {cancelled_lift_time} · {_long_day_label(service_date)} cancelled"
-        refunds = tuple(row for row in rows if row.refund_gel > 0)
-        if not refunds:
-            return f"{heading}\n\nNothing to refund."
-        lines = [f"{heading} — refunds:", ""]
-        for row in refunds:
-            mention = f'<a href="tg://user?id={row.telegram_user_id}">{html.escape(row.label)}</a>'
-            lines.append(f"{mention} — {row.refund_gel} GEL")
-        lines.extend(("", f"Refund {sum(row.refund_gel for row in refunds)} GEL."))
-        return "\n".join(lines)
-
     what = f"{cancelled_lift_time} · " if cancelled_lift_time else ""
-    lines = [f"💸 {what}{_long_day_label(service_date)} cancelled — who paid:", ""]
-    refund_due = 0
-    for row in rows:
-        seats = f" · {row.seats} seats" if row.seats > 1 else ""
+    heading = f"💸 {what}{_long_day_label(service_date)} cancelled"
+    refunds = tuple(row for row in rows if row.refund_gel > 0)
+    if not refunds:
+        return f"{heading}\n\nNothing to refund."
+    lines = [heading, ""]
+    for row in refunds:
         mention = f'<a href="tg://user?id={row.telegram_user_id}">{html.escape(row.label)}</a>'
-        refund_due += row.refund_gel
-        if row.remaining_lift_times:
-            # Payment covers the day, so another lift still earns part of it. Only
-            # the seats that stopped existing come back.
-            still = ", ".join(row.remaining_lift_times)
-            owed_back = f" · refund {row.refund_gel} GEL" if row.refund_gel else ""
-            lines.append(f"{mention} — {row.amount_gel} GEL{seats} · still on {still}{owed_back}")
-            continue
-        if cancelled_lift_time is None:
-            # The header already said the whole day is gone; every row is a refund.
-            lines.append(f"{mention} — {row.amount_gel} GEL{seats}")
-        else:
-            lines.append(f"{mention} — {row.amount_gel} GEL{seats} · nothing left, refund")
-    total = sum(row.amount_gel for row in rows)
-    lines.append("")
-    if not refund_due:
-        # Everybody kept a seat somewhere: the day moved, the money did not.
-        lines.append(f"Nothing to refund — {total} GEL stays on the day.")
-    elif refund_due != total:
-        lines.append(f"Refund {refund_due} GEL of {total} GEL paid.")
-    else:
-        lines.append(f"Refund {total} GEL.")
+        lines.extend(
+            (
+                f"{mention} — {row.refund_gel} GEL back",
+                f"Paid {row.amount_gel} · rides {row.amount_gel - row.refund_gel} GEL",
+                "",
+            )
+        )
+    lines.extend(
+        (
+            f"Total to return: {sum(row.refund_gel for row in refunds)} GEL",
+            "Cumulative for the day · payouts not tracked.",
+        )
+    )
     return "\n".join(lines)
 
 

@@ -219,10 +219,13 @@ def test_single_lift_report_shows_only_refund_amounts() -> None:
         ),
     )
     assert report == (
-        "💸 15:30 · Sat, 5 Sep cancelled — refunds:\n\n"
-        '<a href="tg://user?id=2">@partial</a> — 15 GEL\n'
-        '<a href="tg://user?id=3">@leaving</a> — 15 GEL\n\n'
-        "Refund 30 GEL."
+        "💸 15:30 · Sat, 5 Sep cancelled\n\n"
+        '<a href="tg://user?id=2">@partial</a> — 15 GEL back\n'
+        "Paid 30 · rides 15 GEL\n\n"
+        '<a href="tg://user?id=3">@leaving</a> — 15 GEL back\n'
+        "Paid 15 · rides 0 GEL\n\n"
+        "Total to return: 30 GEL\n"
+        "Cumulative for the day · payouts not tracked."
     )
 
 

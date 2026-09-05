@@ -698,7 +698,7 @@ class PaymentsService:
         service_date: date,
         cancelled_lift_time: str | None = None,
     ) -> str | None:
-        """What the admin owes back after cancelling. None when nobody had paid.
+        """Cumulative refund estimate; generating it does not record a payout.
 
         Call this after the cancellation is recorded, so a rider's remaining lifts
         already exclude what was just cancelled.
@@ -746,17 +746,6 @@ class PaymentsService:
                     .where(RefundReport.text == report)
                     .limit(1)
                 )
-                existing_references = set(
-                    (
-                        await session.scalars(
-                            select(PaymentEntry.reference_key)
-                            .where(PaymentEntry.environment == self._settings.app_env)
-                            .where(PaymentEntry.chat_id == self._require_chat_id())
-                            .where(PaymentEntry.service_date == service_date)
-                            .where(PaymentEntry.kind == "refund")
-                        )
-                    ).all()
-                )
                 if existing_report is None:
                     session.add(
                         RefundReport(
@@ -765,28 +754,6 @@ class PaymentsService:
                             service_date=service_date,
                             lift_time=cancelled_lift_time,
                             text=report,
-                        )
-                    )
-                cancelled_key = cancelled_lift_time or "day"
-                for claim, row in zip(claims, rows, strict=True):
-                    if row.refund_gel <= 0:
-                        continue
-                    reference_key = f"refund:{service_date}:{cancelled_key}:{claim.id}"
-                    if reference_key in existing_references:
-                        continue
-                    session.add(
-                        PaymentEntry(
-                            environment=self._settings.app_env,
-                            chat_id=self._require_chat_id(),
-                            thread_id=self._settings.telegram_target_thread_id,
-                            service_date=service_date,
-                            telegram_user_id=claim.telegram_user_id,
-                            amount_gel=-row.refund_gel,
-                            method=claim.method
-                            if claim.method in {CASH_METHOD, TRANSFER_METHOD}
-                            else None,
-                            kind="refund",
-                            reference_key=reference_key,
                         )
                     )
                 await session.commit()
@@ -877,9 +844,9 @@ class PaymentsService:
     async def forget_day(self, *, service_date: date) -> None:
         """Drop the day's payments once the refunds have been reported.
 
-        A retired day is being paid back, so leaving the claims behind would make a
-        revived poll open with money the bot no longer holds. Call this after
-        cancellation_report — that report is the record.
+        A revived poll starts a fresh booking cycle. Archive the old projection
+        after cancellation_report preserves its refund estimate. The immutable
+        payment entries remain: an estimate does not prove money was returned.
         """
         if not self.enabled:
             return

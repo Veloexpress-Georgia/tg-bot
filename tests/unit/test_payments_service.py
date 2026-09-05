@@ -787,18 +787,18 @@ async def test_cancelling_a_day_reports_every_payment_as_a_refund(db: SharedData
     report = await payments.cancellation_report(service_date=saturday)
 
     assert report is not None
-    assert "cancelled — who paid" in report
-    assert "@stas</a> — 30 GEL · 2 seats" in report
+    assert "cancelled" in report
+    assert "@stas</a> — 30 GEL back" in report
     assert "@anna</a> — 15 GEL" in report
-    assert "Refund 45 GEL." in report
+    assert "Total to return: 45 GEL" in report
     # A whole day leaves nothing to ride, and the header already said so, so rows
     # carry neither "still on" nor a per-rider refund note.
     assert "still on" not in report
     assert "nothing left" not in report
     async with db.session() as session:
         entries = (await session.scalars(select(PaymentEntry).order_by(PaymentEntry.id))).all()
-    assert sum(entry.amount_gel for entry in entries) == 0
-    assert [entry.kind for entry in entries].count("refund") == 2
+    assert sum(entry.amount_gel for entry in entries) == 45
+    assert all(entry.kind == "received" for entry in entries)
 
 
 async def test_scheduler_finishes_an_interrupted_day_cancellation(db: SharedDatabase) -> None:
@@ -821,7 +821,7 @@ async def test_scheduler_finishes_an_interrupted_day_cancellation(db: SharedData
         reports = (await session.scalars(select(RefundReport))).all()
         entries = (await session.scalars(select(PaymentEntry))).all()
     assert len(reports) == 1
-    assert sum(entry.amount_gel for entry in entries) == 0
+    assert sum(entry.amount_gel for entry in entries) == 15
 
 
 async def test_cancelling_one_lift_separates_refunds_from_riders_who_stay(
@@ -858,7 +858,7 @@ async def test_cancelling_one_lift_separates_refunds_from_riders_who_stay(
     # was still short of the minimum when they claimed.
     assert "@rider100" not in report
     assert "@rider101</a> — 15 GEL" in report
-    assert report.endswith("Refund 15 GEL.")
+    assert "Total to return: 15 GEL" in report
 
 
 async def test_forgetting_a_day_clears_its_payments_after_the_report(
@@ -1550,8 +1550,8 @@ async def test_cancelling_one_lift_refunds_only_the_seats_it_took(db: SharedData
 
     assert report is not None
     assert "@rider100</a> — 15 GEL" in report
-    assert "30 GEL" not in report
-    assert report.endswith("Refund 15 GEL.")
+    assert "Paid 30 · rides 15 GEL" in report
+    assert "Total to return: 15 GEL" in report
 
 
 async def test_a_cancelled_lift_nobody_rode_alone_refunds_the_whole_payment(
@@ -1572,7 +1572,7 @@ async def test_a_cancelled_lift_nobody_rode_alone_refunds_the_whole_payment(
 
     assert report is not None
     assert "@rider100</a> — 15 GEL" in report
-    assert report.endswith("Refund 15 GEL.")
+    assert "Total to return: 15 GEL" in report
 
 
 async def test_a_topic_post_settles_the_guest_seats_as_well(db: SharedDatabase) -> None:
@@ -2017,3 +2017,43 @@ async def test_the_worker_tick_writes_yesterday_down(db: SharedDatabase) -> None
     async with db.session() as session:
         rows = (await session.scalars(select(LiftDayResult))).all()
     assert [row.lift_time for row in rows if row.ran] == ["8:30"]
+
+
+@pytest.mark.parametrize("cancel_whole_day", [False, True])
+async def test_refund_reports_are_cumulative_estimates_not_money_movements(
+    db: SharedDatabase, cancel_whole_day: bool
+) -> None:
+    polls, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(polls, poll_id, 0, 1, riders=5)
+    await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider",
+        acknowledged=True,
+    )
+    await polls.cancel_lift(service_date=saturday, lift_time="10:00", admin_user_id=1)
+    first = await payments.cancellation_report(service_date=saturday, cancelled_lift_time="10:00")
+    assert first is not None
+    assert "Total to return: 15 GEL" in first
+    assert "Paid 30 · rides 15 GEL" in first
+    assert (
+        await payments.cancellation_report(service_date=saturday, cancelled_lift_time="10:00")
+        == first
+    )
+    if cancel_whole_day:
+        await polls.cancel_day(service_date=saturday, admin_user_id=1)
+    else:
+        await polls.cancel_lift(service_date=saturday, lift_time="8:30", admin_user_id=1)
+    second = await payments.cancellation_report(
+        service_date=saturday, cancelled_lift_time=None if cancel_whole_day else "8:30"
+    )
+    assert second is not None
+    assert "Total to return: 30 GEL" in second
+    assert "Paid 30 · rides 0 GEL" in second
+    assert "Cumulative for the day · payouts not tracked." in second
+    async with db.session() as session:
+        entries = (await session.scalars(select(PaymentEntry))).all()
+        reports = (await session.scalars(select(RefundReport))).all()
+    assert [(entry.kind, entry.amount_gel) for entry in entries] == [("received", 30)]
+    assert len(reports) == 2
