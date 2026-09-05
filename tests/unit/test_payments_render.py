@@ -3,9 +3,11 @@ from datetime import date
 from veloexpress_bot.payments.render import (
     OutstandingRider,
     PaymentsBoardView,
+    RefundRow,
     RiderPayment,
     decode_board_date,
     encode_board_date,
+    render_cancellation_report,
     render_payment_post,
     render_payments_board,
 )
@@ -204,3 +206,40 @@ def test_payment_post_counts_guest_seats_not_guest_people() -> None:
 
 def test_board_date_survives_the_callback_round_trip() -> None:
     assert decode_board_date(encode_board_date(SATURDAY)) == SATURDAY
+
+
+def test_single_lift_report_shows_only_refund_amounts() -> None:
+    report = render_cancellation_report(
+        service_date=date(2026, 9, 5),
+        cancelled_lift_time="15:30",
+        rows=(
+            RefundRow("@staying", 1, 2, 30, ("10:00", "11:45")),
+            RefundRow("@partial", 2, 2, 30, ("10:00",), refund_gel=15),
+            RefundRow("@leaving", 3, 1, 15, (), refund_gel=15),
+        ),
+    )
+    assert report == (
+        "💸 15:30 · Sat, 5 Sep cancelled — refunds:\n\n"
+        '<a href="tg://user?id=2">@partial</a> — 15 GEL\n'
+        '<a href="tg://user?id=3">@leaving</a> — 15 GEL\n\n'
+        "Refund 30 GEL."
+    )
+
+
+def test_single_lift_without_refunds_omits_day_payments() -> None:
+    report = render_cancellation_report(
+        service_date=SATURDAY,
+        cancelled_lift_time="15:30",
+        rows=(RefundRow("@staying", 1, 2, 30, ("10:00", "11:45")),),
+    )
+    assert report is not None
+    assert report.endswith("Nothing to refund.")
+    assert "@staying" not in report
+    assert "30 GEL" not in report
+
+
+def test_cancellation_without_payments_stays_quiet() -> None:
+    assert (
+        render_cancellation_report(service_date=SATURDAY, cancelled_lift_time="15:30", rows=())
+        is None
+    )

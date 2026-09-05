@@ -856,9 +856,9 @@ async def test_cancelling_one_lift_separates_refunds_from_riders_who_stay(
     assert report is not None
     # A seat is priced per running lift, so @rider100 paid for 8:30 only — 10:00
     # was still short of the minimum when they claimed.
-    assert "@rider100</a> — 15 GEL · still on 10:00" in report
-    assert "@rider101</a> — 15 GEL · nothing left, refund" in report
-    assert "Refund 15 GEL of 30 GEL paid." in report
+    assert "@rider100" not in report
+    assert "@rider101</a> — 15 GEL" in report
+    assert report.endswith("Refund 15 GEL.")
 
 
 async def test_forgetting_a_day_clears_its_payments_after_the_report(
@@ -1549,8 +1549,9 @@ async def test_cancelling_one_lift_refunds_only_the_seats_it_took(db: SharedData
     report = await payments.cancellation_report(service_date=saturday, cancelled_lift_time="10:00")
 
     assert report is not None
-    assert "still on 8:30 · refund 15 GEL" in report
-    assert report.endswith("Refund 15 GEL of 30 GEL paid.")
+    assert "@rider100</a> — 15 GEL" in report
+    assert "30 GEL" not in report
+    assert report.endswith("Refund 15 GEL.")
 
 
 async def test_a_cancelled_lift_nobody_rode_alone_refunds_the_whole_payment(
@@ -1570,7 +1571,7 @@ async def test_a_cancelled_lift_nobody_rode_alone_refunds_the_whole_payment(
     report = await payments.cancellation_report(service_date=saturday, cancelled_lift_time="8:30")
 
     assert report is not None
-    assert "nothing left, refund" in report
+    assert "@rider100</a> — 15 GEL" in report
     assert report.endswith("Refund 15 GEL.")
 
 

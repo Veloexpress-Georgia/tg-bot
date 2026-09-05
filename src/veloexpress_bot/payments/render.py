@@ -89,6 +89,20 @@ def render_cancellation_report(
     """
     if not rows:
         return None
+    if cancelled_lift_time is not None:
+        # Day payments include unrelated lifts. Show only money to return, so
+        # neither a full day payment nor a retained payment reads as a refund.
+        heading = f"💸 {cancelled_lift_time} · {_long_day_label(service_date)} cancelled"
+        refunds = tuple(row for row in rows if row.refund_gel > 0)
+        if not refunds:
+            return f"{heading}\n\nNothing to refund."
+        lines = [f"{heading} — refunds:", ""]
+        for row in refunds:
+            mention = f'<a href="tg://user?id={row.telegram_user_id}">{html.escape(row.label)}</a>'
+            lines.append(f"{mention} — {row.refund_gel} GEL")
+        lines.extend(("", f"Refund {sum(row.refund_gel for row in refunds)} GEL."))
+        return "\n".join(lines)
+
     what = f"{cancelled_lift_time} · " if cancelled_lift_time else ""
     lines = [f"💸 {what}{_long_day_label(service_date)} cancelled — who paid:", ""]
     refund_due = 0
