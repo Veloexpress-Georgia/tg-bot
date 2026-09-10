@@ -6,6 +6,7 @@ from datetime import date, datetime
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from veloexpress_bot.payments.details import bank_details_text
 from veloexpress_bot.polls.render import EN_SHORT_MONTHS, SHORT_DAY_LABELS
 
 PAYMENTS_PARSE_MODE = "HTML"
@@ -145,6 +146,7 @@ def render_payments_board(view: PaymentsBoardView) -> PaymentsBoardDraft:
         # edit sends no notification, so this shows who still owes without nagging.
         lines.extend(("", "Waiting on:", " ".join(_mention(rider) for rider in view.outstanding)))
 
+    lines.extend(("", bank_details_text()))
     return PaymentsBoardDraft(text="\n".join(lines), reply_markup=_keyboard(view))
 
 

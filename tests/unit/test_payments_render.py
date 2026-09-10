@@ -246,3 +246,13 @@ def test_cancellation_without_payments_stays_quiet() -> None:
         render_cancellation_report(service_date=SATURDAY, cancelled_lift_time="15:30", rows=())
         is None
     )
+
+
+def test_board_shows_copyable_accounts_next_to_payment_buttons() -> None:
+    draft = render_payments_board(_view())
+    assert draft.reply_markup is not None
+    values = ["Mikheil Nozadze", "GE54BG0000000526056155", "GE03TB7331745061100055"]
+    copies = [b for row in draft.reply_markup.inline_keyboard for b in row if b.copy_text]
+    assert copies == []
+    assert all(f"<code>{value}</code>" in draft.text for value in values)
+    assert "pay:paid:20260718" in _buttons(draft.reply_markup)

@@ -1644,7 +1644,7 @@ async def test_paying_for_the_whole_day_covers_guests_on_lifts_still_short(
 
     # 8:30 for the rider, 10:00 for the rider and their guest: three seats.
     assert "45 GEL" in outcome.text
-    assert "💸 Pay all · 45" in [
+    assert "💸 I paid all · 45" in [
         button.text
         for row in (card.reply_markup.inline_keyboard if card.reply_markup else [])
         for button in row

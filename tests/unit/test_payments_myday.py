@@ -45,7 +45,7 @@ def test_one_lift_keeps_the_card_to_a_single_row() -> None:
 
     assert "8:30 — riding · 4 seats left" in draft.text
     assert _buttons(draft.reply_markup) == [
-        [(" ", "guest:noop"), ("8:30 · 0", "guest:noop"), ("➕", "guest:add:20260801:0830")]
+        [("＋ Guest · 8:30", "guest:add:20260801:0830")],
     ]
 
 
@@ -68,13 +68,15 @@ def test_several_lifts_offer_one_tap_for_a_guest_riding_along() -> None:
     assert "Your total: 60 GEL." in draft.text
     assert "10:00 — riding · 1 guest · full" in draft.text
     rows = _buttons(draft.reply_markup)
-    assert rows[0] == [("💸 Pay 60", "guest:pay:20260801"), ("💵 Cash 60", "guest:cash:20260801")]
+    assert rows[0] == [
+        ("💸 I paid · 60", "guest:pay:20260801"),
+        ("💵 Cash 60", "guest:cash:20260801"),
+    ]
     assert rows[1] == [
-        ("➖ Guest leaves", "guest:allsub:20260801"),
-        ("➕ Guest rides with me", "guest:all:20260801"),
+        ("− Guest from all lifts", "guest:allsub:20260801"),
     ]
     # A full lift offers no plus: the card never sells a seat that is gone.
-    assert rows[3] == [("➖", "guest:sub:20260801:1000"), ("10:00 · 1", "guest:noop")]
+    assert rows[3] == [("− Guest · 10:00", "guest:sub:20260801:1000")]
 
 
 def test_an_unfilled_lift_offers_settling_the_whole_day() -> None:
@@ -95,7 +97,7 @@ def test_an_unfilled_lift_offers_settling_the_whole_day() -> None:
     assert "Not filled yet: 10:00, 13:30." in draft.text
     assert "Due now 15 GEL · whole day 45 GEL." in draft.text
     assert _buttons(draft.reply_markup)[1] == [
-        ("💸 Pay all · 45", "guest:payall:20260801"),
+        ("💸 I paid all · 45", "guest:payall:20260801"),
         ("💵 Cash all · 45", "guest:cashall:20260801"),
     ]
 
@@ -180,7 +182,7 @@ def test_the_weekend_is_one_card_with_day_tabs() -> None:
     )
 
     assert "Sun, 2 Aug" in draft.text
-    assert "10:00 — riding · 1 seats left" in draft.text
+    assert "10:00 — riding · 1 seat left" in draft.text
     assert _buttons(draft.reply_markup)[-1] == [
         ("Sat 1", "guest:day:20260801"),
         ("✅ Sun 2", "guest:day:20260802"),
@@ -200,7 +202,7 @@ def test_a_fully_booked_day_says_so_instead_of_offering_seats() -> None:
         )
     )
 
-    assert _buttons(draft.reply_markup)[0] == [("All lifts full", "guest:noop")]
+    assert _buttons(draft.reply_markup) == []
 
 
 def test_the_deep_link_round_trips_through_the_start_payload() -> None:
@@ -278,3 +280,53 @@ def test_my_past_rides_before_the_first_one() -> None:
     )
 
     assert "No finished lift yet." in draft.text
+
+
+def test_paid_card_has_no_empty_or_inert_guest_controls() -> None:
+    draft = render_rider_card(
+        _card(
+            RiderDayView(
+                service_date=SATURDAY,
+                rows=(
+                    RiderLiftRow(lift_time="11:45", seats_left=0),
+                    RiderLiftRow(lift_time="13:30", seats_left=4),
+                ),
+                due_now_gel=30,
+                due_all_gel=30,
+                paid_gel=30,
+            )
+        )
+    )
+    assert draft.reply_markup is not None
+    buttons = [button for row in draft.reply_markup.inline_keyboard for button in row]
+    assert all(button.text.strip() and button.callback_data != "guest:noop" for button in buttons)
+    assert [
+        (b.text, b.callback_data)
+        for b in buttons
+        if (b.callback_data or "").startswith("guest:add:")
+    ] == [("＋ Guest · 13:30", "guest:add:20260801:1330")]
+    assert all(b.copy_text is None for b in buttons)
+
+
+def test_bank_details_are_inline_code_without_copy_buttons() -> None:
+    draft = render_rider_card(
+        _card(
+            RiderDayView(
+                service_date=SATURDAY,
+                rows=(RiderLiftRow(lift_time="8:30", seats_left=4),),
+                due_now_gel=15,
+                due_all_gel=15,
+            )
+        )
+    )
+    values = ["Mikheil Nozadze", "GE54BG0000000526056155", "GE03TB7331745061100055"]
+    assert draft.reply_markup is not None
+    copies = [b for row in draft.reply_markup.inline_keyboard for b in row if b.copy_text]
+    assert copies == []
+    assert all(f"<code>{value}</code>" in draft.text for value in values)
+    assert any(
+        b.callback_data == "guest:pay:20260801"
+        for row in draft.reply_markup.inline_keyboard
+        for b in row
+    )
+    assert "guest:bank" not in str(draft.reply_markup)

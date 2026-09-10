@@ -22,6 +22,7 @@ from datetime import date, datetime
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from veloexpress_bot.payments.details import bank_details_text
 from veloexpress_bot.polls.render import EN_SHORT_MONTHS, SHORT_DAY_LABELS
 
 MY_DAY_PARSE_MODE = "HTML"
@@ -128,11 +129,13 @@ def render_rider_card(view: RiderCardView) -> MyDayDraft:
     lines = [
         f"🚲 My rides · {_long_day_label(day.service_date)}",
         "",
-        f"{day.price_gel} GEL per seat. Someone riding with you? Add a seat.",
+        f"{day.price_gel} GEL per seat",
         "",
     ]
     lines.extend(_row_line(row) for row in day.rows)
     lines.extend(_money_lines(day))
+    if not day.waitlisted:
+        lines.extend(("", bank_details_text()))
     return MyDayDraft(text="\n".join(lines), reply_markup=_keyboard(view, day))
 
 
@@ -173,7 +176,13 @@ def _row_line(row: RiderLiftRow) -> str:
     parts = ["riding" if row.running else "not filled yet"]
     if row.guests:
         parts.append(f"{row.guests} guest" if row.guests == 1 else f"{row.guests} guests")
-    parts.append("full" if row.seats_left <= 0 else f"{row.seats_left} seats left")
+    parts.append(
+        "full"
+        if row.seats_left <= 0
+        else "1 seat left"
+        if row.seats_left == 1
+        else f"{row.seats_left} seats left"
+    )
     return f"{row.lift_time} — {' · '.join(parts)}"
 
 
@@ -194,8 +203,12 @@ def _keyboard(view: RiderCardView, day: RiderDayView) -> InlineKeyboardMarkup:
         # laps, and are pointless when the host holds a single lift.
         seated = tuple(row for row in day.rows if not row.waitlisted)
         if len(seated) > 1:
-            rows.append(_all_lifts_row(day, encoded_date=encoded_date))
-        rows.extend(_lift_row(row, encoded_date=encoded_date) for row in seated)
+            bulk = _all_lifts_row(day, encoded_date=encoded_date)
+            if bulk:
+                rows.append(bulk)
+        rows.extend(
+            buttons for row in seated if (buttons := _lift_row(row, encoded_date=encoded_date))
+        )
     rows.extend(_day_tabs(view))
     rows.extend(_season_row(view))
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -254,7 +267,7 @@ def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyb
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"💸 Pay {day.due_now_gel}",
+                    text=f"💸 I paid · {day.due_now_gel}",
                     callback_data=f"guest:pay:{encoded_date}",
                 ),
                 InlineKeyboardButton(
@@ -269,7 +282,7 @@ def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyb
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"💸 Pay all · {day.due_all_gel}",
+                    text=f"💸 I paid all · {day.due_all_gel}",
                     callback_data=f"guest:payall:{encoded_date}",
                 ),
                 InlineKeyboardButton(
@@ -311,39 +324,34 @@ def _all_lifts_row(day: RiderDayView, *, encoded_date: str) -> list[InlineKeyboa
     if day.total_guests:
         buttons.append(
             InlineKeyboardButton(
-                text="➖ Guest leaves",
+                text="− Guest from all lifts",
                 callback_data=f"guest:allsub:{encoded_date}",
             )
         )
-    if any(row.seats_left > 0 for row in day.rows if not row.waitlisted):
+    if all(row.seats_left > 0 for row in day.rows if not row.waitlisted):
         buttons.append(
             InlineKeyboardButton(
-                text="➕ Guest rides with me",
+                text="＋ Guest on all lifts",
                 callback_data=f"guest:all:{encoded_date}",
             )
         )
-    return buttons or [InlineKeyboardButton(text="All lifts full", callback_data="guest:noop")]
+    return buttons
 
 
 def _lift_row(row: RiderLiftRow, *, encoded_date: str) -> list[InlineKeyboardButton]:
     encoded_time = encode_guest_time(row.lift_time)
-    buttons = [
-        InlineKeyboardButton(
-            text="➖" if row.guests else " ",
-            callback_data=(
-                f"guest:sub:{encoded_date}:{encoded_time}" if row.guests else "guest:noop"
-            ),
-        ),
-        InlineKeyboardButton(
-            text=f"{row.lift_time} · {row.guests}",
-            callback_data="guest:noop",
-        ),
-    ]
-    # No plus button once the lift is full: never offer a seat that is gone.
+    buttons: list[InlineKeyboardButton] = []
+    if row.guests:
+        buttons.append(
+            InlineKeyboardButton(
+                text=f"− Guest · {row.lift_time}",
+                callback_data=f"guest:sub:{encoded_date}:{encoded_time}",
+            )
+        )
     if row.seats_left > 0:
         buttons.append(
             InlineKeyboardButton(
-                text="➕",
+                text=f"＋ Guest · {row.lift_time}",
                 callback_data=f"guest:add:{encoded_date}:{encoded_time}",
             )
         )
