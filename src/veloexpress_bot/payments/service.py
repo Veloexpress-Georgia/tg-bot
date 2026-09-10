@@ -233,6 +233,7 @@ class PaymentsService:
         if not self.enabled:
             return
         moment = (now or datetime.now(UTC)).astimezone(self._zone)
+        await self._retire_boards(today=moment.date())
         for day in await self._active_days(today=moment.date()):
             await self._refresh_board(day)
 
@@ -1016,6 +1017,34 @@ class PaymentsService:
                 claim.posted_message_id = sent.message_id
                 await session.commit()
 
+    async def _retire_boards(self, *, today: date) -> None:
+        """Leave past boards as history, without payment controls or a pin."""
+        async with self._session_factory() as session:
+            boards = list(
+                await session.scalars(
+                    select(PaymentsBoard)
+                    .where(PaymentsBoard.environment == self._settings.app_env)
+                    .where(PaymentsBoard.chat_id == self._require_chat_id())
+                    .where(PaymentsBoard.service_date < today)
+                    .where(PaymentsBoard.retired_at.is_(None))
+                )
+            )
+            for board in boards:
+                cleared = await self._telegram_client.clear_keyboard(
+                    chat_id=board.chat_id,
+                    message_id=board.telegram_message_id,
+                )
+                if not cleared:
+                    continue
+                unpinned = await self._telegram_client.unpin_message(
+                    chat_id=board.chat_id,
+                    message_id=board.telegram_message_id,
+                )
+                if not unpinned:
+                    continue
+                board.retired_at = datetime.now(UTC)
+                await session.commit()
+
     async def _refresh_board(self, day: DayBookings) -> None:
         view = await self._board_view(day)
         draft = render_payments_board(view)
@@ -1026,6 +1055,8 @@ class PaymentsService:
                 .where(PaymentsBoard.chat_id == self._require_chat_id())
                 .where(PaymentsBoard.service_date == day.service_date)
             )
+            if board is not None and board.retired_at is not None:
+                return
             board_message_id = board.telegram_message_id if board is not None else None
 
         if board_message_id is not None:

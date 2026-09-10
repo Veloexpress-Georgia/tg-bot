@@ -548,6 +548,7 @@ class PaymentsBoard(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger)
     service_date: Mapped[date] = mapped_column(Date)
     telegram_message_id: Mapped[int] = mapped_column(BigInteger)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

@@ -81,6 +81,9 @@ class RecordingTelegramClient:
         self.deleted.append(message_id)
         return True
 
+    async def clear_keyboard(self, *, chat_id: int, message_id: int) -> bool:
+        return True
+
     async def message_exists(self, *, chat_id: int, message_id: int) -> bool:
         return True
 

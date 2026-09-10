@@ -171,6 +171,9 @@ class FakeTelegramClient:
             self.existing_message_ids.discard(message_id)
         return True
 
+    async def clear_keyboard(self, *, chat_id: int, message_id: int) -> bool:
+        return True
+
     async def message_exists(self, *, chat_id: int, message_id: int) -> bool:
         assert chat_id == -100123
         return self.existing_message_ids is None or message_id in self.existing_message_ids

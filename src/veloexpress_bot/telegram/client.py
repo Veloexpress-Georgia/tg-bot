@@ -155,6 +155,31 @@ class AiogramTelegramClient:
             return False
         return True
 
+    async def clear_keyboard(self, *, chat_id: int, message_id: int) -> bool:
+        try:
+            await self._bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=None,
+            )
+        except TelegramBadRequest as error:
+            error_text = error.message.lower()
+            if any(
+                text in error_text
+                for text in (
+                    "message is not modified",
+                    "message to edit not found",
+                    "message not found",
+                )
+            ):
+                return True
+            logger.exception("Failed to clear message keyboard", extra={"message_id": message_id})
+            return False
+        except TelegramAPIError:
+            logger.exception("Failed to clear message keyboard", extra={"message_id": message_id})
+            return False
+        return True
+
     async def message_exists(self, *, chat_id: int, message_id: int) -> bool:
         try:
             await self._bot.edit_message_reply_markup(

@@ -91,3 +91,34 @@ async def test_unpin_message_targets_specific_poll() -> None:
 
     assert unpinned is True
     assert bot.kwargs == {"chat_id": -100123, "message_id": 42}
+
+
+@pytest.mark.parametrize(
+    "error_text, expected",
+    [
+        (None, True),
+        ("Bad Request: message is not modified", True),
+        ("Bad Request: message to edit not found", True),
+        ("Bad Request: message can't be edited", False),
+        ("Bad Request: chat not found", False),
+    ],
+)
+async def test_clear_keyboard_handles_missing_messages_and_retries_errors(
+    error_text: str | None,
+    expected: bool,
+) -> None:
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import EditMessageReplyMarkup
+
+    class KeyboardBot:
+        async def edit_message_reply_markup(self, **kwargs: object) -> object:
+            assert kwargs == {"chat_id": -100123, "message_id": 42, "reply_markup": None}
+            if error_text is not None:
+                raise TelegramBadRequest(
+                    method=EditMessageReplyMarkup(chat_id=-100123, message_id=42),
+                    message=error_text,
+                )
+            return object()
+
+    client = AiogramTelegramClient(cast(Bot, KeyboardBot()))
+    assert await client.clear_keyboard(chat_id=-100123, message_id=42) is expected

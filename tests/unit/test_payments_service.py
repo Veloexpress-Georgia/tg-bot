@@ -64,6 +64,10 @@ class FakeTelegramClient:
         self.sent: list[SentRecord] = []
         self.edits: list[tuple[int, str]] = []
         self.deleted: list[int] = []
+        self.cleared: list[int] = []
+        self.unpinned: list[int] = []
+        self.clear_succeeds = True
+        self.unpin_succeeds = True
         self.next_message_id = 500
 
     def payments_sends(self) -> list[SentRecord]:
@@ -117,8 +121,13 @@ class FakeTelegramClient:
     async def pin_message(self, *, chat_id: int, message_id: int) -> bool:
         return True
 
+    async def clear_keyboard(self, *, chat_id: int, message_id: int) -> bool:
+        self.cleared.append(message_id)
+        return self.clear_succeeds
+
     async def unpin_message(self, *, chat_id: int, message_id: int) -> bool:
-        return True
+        self.unpinned.append(message_id)
+        return self.unpin_succeeds
 
     async def delete_message(self, *, chat_id: int, message_id: int) -> bool:
         self.deleted.append(message_id)
@@ -2057,3 +2066,86 @@ async def test_refund_reports_are_cumulative_estimates_not_money_movements(
         reports = (await session.scalars(select(RefundReport))).all()
     assert [(entry.kind, entry.amount_gel) for entry in entries] == [("received", 30)]
     assert len(reports) == 2
+
+
+async def test_past_payment_boards_lose_buttons_and_pins_once(db: SharedDatabase) -> None:
+    service_date = date(2026, 7, 18)
+    polls, payments, client, poll_id, _ = await _setup(db, service_date=service_date)
+    await _fill(polls, poll_id, 0)
+    # Still live at 23:59 in Tbilisi, then retired at local midnight.
+    await payments.sync_boards(now=datetime(2026, 7, 18, 19, 59, tzinfo=UTC))
+    board = client.payments_sends()[0]
+    assert board.markup is not None
+    assert client.cleared == []
+    await payments.sync_boards(now=datetime(2026, 7, 18, 20, tzinfo=UTC))
+    assert client.cleared == [board.message_id]
+    assert client.unpinned == [board.message_id]
+    assert client.deleted == []
+    await payments.sync_boards(now=datetime(2026, 8, 1, tzinfo=UTC))
+    assert client.cleared == [board.message_id]
+    assert len(client.payments_sends()) == 1
+
+
+@pytest.mark.parametrize("failure", ["clear", "unpin"])
+async def test_board_cleanup_retries_failures_after_restart(
+    db: SharedDatabase,
+    failure: str,
+) -> None:
+    _, payments, client, _, _ = await _setup(db)
+    async with db.session() as session:
+        session.add_all(
+            [
+                PaymentsBoard(
+                    environment="test",
+                    chat_id=CHAT_ID,
+                    service_date=date(2020, 1, 1),
+                    telegram_message_id=42,
+                ),
+                PaymentsBoard(
+                    environment="other",
+                    chat_id=CHAT_ID,
+                    service_date=date(2020, 1, 1),
+                    telegram_message_id=43,
+                ),
+                PaymentsBoard(
+                    environment="test",
+                    chat_id=CHAT_ID - 1,
+                    service_date=date(2020, 1, 1),
+                    telegram_message_id=44,
+                ),
+            ]
+        )
+        await session.commit()
+    client.clear_succeeds = failure != "clear"
+    client.unpin_succeeds = failure != "unpin"
+    await payments.sync_boards()
+    async with db.session() as session:
+        board = await session.scalar(
+            select(PaymentsBoard).where(PaymentsBoard.telegram_message_id == 42)
+        )
+        assert board is not None and board.retired_at is None
+    client.clear_succeeds = client.unpin_succeeds = True
+    restarted = PaymentsService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    await restarted.sync_boards()
+    await restarted.sync_boards()
+    assert client.cleared == [42, 42]
+    assert client.unpinned == ([42] if failure == "clear" else [42, 42])
+
+
+async def test_late_payment_does_not_reactivate_retired_board(db: SharedDatabase) -> None:
+    polls, payments, client, poll_id, saturday = await _setup(db)
+    await _fill(polls, poll_id, 0)
+    await payments.sync_boards()
+    await payments.sync_boards(
+        now=datetime.combine(
+            saturday + timedelta(days=1), datetime.min.time(), tzinfo=ZoneInfo("Asia/Tbilisi")
+        )
+    )
+    edits_before = list(client.edits)
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="rider100", full_name="Rider 100"
+    )
+    assert client.edits == edits_before
+    assert len([record for record in client.payments_sends() if record.markup is not None]) == 1
