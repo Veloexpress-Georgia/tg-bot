@@ -330,3 +330,44 @@ def test_bank_details_are_inline_code_without_copy_buttons() -> None:
         for b in row
     )
     assert "guest:bank" not in str(draft.reply_markup)
+
+
+def test_topup_buttons_show_only_the_unpaid_amount() -> None:
+    draft = render_rider_card(
+        _card(
+            RiderDayView(
+                service_date=SATURDAY,
+                rows=(RiderLiftRow(lift_time="8:30", seats_left=4),),
+                due_now_gel=30,
+                due_all_gel=45,
+                paid_gel=15,
+                pending_lift_times=("10:00",),
+            )
+        )
+    )
+    buttons = dict((data, text) for row in _buttons(draft.reply_markup) for text, data in row)
+    assert buttons["guest:pay:20260801"] == "💸 I paid · 15"
+    assert buttons["guest:cash:20260801"] == "💵 Cash 15"
+    assert buttons["guest:payall:20260801"] == "💸 I paid all · 30"
+
+
+def test_prepaid_pending_rides_are_not_presented_as_a_refund() -> None:
+    draft = render_rider_card(
+        _card(
+            RiderDayView(
+                service_date=SATURDAY,
+                rows=(RiderLiftRow(lift_time="8:30", seats_left=4),),
+                due_now_gel=15,
+                due_all_gel=30,
+                paid_gel=30,
+                pending_lift_times=("10:00",),
+            )
+        )
+    )
+    assert "15 GEL prepaid" in draft.text
+    assert "to come back" not in draft.text
+    assert not any(
+        data and data.startswith(("guest:pay", "guest:cash"))
+        for row in _buttons(draft.reply_markup)
+        for _, data in row
+    )

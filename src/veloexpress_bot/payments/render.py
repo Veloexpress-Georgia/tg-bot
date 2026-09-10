@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import html
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -120,7 +120,7 @@ class PaymentsBoardDraft:
     reply_markup: InlineKeyboardMarkup | None
 
 
-def render_payments_board(view: PaymentsBoardView) -> PaymentsBoardDraft:
+def render_payments_board(view: PaymentsBoardView, *, compact: bool = False) -> PaymentsBoardDraft:
     header = f"💸 Payments · {_long_day_label(view.service_date)}"
     if view.cancelled:
         return PaymentsBoardDraft(text=f"{header}\n\n❌ The day is cancelled.", reply_markup=None)
@@ -134,14 +134,15 @@ def render_payments_board(view: PaymentsBoardView) -> PaymentsBoardDraft:
         header,
         "",
         f"Payment open: {', '.join(view.running_lift_times)}",
-        f"{view.price_gel} GEL per seat · pay by {view.deadline_time}",
+        f"{view.price_gel} GEL per seat · pay by {view.deadline_time}"
+        f" ({_long_day_label(view.service_date - timedelta(days=1))})",
     ]
     lines.append("")
     lines.append("💸 transfer · 💵 cash · 👤 Guests opens a form in the bot")
-    if view.payments:
+    if view.payments and not compact:
         lines.extend(("", "Paid:"))
         lines.extend(_payment_line(payment) for payment in view.payments)
-    if view.outstanding:
+    if view.outstanding and not compact:
         # Tags rather than a bare count. The board is edited in place, and a Telegram
         # edit sends no notification, so this shows who still owes without nagging.
         lines.extend(("", "Waiting on:", " ".join(_mention(rider) for rider in view.outstanding)))

@@ -1,3 +1,4 @@
+import pytest
 from aiogram import Dispatcher
 from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.exceptions import TelegramBadRequest
@@ -167,3 +168,27 @@ def test_only_bot_created_pin_notices_in_target_topic_are_cleaned() -> None:
         thread_id=8,
         settings=settings,
     )
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        "guest:unknown:20260912:0830",
+        "guest:add:20260912",
+        "guest:sub:20260912:2960",
+        "guest:add:20260912:nope",
+        "guest:pay:20260912:extra",
+    ],
+)
+async def test_unknown_guest_action_cannot_change_seats(data: str) -> None:
+    from types import SimpleNamespace
+    from typing import cast
+    from unittest.mock import AsyncMock, Mock
+
+    from veloexpress_bot.bot.handlers import handle_guest_form
+
+    callback = SimpleNamespace(data=data, from_user=SimpleNamespace(id=123), answer=AsyncMock())
+    payments = Mock()
+    await handle_guest_form(cast(CallbackQuery, callback), payments)
+    assert payments.mock_calls == []
+    callback.answer.assert_awaited_once()

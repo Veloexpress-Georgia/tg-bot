@@ -36,6 +36,7 @@ class LiftSignal:
     lift_time: str
     seats: int
     cancelled: bool = False
+    covered_seats: int = 0
 
     @property
     def running(self) -> bool:
@@ -195,8 +196,12 @@ def decide_deadline_reminder(
     """One reminder per day, and only while a lift can still be saved."""
     if already_reminded:
         return False
-    if not any(_is_short(signal) for signal in signals):
-        # Everything already runs; there is nothing to ask the group for.
+    if not any(
+        not signal.cancelled
+        and (signal.seats < MINIMUM_RIDERS or signal.covered_seats < MINIMUM_RIDERS)
+        for signal in signals
+    ):
+        # Every active lift has enough riders and paid seats.
         return False
     return deadline_at - DEADLINE_REMINDER_LEAD <= now <= deadline_at
 
@@ -244,7 +249,13 @@ def _reminder_line(signal: LiftSignal) -> str:
         # rider can still save the lift if Misho allows it.
         missing = MINIMUM_RIDERS - signal.seats
         return f"{signal.lift_time} — {signal.seats}/{MINIMUM_RIDERS} · needs {missing} more"
-    return f"{signal.lift_time} — {signal.seats} riders · running"
+    if signal.covered_seats < MINIMUM_RIDERS:
+        return (
+            f"{signal.lift_time} — {signal.seats} riders · "
+            f"{signal.covered_seats}/{MINIMUM_RIDERS} paid · "
+            f"needs {MINIMUM_RIDERS - signal.covered_seats} more paid seats"
+        )
+    return f"{signal.lift_time} — {signal.seats} riders · funded"
 
 
 def _is_short(signal: LiftSignal) -> bool:

@@ -156,9 +156,28 @@ async def handle_guest_form(
         await callback.answer()
         return
 
+    if action not in {
+        "day",
+        "payall",
+        "cashall",
+        "pay",
+        "cash",
+        "undo",
+        "all",
+        "allsub",
+        "add",
+        "sub",
+    }:
+        await callback.answer(STALE_BOARD_ALERT, show_alert=True)
+        return
+
     parts = value.split(":")
     try:
+        if len(parts) != (2 if action in {"add", "sub"} else 1):
+            raise ValueError("Invalid guest callback")
         service_date = decode_guest_date(parts[0])
+        if action in {"add", "sub"}:
+            decode_guest_time(parts[1])
     except ValueError, IndexError:
         await callback.answer(STALE_BOARD_ALERT, show_alert=True)
         return

@@ -627,7 +627,7 @@ async def _fill_lift(service: PollPostingService, poll_id: str, *, riders: int) 
         )
 
 
-async def test_lift_signals_announce_the_threshold_once_and_tag_the_riders(
+async def test_threshold_is_tracked_without_a_separate_tagged_notice(
     db: SharedDatabase,
 ) -> None:
     client = FakeTelegramClient()
@@ -647,13 +647,11 @@ async def test_lift_signals_announce_the_threshold_once_and_tag_the_riders(
     assert await service.evaluate_lift_signals() == ()
 
     await _fill_lift(service, poll_id, riders=5)
+    sent_before = len(client.sent_texts)
     events = await service.evaluate_lift_signals()
     assert [event.kind for event in events] == ["confirmed"]
 
-    notice = client.sent_texts[-1]
-    assert "8:30" in notice
-    assert "has 5 riders — pay to lock it in." in notice
-    assert "tg://user?id=104" in notice
+    assert len(client.sent_texts) == sent_before
 
     # A second tick must not repeat the announcement.
     before = len(client.sent_texts)
@@ -795,7 +793,7 @@ async def test_the_deadline_reminder_stays_fresh_and_never_claims_booking_is_shu
     await _fill_lift(service, poll_id, riders=5)
     await service.evaluate_lift_signals(now=deadline - timedelta(minutes=30))
     edits = [text for message_id, text in client.edited_texts if message_id == reminder_id]
-    assert "8:30 — 5 riders · running" in edits[-1]
+    assert "8:30 — 5 riders · 0/5 paid" in edits[-1]
     assert len([text for text in client.sent_texts if "⏳ Tomorrow" in text]) == 1
 
     await service.evaluate_lift_signals(now=deadline + timedelta(minutes=5))
@@ -804,7 +802,7 @@ async def test_the_deadline_reminder_stays_fresh_and_never_claims_booking_is_shu
     assert "closed" not in edits[-1]
 
 
-async def test_no_deadline_reminder_when_every_lift_is_already_running(
+async def test_full_unpaid_day_still_gets_a_deadline_reminder(
     db: SharedDatabase,
 ) -> None:
     client = FakeTelegramClient()
@@ -827,7 +825,9 @@ async def test_no_deadline_reminder_when_every_lift_is_already_running(
     deadline = booking_deadline_at(saturday, "20:00", zone=ZoneInfo("Asia/Tbilisi"))
     await service.evaluate_lift_signals(now=deadline - timedelta(hours=1))
 
-    assert not any("⏳ Tomorrow" in text for text in client.sent_texts)
+    reminders = [text for text in client.sent_texts if "⏳ Tomorrow" in text]
+    assert len(reminders) == 1
+    assert "0/5 paid" in reminders[0]
 
 
 async def test_new_polls_reopen_the_monitor_at_the_bottom_of_the_admin_chat(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
@@ -9,6 +9,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from veloexpress_bot.config import Settings
+from veloexpress_bot.db.locking import transaction_lock
 from veloexpress_bot.db.models import (
     CancelledLift,
     DeadlineRoster,
@@ -662,6 +663,13 @@ class PaymentsService:
                     .where(PaymentEntry.service_date == service_date)
                     .where(PaymentEntry.telegram_user_id == telegram_user_id)
                     .where(PaymentEntry.kind == "received")
+                    .where(
+                        PaymentEntry.id.not_in(
+                            select(PaymentEntry.reversed_entry_id).where(
+                                PaymentEntry.reversed_entry_id.is_not(None)
+                            )
+                        )
+                    )
                 )
             ).all()
             now = datetime.now(UTC)
@@ -852,6 +860,7 @@ class PaymentsService:
         if not self.enabled:
             return
         async with self._session_factory() as session:
+            await self._lock_day(session, service_date)
             await session.execute(
                 delete(PaymentClaim)
                 .where(PaymentClaim.environment == self._settings.app_env)
@@ -876,6 +885,10 @@ class PaymentsService:
         if not self.enabled:
             return
         async with self._session_factory() as session:
+            await transaction_lock(
+                session,
+                f"payment-post:{self._settings.app_env}:{self._require_chat_id()}:{telegram_user_id}",
+            )
             row = await session.scalar(
                 select(PaymentsTopicPost)
                 .where(PaymentsTopicPost.environment == self._settings.app_env)
@@ -1030,22 +1043,86 @@ class PaymentsService:
                 )
             )
             for board in boards:
-                cleared = await self._telegram_client.clear_keyboard(
-                    chat_id=board.chat_id,
-                    message_id=board.telegram_message_id,
-                )
-                if not cleared:
+                await self._lock_board(session, board.service_date)
+                await session.refresh(board)
+                if board.retired_at is not None:
                     continue
-                unpinned = await self._telegram_client.unpin_message(
-                    chat_id=board.chat_id,
-                    message_id=board.telegram_message_id,
-                )
-                if not unpinned:
+                completed = True
+                for message_id in (board.telegram_message_id, board.lift_message_id):
+                    if message_id is None:
+                        continue
+                    cleared = await self._telegram_client.clear_keyboard(
+                        chat_id=board.chat_id,
+                        message_id=message_id,
+                    )
+                    if not cleared:
+                        completed = False
+                        continue
+                    if not await self._telegram_client.unpin_message(
+                        chat_id=board.chat_id,
+                        message_id=message_id,
+                    ):
+                        completed = False
+                if not completed:
                     continue
                 board.retired_at = datetime.now(UTC)
                 await session.commit()
 
+    async def _lock_board(self, session: AsyncSession, service_date: date) -> None:
+        await transaction_lock(
+            session,
+            f"payment-board:{self._settings.app_env}:{self._require_chat_id()}:{service_date}",
+        )
+
     async def _refresh_board(self, day: DayBookings) -> None:
+        # Money is already committed. Serialize the separate Telegram projection
+        # so two payments or a worker tick cannot create competing day cards.
+        async with self._session_factory() as session:
+            await self._lock_board(session, day.service_date)
+            await self._refresh_payments_board(day)
+            await self._refresh_lift_payment_card(day)
+
+    async def _refresh_lift_payment_card(self, day: DayBookings) -> None:
+        thread_id = self._settings.telegram_target_thread_id
+        if thread_id == self._settings.telegram_payments_thread_id:
+            return
+        async with self._session_factory() as session:
+            board = await session.scalar(
+                select(PaymentsBoard)
+                .where(PaymentsBoard.environment == self._settings.app_env)
+                .where(PaymentsBoard.chat_id == self._require_chat_id())
+                .where(PaymentsBoard.service_date == day.service_date)
+            )
+            if board is None or board.retired_at is not None:
+                return
+            # Paying in the lift topic is an in-place action, even when the board
+            # in payments has been configured to onboard through private links.
+            view = replace(await self._board_view(day), paid_url="", cash_url="")
+            draft = render_payments_board(view, compact=True)
+            if board.lift_message_id is not None and await self._telegram_client.edit_text(
+                chat_id=board.chat_id,
+                message_id=board.lift_message_id,
+                text=draft.text,
+                reply_markup=draft.reply_markup,
+                parse_mode=PAYMENTS_PARSE_MODE,
+            ):
+                return
+            if draft.reply_markup is None:
+                return
+            sent = await self._telegram_client.send_text(
+                chat_id=board.chat_id,
+                message_thread_id=thread_id,
+                text=draft.text,
+                reply_markup=draft.reply_markup,
+                parse_mode=PAYMENTS_PARSE_MODE,
+            )
+            board.lift_message_id = sent.message_id
+            await session.commit()
+            await self._telegram_client.pin_message(
+                chat_id=board.chat_id, message_id=sent.message_id
+            )
+
+    async def _refresh_payments_board(self, day: DayBookings) -> None:
         view = await self._board_view(day)
         draft = render_payments_board(view)
         async with self._session_factory() as session:
@@ -1839,6 +1916,12 @@ class PaymentsService:
             .where(ServiceDayNotice.service_date == service_date)
         )
 
+    async def _lock_day(self, session: AsyncSession, service_date: date) -> None:
+        await transaction_lock(
+            session,
+            f"payment-day:{self._settings.app_env}:{self._require_chat_id()}:{service_date}",
+        )
+
     async def _claim_row(
         self,
         *,
@@ -1846,6 +1929,7 @@ class PaymentsService:
         service_date: date,
         telegram_user_id: int,
     ) -> PaymentClaim | None:
+        await self._lock_day(session, service_date)
         return await session.scalar(
             select(PaymentClaim)
             .where(PaymentClaim.environment == self._settings.app_env)

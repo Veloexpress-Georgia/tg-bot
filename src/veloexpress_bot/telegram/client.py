@@ -109,13 +109,22 @@ class AiogramTelegramClient:
                 parse_mode=parse_mode,
             )
         except TelegramBadRequest as error:
-            if "message is not modified" in error.message.lower():
+            error_text = error.message.lower()
+            if "message is not modified" in error_text:
                 return True
-            logger.exception("Failed to edit text message", extra={"message_id": message_id})
-            return False
-        except TelegramAPIError:
-            logger.exception("Failed to edit text message", extra={"message_id": message_id})
-            return False
+            if "message to edit not found" in error_text or "message not found" in error_text:
+                return False
+            raise TelegramPollPostError(
+                "Telegram failed to edit text message.",
+                telegram_message=error.message,
+            ) from error
+        except TelegramAPIError as error:
+            # False means the tracked message is gone and callers may replace it.
+            # A network error, rate limit or permission failure is not that evidence.
+            raise TelegramPollPostError(
+                "Telegram failed to edit text message.",
+                telegram_message=error.message,
+            ) from error
         return True
 
     async def pin_message(self, *, chat_id: int, message_id: int) -> bool:

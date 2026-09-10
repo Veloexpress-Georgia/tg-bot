@@ -367,46 +367,25 @@ async def test_the_bot_stays_quiet_when_the_rider_already_wrote_in_the_topic(
     assert len(client.payments_sends()) == before
 
 
-async def test_the_running_notice_links_to_that_days_board(db: SharedDatabase) -> None:
-    """The board is the thing worth linking to, so the link must point at the message.
-
-    Boards are synced before signals on each tick for exactly this reason: on the
-    tick a lift crosses the minimum, the board has to exist first.
-    """
-    poll_service, payments, client, poll_id, _ = await _setup(db)
-    await _fill(poll_service, poll_id, 0, riders=5)
-
-    await payments.sync_boards()
-    board = client.payments_sends()[-1]
-    await poll_service.evaluate_lift_signals()
-
-    running = next(record for record in client.sent if "pay to lock it in" in record.text)
-    # Fallback with no bot username: a private supergroup link, which drops the
-    # -100 prefix so -100123 becomes 123.
-    assert f'href="https://t.me/c/123/{PAYMENTS_THREAD}/{board.message_id}"' in running.text
-    assert "💸 Pay" in running.text
-
-
-async def test_the_pay_link_is_a_deep_link_into_the_riders_own_chat(
+async def test_lift_card_replaces_threshold_notice_and_keeps_payment_in_topic(
     db: SharedDatabase,
 ) -> None:
-    """The most-tapped link in the bot, spent on onboarding rather than a group jump.
-
-    Tapping a deep link is pressing Start, so it both shows the rider their own
-    day and leaves the bot able to message them afterwards — which is the only
-    route to the members who never opened the bot.
-    """
-    poll_service, payments, client, poll_id, saturday = await _setup(
-        db, bot_username="veloexpress_bot"
+    polls, payments, client, poll_id, saturday = await _setup(
+        db, bot_username="veloexpress_bot", payments_via_private_chat=True
     )
-    await _fill(poll_service, poll_id, 0, riders=5)
+    await _fill(polls, poll_id, 0)
     await payments.sync_boards()
-
-    await poll_service.evaluate_lift_signals()
-
-    running = next(record for record in client.sent if "pay to lock it in" in record.text)
+    before = len(client.sent)
+    await polls.evaluate_lift_signals()
+    assert len(client.sent) == before
+    cards = [r for r in client.sent if r.thread_id == LIFT_THREAD and "Payment open:" in r.text]
+    assert len(cards) == 1
+    assert cards[0].markup is not None
+    buttons = [b for row in cards[0].markup.inline_keyboard for b in row]
     encoded = saturday.strftime("%Y%m%d")
-    assert f'href="https://t.me/veloexpress_bot?start=guests-{encoded}"' in running.text
+    assert any(b.callback_data == f"pay:paid:{encoded}" for b in buttons)
+    assert any(b.url == f"https://t.me/veloexpress_bot?start=guests-{encoded}" for b in buttons)
+    assert "tg://user" not in cards[0].text
 
 
 async def test_re_voting_after_paying_moves_the_bill_not_the_payment(
@@ -2078,11 +2057,11 @@ async def test_past_payment_boards_lose_buttons_and_pins_once(db: SharedDatabase
     assert board.markup is not None
     assert client.cleared == []
     await payments.sync_boards(now=datetime(2026, 7, 18, 20, tzinfo=UTC))
-    assert client.cleared == [board.message_id]
-    assert client.unpinned == [board.message_id]
+    assert client.cleared == [board.message_id, board.message_id + 1]
+    assert client.unpinned == [board.message_id, board.message_id + 1]
     assert client.deleted == []
     await payments.sync_boards(now=datetime(2026, 8, 1, tzinfo=UTC))
-    assert client.cleared == [board.message_id]
+    assert client.cleared == [board.message_id, board.message_id + 1]
     assert len(client.payments_sends()) == 1
 
 
@@ -2149,3 +2128,86 @@ async def test_late_payment_does_not_reactivate_retired_board(db: SharedDatabase
     )
     assert client.edits == edits_before
     assert len([record for record in client.payments_sends() if record.markup is not None]) == 1
+
+
+async def test_thursday_opening_posts_one_lift_payment_card_per_day(db: SharedDatabase) -> None:
+    saturday = date(2026, 9, 12)
+    polls, payments, client, poll_id, _ = await _setup(db, service_date=saturday)
+    thursday = datetime(2026, 9, 10, 15, tzinfo=UTC)
+    await _fill(polls, poll_id, 0)
+    await payments.sync_boards(now=thursday)
+    cards = [
+        r
+        for r in client.sent
+        if r.thread_id == LIFT_THREAD
+        and r.markup is not None
+        and any(
+            b.callback_data == "pay:paid:20260912" for row in r.markup.inline_keyboard for b in row
+        )
+    ]
+    assert len(cards) == 1
+    assert "GE54BG0000000526056155" in cards[0].text
+    assert "tg://user" not in cards[0].text
+    await _fill(polls, poll_id, 1, first_user_id=200)
+    await payments.sync_boards(now=thursday + timedelta(minutes=10))
+    assert any(mid == cards[0].message_id and "8:30, 10:00" in text for mid, text in client.edits)
+    restarted = PaymentsService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    before = len(client.sent)
+    await restarted.sync_boards(now=thursday + timedelta(hours=1))
+    assert len(client.sent) == before
+
+
+async def test_weekend_cards_and_reminders_have_separate_deadlines(db: SharedDatabase) -> None:
+    saturday = date(2026, 9, 12)
+    polls, payments, client, saturday_id, _ = await _setup(db, service_date=saturday)
+    sunday_poll = await polls.create_poll(
+        PollSetup(
+            service_date=saturday + timedelta(days=1),
+            created_by_user_id=1,
+            cancelled_lift_times=("15:30",),
+        ),
+        pin_after_send=False,
+    )
+    await _fill(polls, saturday_id, 0)
+    await _fill(polls, sunday_poll.poll_id or "", 0)
+    thursday = datetime(2026, 9, 10, 15, tzinfo=UTC)
+    await payments.sync_boards(now=thursday)
+    await polls.evaluate_lift_signals(now=thursday)
+    cards = [r for r in client.sent if r.thread_id == LIFT_THREAD and "Payment open:" in r.text]
+    assert len(cards) == 2
+    assert "(Fri, 11 Sep)" in cards[0].text
+    assert "(Sat, 12 Sep)" in cards[1].text
+    assert not any("⏳ Tomorrow" in r.text for r in client.sent)
+    await polls.evaluate_lift_signals(now=datetime(2026, 9, 11, 14, tzinfo=UTC))
+    reminders = [r for r in client.sent if "⏳ Tomorrow" in r.text]
+    assert len(reminders) == 1
+    assert "Sat, 12 Sep" in reminders[0].text
+    assert f"https://t.me/c/123/{LIFT_THREAD}/{cards[0].message_id}" in reminders[0].text
+    await polls.evaluate_lift_signals(now=datetime(2026, 9, 12, 14, tzinfo=UTC))
+    reminders = [r for r in client.sent if "⏳ Tomorrow" in r.text]
+    assert len(reminders) == 2
+    assert "Sun, 13 Sep" in reminders[1].text
+
+
+async def test_funded_lift_reminder_updates_without_another_message(db: SharedDatabase) -> None:
+    polls, payments, client, poll_id, saturday = await _setup(db)
+    await _fill(polls, poll_id, 0)
+    deadline = booking_deadline_at(saturday, "20:00", zone=ZoneInfo("Asia/Tbilisi"))
+    await polls.evaluate_lift_signals(now=deadline - timedelta(hours=2))
+    reminder = next(r for r in client.sent if "⏳ Tomorrow" in r.text)
+    assert "0/5 paid" in reminder.text
+    for user_id in range(100, 105):
+        await payments.claim(
+            service_date=saturday,
+            telegram_user_id=user_id,
+            username=f"rider{user_id}",
+            full_name=f"Rider {user_id}",
+        )
+    await polls.evaluate_lift_signals(now=deadline - timedelta(hours=1))
+    assert sum("⏳ Tomorrow" in r.text for r in client.sent) == 1
+    assert any(
+        mid == reminder.message_id and "8:30 — 5 riders · funded" in text
+        for mid, text in client.edits
+    )

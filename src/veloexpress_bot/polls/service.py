@@ -1537,6 +1537,25 @@ class PollPostingService:
             ):
                 return
 
+        # Keep the reminder in the lift topic: its link jumps to the live day
+        # card, while the generic payment link remains a fallback before it exists.
+        async with self._session_factory() as session:
+            lift_message_id = await session.scalar(
+                select(PaymentsBoard.lift_message_id)
+                .where(PaymentsBoard.environment == self._settings.app_env)
+                .where(PaymentsBoard.chat_id == self._require_target_chat_id())
+                .where(PaymentsBoard.service_date == day.service_date)
+                .where(PaymentsBoard.retired_at.is_(None))
+            )
+        if lift_message_id is not None:
+            link = message_link(
+                chat_id=self._require_target_chat_id(),
+                thread_id=self._settings.telegram_target_thread_id,
+                message_id=lift_message_id,
+            )
+            if link:
+                terms = replace(terms, link=link)
+
         deadline_passed = now > deadline_at
         text = render_deadline_reminder(
             day.service_date,
@@ -1685,7 +1704,8 @@ class PollPostingService:
             by_kind.setdefault(event.kind, []).append(event)
         for kind in LIFT_SIGNAL_KIND_ORDER:
             kind_events = by_kind.get(kind)
-            if not kind_events:
+            if not kind_events or kind == "confirmed":
+                # The day payment card announces opening once and then stays live.
                 continue
             mentions: dict[int, str] = {}
             for event in kind_events:
@@ -3624,6 +3644,7 @@ def _day_signals(day: BookingMonitorDay) -> tuple[LiftSignal, ...]:
             lift_time=lift.time,
             seats=lift.total_count,
             cancelled=lift.cancelled,
+            covered_seats=lift.covered_count,
         )
         for lift in day.lifts
     )

@@ -1,6 +1,8 @@
 .git
 .venv
 .env
+.env.*
+!.env.example
 .mcp.json
 local
 .pytest_cache

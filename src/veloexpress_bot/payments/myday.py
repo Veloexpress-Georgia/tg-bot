@@ -164,7 +164,18 @@ def _money_lines(day: RiderDayView) -> list[str]:
         if gap > 0:
             lines.append(f"Paid {day.paid_gel} GEL · {gap} GEL still due.")
         elif gap < 0:
-            lines.append(f"Paid {day.paid_gel} GEL · {-gap} GEL to come back.")
+            prepaid = (
+                min(-gap, max(day.due_all_gel - day.due_now_gel, 0))
+                if day.pending_lift_times
+                else 0
+            )
+            surplus = -gap - prepaid
+            parts = [f"Paid {day.paid_gel} GEL"]
+            if prepaid:
+                parts.append(f"{prepaid} GEL prepaid")
+            if surplus:
+                parts.append(f"{surplus} GEL to come back")
+            lines.append(" · ".join(parts) + ".")
         else:
             lines.append(f"Paid {day.paid_gel} GEL ✅")
     return lines
@@ -263,30 +274,32 @@ def _season_day_line(day: RiderSeasonDay) -> str:
 
 def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyboardButton]]:
     rows: list[list[InlineKeyboardButton]] = []
-    if day.due_now_gel and day.due_now_gel != day.paid_gel:
+    due_now = max(day.due_now_gel - day.paid_gel, 0)
+    due_all = max(day.due_all_gel - day.paid_gel, 0)
+    if due_now:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"💸 I paid · {day.due_now_gel}",
+                    text=f"💸 I paid · {due_now}",
                     callback_data=f"guest:pay:{encoded_date}",
                 ),
                 InlineKeyboardButton(
-                    text=f"💵 Cash {day.due_now_gel}",
+                    text=f"💵 Cash {due_now}",
                     callback_data=f"guest:cash:{encoded_date}",
                 ),
             ]
         )
     # Settling the whole day up front only makes sense while something is unfilled.
     # It matters most for cash: handing money over twice means finding Misho twice.
-    if day.pending_lift_times:
+    if day.pending_lift_times and due_all:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"💸 I paid all · {day.due_all_gel}",
+                    text=f"💸 I paid all · {due_all}",
                     callback_data=f"guest:payall:{encoded_date}",
                 ),
                 InlineKeyboardButton(
-                    text=f"💵 Cash all · {day.due_all_gel}",
+                    text=f"💵 Cash all · {due_all}",
                     callback_data=f"guest:cashall:{encoded_date}",
                 ),
             ]
@@ -404,7 +417,11 @@ def encode_guest_time(lift_time: str) -> str:
 
 
 def decode_guest_time(value: str) -> str:
+    if len(value) not in {3, 4} or not value.isascii() or not value.isdigit():
+        raise ValueError("Invalid lift time")
     normalized = value.zfill(4)
+    if int(normalized[:2]) > 23 or int(normalized[2:]) > 59:
+        raise ValueError("Invalid lift time")
     return f"{int(normalized[:2])}:{normalized[2:]}"
 
 

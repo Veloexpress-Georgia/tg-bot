@@ -122,3 +122,21 @@ async def test_clear_keyboard_handles_missing_messages_and_retries_errors(
 
     client = AiogramTelegramClient(cast(Bot, KeyboardBot()))
     assert await client.clear_keyboard(chat_id=-100123, message_id=42) is expected
+
+
+async def test_transient_edit_failure_is_not_reported_as_a_missing_message() -> None:
+    from aiogram.exceptions import TelegramNetworkError
+    from aiogram.methods import EditMessageText
+
+    from veloexpress_bot.telegram.errors import TelegramPollPostError
+
+    class OfflineBot:
+        async def edit_message_text(self, **kwargs: object) -> object:
+            raise TelegramNetworkError(
+                method=EditMessageText(chat_id=1, message_id=42, text="test"), message="offline"
+            )
+
+    with pytest.raises(TelegramPollPostError):
+        await AiogramTelegramClient(cast(Bot, OfflineBot())).edit_text(
+            chat_id=1, message_id=42, text="test"
+        )

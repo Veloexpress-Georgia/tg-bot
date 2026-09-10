@@ -22,12 +22,15 @@ TERMS = PaymentTerms(price_gel=15, deadline_time="20:00", link="https://pay.exam
 TBILISI = ZoneInfo("Asia/Tbilisi")
 
 
-def _signal(seats: int, *, lift_time: str = "8:30", cancelled: bool = False) -> LiftSignal:
+def _signal(
+    seats: int, *, lift_time: str = "8:30", cancelled: bool = False, covered_seats: int = 0
+) -> LiftSignal:
     return LiftSignal(
         service_date=SATURDAY,
         lift_time=lift_time,
         seats=seats,
         cancelled=cancelled,
+        covered_seats=covered_seats,
     )
 
 
@@ -250,12 +253,15 @@ def test_the_deadline_reminder_fires_once_while_a_lift_can_still_fill() -> None:
     assert due(deadline - timedelta(hours=1), already_reminded=True) is False
 
 
-def test_no_reminder_when_every_lift_already_runs() -> None:
+def test_no_reminder_when_every_lift_is_funded() -> None:
     deadline = booking_deadline_at(SATURDAY, "20:00", zone=TBILISI)
 
     assert (
         decide_deadline_reminder(
-            (_signal(6, lift_time="8:30"), _signal(9, lift_time="10:00")),
+            (
+                _signal(6, lift_time="8:30", covered_seats=5),
+                _signal(9, lift_time="10:00", covered_seats=5),
+            ),
             now=deadline - timedelta(hours=1),
             deadline_at=deadline,
             already_reminded=False,
@@ -269,7 +275,10 @@ def test_a_cancelled_lift_does_not_justify_a_reminder() -> None:
 
     assert (
         decide_deadline_reminder(
-            (_signal(6, lift_time="8:30"), _signal(0, lift_time="10:00", cancelled=True)),
+            (
+                _signal(6, lift_time="8:30", covered_seats=5),
+                _signal(0, lift_time="10:00", cancelled=True),
+            ),
             now=deadline - timedelta(hours=1),
             deadline_at=deadline,
             already_reminded=False,
@@ -293,7 +302,7 @@ def test_the_reminder_states_the_deadline_and_what_each_lift_needs() -> None:
         "⏳ Tomorrow · Sat, 18 Jul — book and pay by 20:00.",
         "",
         "8:30 — 3/5 · needs 2 more",
-        "10:00 — 6 riders · running",
+        "10:00 — 6 riders · 0/5 paid · needs 5 more paid seats",
         "11:45 — ❌ cancelled",
         "",
         '🔗 <a href="https://pay.example">Where to pay</a>',
@@ -303,3 +312,24 @@ def test_the_reminder_states_the_deadline_and_what_each_lift_needs() -> None:
 def test_rendering_without_events_is_a_programming_error() -> None:
     with pytest.raises(ValueError, match="at least one event"):
         render_lift_signal_notice("confirmed", terms=TERMS, events=())
+
+
+def test_full_but_unpaid_day_gets_reminder_only_on_deadline_evening() -> None:
+    from dataclasses import replace
+
+    from veloexpress_bot.polls.liftsignals import decide_deadline_reminder
+
+    deadline = booking_deadline_at(SATURDAY, "20:00", zone=TBILISI)
+    unpaid = replace(_signal(5), covered_seats=2)
+    assert not decide_deadline_reminder(
+        [unpaid], now=deadline - timedelta(days=1), deadline_at=deadline, already_reminded=False
+    )
+    assert decide_deadline_reminder(
+        [unpaid], now=deadline - timedelta(hours=2), deadline_at=deadline, already_reminded=False
+    )
+    assert not decide_deadline_reminder(
+        [replace(unpaid, covered_seats=5)],
+        now=deadline - timedelta(hours=2),
+        deadline_at=deadline,
+        already_reminded=False,
+    )

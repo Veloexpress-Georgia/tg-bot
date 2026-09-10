@@ -55,38 +55,44 @@ class TelegramOutboxDispatcher:
                 await session.rollback()
 
     async def deliver_pending(self, *, limit: int = 20) -> int:
-        async with self._session_factory() as session:
-            rows = (
-                await session.scalars(
+        delivered = 0
+        attempted: list[int] = []
+        for _ in range(limit):
+            async with self._session_factory() as session:
+                # Hold the row lock through send and acknowledgement. Another
+                # dispatcher skips it; a crashed process releases it automatically.
+                row = await session.scalar(
                     select(TelegramOutbox)
                     .where(TelegramOutbox.environment == self._environment)
                     .where(TelegramOutbox.status == "pending")
+                    .where(TelegramOutbox.id.not_in(attempted))
                     .order_by(TelegramOutbox.id)
-                    .limit(limit)
+                    .limit(1)
+                    .with_for_update(skip_locked=True)
                 )
-            ).all()
-        delivered = 0
-        for row in rows:
-            try:
-                sent = await self._sender.send_text(
-                    chat_id=row.chat_id,
-                    message_thread_id=row.thread_id,
-                    text=row.text,
-                    parse_mode=row.parse_mode,
-                )
-            except Exception as error:
-                await self._mark_failed(row.id, error)
-                continue
-            async with self._session_factory() as session:
-                current = await session.get(TelegramOutbox, row.id)
-                if current is not None and current.status == "pending":
-                    current.status = "sent"
-                    current.telegram_message_id = sent.message_id
-                    current.sent_at = datetime.now(UTC)
-                    current.attempts += 1
-                    current.last_error = None
+                if row is None:
+                    break
+                attempted.append(row.id)
+                try:
+                    sent = await self._sender.send_text(
+                        chat_id=row.chat_id,
+                        message_thread_id=row.thread_id,
+                        text=row.text,
+                        parse_mode=row.parse_mode,
+                    )
+                except Exception as error:
+                    row.attempts += 1
+                    row.last_error = f"{type(error).__name__}: {error}"[:2000]
                     await session.commit()
-                    delivered += 1
+                    logger.warning("telegram_outbox_delivery_failed outbox_id=%s", row.id)
+                    continue
+                row.status = "sent"
+                row.telegram_message_id = sent.message_id
+                row.sent_at = datetime.now(UTC)
+                row.attempts += 1
+                row.last_error = None
+                await session.commit()
+                delivered += 1
         return delivered
 
     async def message_id(self, operation_key: str) -> int | None:
@@ -96,13 +102,3 @@ class TelegramOutboxDispatcher:
                 .where(TelegramOutbox.environment == self._environment)
                 .where(TelegramOutbox.operation_key == operation_key)
             )
-
-    async def _mark_failed(self, row_id: int, error: Exception) -> None:
-        async with self._session_factory() as session:
-            row = await session.get(TelegramOutbox, row_id)
-            if row is None or row.status != "pending":
-                return
-            row.attempts += 1
-            row.last_error = f"{type(error).__name__}: {error}"[:2000]
-            await session.commit()
-        logger.warning("telegram_outbox_delivery_failed outbox_id=%s", row_id)

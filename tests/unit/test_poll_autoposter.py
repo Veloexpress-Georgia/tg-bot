@@ -214,10 +214,11 @@ async def test_tick_runs_lift_signals_even_without_a_configured_schedule(
             option_ids=(0,),
         )
 
-    # Threshold notices are not part of auto-posting, so an admin who never set
-    # up a schedule must still get them.
+    # Signal state still advances without an auto-posting schedule. Opening
+    # payment is now announced by the day card, not an additional tagged message.
     assert await scheduler.tick(datetime.now(UTC)) is None
-    assert any("pay to lock it in" in text for text in client.sent_texts)
+    assert not any("pay to lock it in" in text for text in client.sent_texts)
+    assert await poll_service.evaluate_lift_signals() == ()
 
 
 async def test_tick_announces_once_then_creates_weekend_polls(db: SharedDatabase) -> None:
