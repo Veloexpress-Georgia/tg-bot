@@ -105,6 +105,11 @@ class PollAutoScheduler:
         now_local = (now or datetime.now(UTC)).astimezone(self._zone)
         failures: list[str] = []
         try:
+            await self._poll_service.reconcile_missing_polls(now=now_local)
+        except Exception:
+            logger.exception("deleted_poll_reconciliation_failed")
+            failures.append("deleted_poll_reconciliation")
+        try:
             await self._poll_service.deliver_pending_notifications()
         except Exception:
             logger.exception("telegram_outbox_delivery_failed")

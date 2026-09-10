@@ -140,3 +140,18 @@ async def test_transient_edit_failure_is_not_reported_as_a_missing_message() -> 
         await AiogramTelegramClient(cast(Bot, OfflineBot())).edit_text(
             chat_id=1, message_id=42, text="test"
         )
+
+
+async def test_failed_poll_probe_is_not_evidence_of_deletion() -> None:
+    from aiogram.exceptions import TelegramNetworkError
+    from aiogram.methods import EditMessageReplyMarkup
+
+    class OfflineBot:
+        async def edit_message_reply_markup(self, **kwargs: object) -> object:
+            raise TelegramNetworkError(
+                method=EditMessageReplyMarkup(chat_id=1, message_id=42), message="offline"
+            )
+
+    assert await AiogramTelegramClient(cast(Bot, OfflineBot())).message_exists(
+        chat_id=1, message_id=42
+    )

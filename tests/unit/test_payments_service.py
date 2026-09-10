@@ -2247,3 +2247,32 @@ async def test_payment_buttons_are_under_existing_booking_status(db: SharedDatab
         ["💸 I paid"],
         ["💵 Cash", "↩️ Undo"],
     ]
+
+
+async def test_deleted_poll_preserves_money_and_records_refund_estimate(db: SharedDatabase) -> None:
+    from unittest.mock import AsyncMock
+
+    polls, payments, client, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0)
+    await payments.claim(
+        service_date=day, telegram_user_id=100, username="rider100", full_name="Rider"
+    )
+    deleted_poll_id = int(poll_id.removeprefix("poll-"))
+    client.message_exists = AsyncMock(
+        side_effect=lambda **kwargs: kwargs["message_id"] != deleted_poll_id
+    )
+    now = datetime.combine(
+        day - timedelta(days=1), datetime.min.time(), tzinfo=ZoneInfo("Asia/Tbilisi")
+    )
+    assert await polls.reconcile_missing_polls(now=now) == (day,)
+    assert await payments.reconcile_cancelled_days() == 1
+    assert await payments.reconcile_cancelled_days() == 0
+    await payments.sync_boards(now=now)
+    async with db.session() as session:
+        entries = list(await session.scalars(select(PaymentEntry)))
+        claims = list(await session.scalars(select(PaymentClaim)))
+        reports = list(await session.scalars(select(RefundReport)))
+    assert [entry.amount_gel for entry in entries] == [15]
+    assert claims == []
+    assert len(reports) == 1 and "15 GEL" in reports[0].text
+    assert any("cancelled" in text for _, text in client.edits)

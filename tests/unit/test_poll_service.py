@@ -559,7 +559,9 @@ async def test_cancel_day_retires_batch_and_clears_monitor(db: SharedDatabase) -
     assert detail[0].cancelled is False
 
 
-async def test_cancelled_day_board_survives_a_late_vote(db: SharedDatabase) -> None:
+async def test_deleted_cancelled_day_board_is_not_restored_by_a_late_vote(
+    db: SharedDatabase,
+) -> None:
     client = FakeTelegramClient()
     service = PollPostingService(
         settings=settings(),
@@ -588,8 +590,8 @@ async def test_cancelled_day_board_survives_a_late_vote(db: SharedDatabase) -> N
         for message_id, text in client.edited_texts
         if message_id == poll.availability_message_id
     ]
-    assert "❌ All lifts cancelled." in board_updates[-1]
-    assert "needs" not in board_updates[-1]
+    assert board_updates == []
+    assert client.deleted.count(poll.availability_message_id) == 1
 
 
 async def test_cancel_day_releases_the_pin(db: SharedDatabase) -> None:
@@ -2624,3 +2626,84 @@ async def test_lift_trend_counts_a_weekend_day_once_not_once_per_van(
     assert (by_weekday["Sat"].days_ran, by_weekday["Sat"].days_offered) == (1, 1)
     assert by_weekday["Sat"].total_seats == 14
     assert (trend.since, trend.until) == (saturday, sunday)
+
+
+async def test_deleted_poll_cancels_future_day_without_reposting_status(db: SharedDatabase) -> None:
+    client = FakeTelegramClient(existing_message_ids=set())
+    service = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    saturday, _ = _upcoming_weekend()
+    result = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1), pin_after_send=False
+    )
+    assert client.existing_message_ids is not None
+    client.existing_message_ids.discard(result.message_id)
+    before = len(client.sent_texts)
+    now = datetime.combine(saturday - timedelta(days=1), time(12), tzinfo=ZoneInfo("Asia/Tbilisi"))
+    assert await service.reconcile_missing_polls(now=now) == (saturday,)
+    assert await service.reconcile_missing_polls(now=now) == ()
+    await service.refresh_booking_statuses(now=now)
+    assert len(client.sent_texts) == before
+    async with db.session() as session:
+        batch = await session.get(PollBatch, result.batch_id)
+        assert batch is not None and batch.status == "cancelled"
+
+
+async def test_deleted_status_does_not_cancel_poll_or_reappear_on_background_tick(
+    db: SharedDatabase,
+) -> None:
+    client = FakeTelegramClient(existing_message_ids=set())
+    service = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    saturday, _ = _upcoming_weekend()
+    result = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1), pin_after_send=False
+    )
+    assert client.existing_message_ids is not None
+    client.existing_message_ids.discard(result.availability_message_id)
+    before = len(client.sent_texts)
+    assert await service.reconcile_missing_polls() == ()
+    await service.refresh_booking_statuses()
+    assert len(client.sent_texts) == before
+
+
+async def test_poll_cleanup_after_first_departure_does_not_cancel_the_day(
+    db: SharedDatabase,
+) -> None:
+    client = FakeTelegramClient(existing_message_ids=set())
+    service = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    saturday, _ = _upcoming_weekend()
+    result = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1), pin_after_send=False
+    )
+    assert client.existing_message_ids is not None
+    client.existing_message_ids.discard(result.message_id)
+    now = datetime.combine(saturday, time(12), tzinfo=ZoneInfo("Asia/Tbilisi"))
+    assert await service.reconcile_missing_polls(now=now) == ()
+    async with db.session() as session:
+        batch = await session.get(PollBatch, result.batch_id)
+        assert batch is not None and batch.status == "posted"
+
+
+async def test_cancellation_deletes_status_and_retries_cleanup_without_another_notice(
+    db: SharedDatabase,
+) -> None:
+    client = FakeTelegramClient(fail_delete_once=True)
+    service = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    saturday, _ = _upcoming_weekend()
+    poll = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1), pin_after_send=False
+    )
+    await service.cancel_day(service_date=saturday, admin_user_id=1)
+    assert poll.availability_message_id not in client.deleted
+    await service.refresh_booking_statuses()
+    assert poll.availability_message_id in client.deleted
+    await service.refresh_booking_statuses()
+    assert client.deleted.count(poll.availability_message_id) == 1
+    assert sum("All lifts on" in text for text in client.sent_texts) == 1
