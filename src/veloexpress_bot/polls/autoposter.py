@@ -159,6 +159,12 @@ class PollAutoScheduler:
             logger.exception("booking_monitor_repost_tick_failed")
             failures.append("booking_monitor_repost")
 
+        try:
+            await self._poll_service.refresh_booking_statuses(now=now_local)
+        except Exception:
+            logger.exception("booking_status_refresh_failed")
+            failures.append("booking_status_refresh")
+
         # A rules or price change has to reach notices already posted; recreating
         # the polls would throw away live votes.
         try:

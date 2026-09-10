@@ -49,7 +49,6 @@ def test_board_lists_running_lifts_price_and_the_taps() -> None:
     assert "💸 Payments · Sat, 18 Jul" in draft.text
     assert "Payment open: 8:30, 10:00" in draft.text
     assert "15 GEL per seat · pay by 20:00" in draft.text
-    assert "💸 transfer · 💵 cash · 👤 Guests opens a form in the bot" in draft.text
     assert "Waiting on:" in draft.text
     assert draft.reply_markup is not None
     # Cash has its own button rather than a rule telling riders to press the
@@ -60,16 +59,8 @@ def test_board_lists_running_lifts_price_and_the_taps() -> None:
         "pay:cash:20260718": "💵 Cash",
         "pay:undo:20260718": "↩️ Undo",
     }
-    # Guests is a url button, not a callback: the tap must open the private chat,
-    # which is also a Start for riders who never opened the bot.
-    guest_button = next(
-        button
-        for row in draft.reply_markup.inline_keyboard
-        for button in row
-        if button.text == "👤 Guests"
-    )
-    assert guest_button.url == "https://t.me/bot?start=guests-20260718"
-    assert guest_button.callback_data is None
+    assert '<a href="https://t.me/bot?start=guests-20260718">Guests</a>' in draft.text
+    assert not any(b.text == "👤 Guests" for row in draft.reply_markup.inline_keyboard for b in row)
 
 
 def test_board_lists_payments_and_counts_the_rest() -> None:
@@ -256,3 +247,13 @@ def test_board_shows_copyable_accounts_next_to_payment_buttons() -> None:
     assert copies == []
     assert all(f"<code>{value}</code>" in draft.text for value in values)
     assert "pay:paid:20260718" in _buttons(draft.reply_markup)
+
+
+def test_primary_payment_button_uses_full_width_and_guests_are_a_text_link() -> None:
+    draft = render_payments_board(_view(guests_url="https://t.me/bot?start=guests-20260718"))
+    assert draft.reply_markup is not None
+    assert [[b.text for b in row] for row in draft.reply_markup.inline_keyboard] == [
+        ["💸 I paid"],
+        ["💵 Cash", "↩️ Undo"],
+    ]
+    assert '<a href="https://t.me/bot?start=guests-20260718">Guests</a>' in draft.text

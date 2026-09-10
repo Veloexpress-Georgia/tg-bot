@@ -4,8 +4,9 @@ import html
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup
 
+from veloexpress_bot.payments.controls import payment_keyboard
 from veloexpress_bot.payments.details import bank_details_text
 from veloexpress_bot.polls.render import EN_SHORT_MONTHS, SHORT_DAY_LABELS
 
@@ -18,11 +19,6 @@ PAID_BUTTON = "💸 I paid"
 # one anyway. It also tells Misho which lines to look for in his bank statement and
 # which not to, which he cannot otherwise know.
 CASH_BUTTON = "💵 Cash"
-# Guests open a form in the bot's private chat: only a form can say how many seats
-# a lift has left, and only a private chat has room for one row per lift. This is
-# the one button that navigates away, so it stays the rarer action while paying
-# remains a single in-group tap.
-GUEST_BUTTON = "👤 Guests"
 UNDO_BUTTON = "↩️ Undo"
 
 
@@ -120,7 +116,7 @@ class PaymentsBoardDraft:
     reply_markup: InlineKeyboardMarkup | None
 
 
-def render_payments_board(view: PaymentsBoardView, *, compact: bool = False) -> PaymentsBoardDraft:
+def render_payments_board(view: PaymentsBoardView) -> PaymentsBoardDraft:
     header = f"💸 Payments · {_long_day_label(view.service_date)}"
     if view.cancelled:
         return PaymentsBoardDraft(text=f"{header}\n\n❌ The day is cancelled.", reply_markup=None)
@@ -137,18 +133,23 @@ def render_payments_board(view: PaymentsBoardView, *, compact: bool = False) -> 
         f"{view.price_gel} GEL per seat · pay by {view.deadline_time}"
         f" ({_long_day_label(view.service_date - timedelta(days=1))})",
     ]
-    lines.append("")
-    lines.append("💸 transfer · 💵 cash · 👤 Guests opens a form in the bot")
-    if view.payments and not compact:
+    if view.payments:
         lines.extend(("", "Paid:"))
         lines.extend(_payment_line(payment) for payment in view.payments)
-    if view.outstanding and not compact:
+    if view.outstanding:
         # Tags rather than a bare count. The board is edited in place, and a Telegram
         # edit sends no notification, so this shows who still owes without nagging.
         lines.extend(("", "Waiting on:", " ".join(_mention(rider) for rider in view.outstanding)))
 
     lines.extend(("", bank_details_text()))
-    return PaymentsBoardDraft(text="\n".join(lines), reply_markup=_keyboard(view))
+    if view.guests_url:
+        lines.extend(("", f'👤 <a href="{html.escape(view.guests_url, quote=True)}">Guests</a>'))
+    return PaymentsBoardDraft(
+        text="\n".join(lines),
+        reply_markup=payment_keyboard(
+            view.service_date, paid_url=view.paid_url, cash_url=view.cash_url
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -226,42 +227,6 @@ def encode_board_date(service_date: date) -> str:
 
 def decode_board_date(value: str) -> date:
     return datetime.strptime(value, "%Y%m%d").date()
-
-
-def _keyboard(view: PaymentsBoardView) -> InlineKeyboardMarkup:
-    encoded = encode_board_date(view.service_date)
-    second_row = [InlineKeyboardButton(text=UNDO_BUTTON, callback_data=f"pay:undo:{encoded}")]
-    if view.guests_url:
-        # A url button, not a callback: it has to open the private chat, and that tap
-        # is also a Start, which is how riders with no bot chat get one.
-        second_row.insert(0, InlineKeyboardButton(text=GUEST_BUTTON, url=view.guests_url))
-    return InlineKeyboardMarkup(inline_keyboard=[_payment_row(view, encoded), second_row])
-
-
-def _payment_row(view: PaymentsBoardView, encoded: str) -> list[InlineKeyboardButton]:
-    """Deep links when possible, in-group callbacks when not.
-
-    Paying is the most frequent thing anybody does here, so routing it through
-    the private chat converts almost the whole paying group within a weekend —
-    and nothing else can reach the ~160 members Telegram will not let the bot
-    message. The rider also lands somewhere with room to answer properly, rather
-    than reading a 200-character toast.
-
-    The trade is real: a callback records the claim the instant it is tapped,
-    while a link records it only once the rider completes Start. Someone who
-    backs out has told nobody. It is close to self-correcting — the board is
-    right there and will still list them under `Waiting on` — and it stops
-    mattering entirely once they have the chat.
-    """
-    if view.paid_url and view.cash_url:
-        return [
-            InlineKeyboardButton(text=PAID_BUTTON, url=view.paid_url),
-            InlineKeyboardButton(text=CASH_BUTTON, url=view.cash_url),
-        ]
-    return [
-        InlineKeyboardButton(text=PAID_BUTTON, callback_data=f"pay:paid:{encoded}"),
-        InlineKeyboardButton(text=CASH_BUTTON, callback_data=f"pay:cash:{encoded}"),
-    ]
 
 
 def _mention(rider: OutstandingRider) -> str:

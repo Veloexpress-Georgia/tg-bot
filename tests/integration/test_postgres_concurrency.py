@@ -211,7 +211,7 @@ async def test_cancelled_dispatcher_releases_pending_message(pg: helpers.SharedD
     sender.send_text.assert_awaited_once()
 
 
-async def test_concurrent_board_sync_creates_one_message_in_each_topic(
+async def test_concurrent_board_sync_creates_only_one_payments_board(
     pg: helpers.SharedDatabase,
 ) -> None:
     polls, payments, client, poll_id, _ = await helpers._setup(pg)
@@ -221,5 +221,5 @@ async def test_concurrent_board_sync_creates_one_message_in_each_topic(
     )
     await asyncio.wait_for(asyncio.gather(payments.sync_boards(), other.sync_boards()), 5)
     cards = [record for record in client.sent if "Payment open:" in record.text]
-    assert len(cards) == 2
-    assert {record.thread_id for record in cards} == {helpers.LIFT_THREAD, helpers.PAYMENTS_THREAD}
+    assert len(cards) == 1
+    assert cards[0].thread_id == helpers.PAYMENTS_THREAD

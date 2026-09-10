@@ -159,6 +159,11 @@ class AiogramTelegramClient:
     async def delete_message(self, *, chat_id: int, message_id: int) -> bool:
         try:
             await self._bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except TelegramBadRequest as error:
+            if "message to delete not found" in error.message.lower():
+                return True
+            logger.exception("Failed to delete setup message", extra={"message_id": message_id})
+            return False
         except TelegramAPIError:
             logger.exception("Failed to delete setup message", extra={"message_id": message_id})
             return False

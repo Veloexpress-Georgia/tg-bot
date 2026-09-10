@@ -63,6 +63,7 @@ class FakeTelegramClient:
     def __init__(self) -> None:
         self.sent: list[SentRecord] = []
         self.edits: list[tuple[int, str]] = []
+        self.markups: dict[int, InlineKeyboardMarkup | None] = {}
         self.deleted: list[int] = []
         self.cleared: list[int] = []
         self.unpinned: list[int] = []
@@ -116,6 +117,7 @@ class FakeTelegramClient:
         parse_mode: str | None = None,
     ) -> bool:
         self.edits.append((message_id, text))
+        self.markups[message_id] = reply_markup
         return True
 
     async def pin_message(self, *, chat_id: int, message_id: int) -> bool:
@@ -367,25 +369,21 @@ async def test_the_bot_stays_quiet_when_the_rider_already_wrote_in_the_topic(
     assert len(client.payments_sends()) == before
 
 
-async def test_lift_card_replaces_threshold_notice_and_keeps_payment_in_topic(
-    db: SharedDatabase,
-) -> None:
+async def test_booking_status_keeps_payment_in_topic(db: SharedDatabase) -> None:
     polls, payments, client, poll_id, saturday = await _setup(
         db, bot_username="veloexpress_bot", payments_via_private_chat=True
     )
     await _fill(polls, poll_id, 0)
     await payments.sync_boards()
+    await polls.refresh_booking_statuses()
     before = len(client.sent)
     await polls.evaluate_lift_signals()
     assert len(client.sent) == before
-    cards = [r for r in client.sent if r.thread_id == LIFT_THREAD and "Payment open:" in r.text]
-    assert len(cards) == 1
-    assert cards[0].markup is not None
-    buttons = [b for row in cards[0].markup.inline_keyboard for b in row]
-    encoded = saturday.strftime("%Y%m%d")
-    assert any(b.callback_data == f"pay:paid:{encoded}" for b in buttons)
-    assert any(b.url == f"https://t.me/veloexpress_bot?start=guests-{encoded}" for b in buttons)
-    assert "tg://user" not in cards[0].text
+    assert not any(r.thread_id == LIFT_THREAD and "Payment open:" in r.text for r in client.sent)
+    status = next(r for r in client.sent if "Availability" in r.text)
+    markup = client.markups[status.message_id]
+    assert markup is not None
+    assert markup.inline_keyboard[0][0].callback_data == f"pay:paid:{saturday:%Y%m%d}"
 
 
 async def test_re_voting_after_paying_moves_the_bill_not_the_payment(
@@ -1323,7 +1321,12 @@ async def test_the_board_pay_buttons_are_deep_links_when_the_username_is_known(
     board = client.payments_sends()[0]
     assert board.markup is not None
     encoded = saturday.strftime("%Y%m%d")
-    urls = [button.url for button in board.markup.inline_keyboard[0]]
+    urls = [
+        button.url
+        for row in board.markup.inline_keyboard
+        for button in row
+        if button.text in {"💸 I paid", "💵 Cash"}
+    ]
     assert urls == [
         f"https://t.me/veloexpress_bot?start=paid-{encoded}",
         f"https://t.me/veloexpress_bot?start=cash-{encoded}",
@@ -1342,7 +1345,12 @@ async def test_the_board_falls_back_to_callbacks_without_a_username(
     board = client.payments_sends()[0]
     assert board.markup is not None
     encoded = saturday.strftime("%Y%m%d")
-    data = [button.callback_data for button in board.markup.inline_keyboard[0]]
+    data = [
+        button.callback_data
+        for row in board.markup.inline_keyboard
+        for button in row
+        if button.text in {"💸 I paid", "💵 Cash"}
+    ]
     assert data == [f"pay:paid:{encoded}", f"pay:cash:{encoded}"]
 
 
@@ -1451,15 +1459,19 @@ async def test_paying_stays_in_the_group_until_the_setting_is_turned_on(
     board = client.payments_sends()[0]
     assert board.markup is not None
     encoded = saturday.strftime("%Y%m%d")
-    pay_row = board.markup.inline_keyboard[0]
+    pay_row = [
+        button
+        for row in board.markup.inline_keyboard
+        for button in row
+        if button.text in {"💸 I paid", "💵 Cash"}
+    ]
     assert [button.callback_data for button in pay_row] == [
         f"pay:paid:{encoded}",
         f"pay:cash:{encoded}",
     ]
     assert [button.url for button in pay_row] == [None, None]
     # The guest form still opens privately: only a form can show a row per lift.
-    guest_urls = [button.url for button in board.markup.inline_keyboard[1] if button.url]
-    assert guest_urls == [f"https://t.me/veloexpress_bot?start=guests-{encoded}"]
+    assert f'href="https://t.me/veloexpress_bot?start=guests-{encoded}"' in board.text
 
 
 async def test_a_manual_seat_cannot_displace_a_paid_rider(db: SharedDatabase) -> None:
@@ -2057,11 +2069,13 @@ async def test_past_payment_boards_lose_buttons_and_pins_once(db: SharedDatabase
     assert board.markup is not None
     assert client.cleared == []
     await payments.sync_boards(now=datetime(2026, 7, 18, 20, tzinfo=UTC))
-    assert client.cleared == [board.message_id, board.message_id + 1]
-    assert client.unpinned == [board.message_id, board.message_id + 1]
+    availability_id = next(r.message_id for r in client.sent if "Availability" in r.text)
+    assert client.cleared == [board.message_id, availability_id]
+    assert client.unpinned == [board.message_id]
     assert client.deleted == []
     await payments.sync_boards(now=datetime(2026, 8, 1, tzinfo=UTC))
-    assert client.cleared == [board.message_id, board.message_id + 1]
+    availability_id = next(r.message_id for r in client.sent if "Availability" in r.text)
+    assert client.cleared == [board.message_id, availability_id]
     assert len(client.payments_sends()) == 1
 
 
@@ -2130,33 +2144,20 @@ async def test_late_payment_does_not_reactivate_retired_board(db: SharedDatabase
     assert len([record for record in client.payments_sends() if record.markup is not None]) == 1
 
 
-async def test_thursday_opening_posts_one_lift_payment_card_per_day(db: SharedDatabase) -> None:
-    saturday = date(2026, 9, 12)
-    polls, payments, client, poll_id, _ = await _setup(db, service_date=saturday)
+async def test_thursday_opening_updates_booking_status_without_new_lift_cards(
+    db: SharedDatabase,
+) -> None:
+    polls, payments, client, poll_id, _ = await _setup(db, service_date=date(2026, 9, 12))
     thursday = datetime(2026, 9, 10, 15, tzinfo=UTC)
     await _fill(polls, poll_id, 0)
     await payments.sync_boards(now=thursday)
-    cards = [
-        r
-        for r in client.sent
-        if r.thread_id == LIFT_THREAD
-        and r.markup is not None
-        and any(
-            b.callback_data == "pay:paid:20260912" for row in r.markup.inline_keyboard for b in row
-        )
-    ]
-    assert len(cards) == 1
-    assert "GE54BG0000000526056155" in cards[0].text
-    assert "tg://user" not in cards[0].text
-    await _fill(polls, poll_id, 1, first_user_id=200)
-    await payments.sync_boards(now=thursday + timedelta(minutes=10))
-    assert any(mid == cards[0].message_id and "8:30, 10:00" in text for mid, text in client.edits)
-    restarted = PaymentsService(
-        settings=settings(), session_factory=db.session, telegram_client=client
-    )
     before = len(client.sent)
-    await restarted.sync_boards(now=thursday + timedelta(hours=1))
+    await polls.refresh_booking_statuses(now=thursday)
+    await _fill(polls, poll_id, 1, first_user_id=200)
+    await polls.refresh_booking_statuses(now=thursday + timedelta(minutes=10))
     assert len(client.sent) == before
+    status = next(r for r in client.sent if "Availability" in r.text)
+    assert client.markups[status.message_id] is not None
 
 
 async def test_weekend_cards_and_reminders_have_separate_deadlines(db: SharedDatabase) -> None:
@@ -2175,10 +2176,9 @@ async def test_weekend_cards_and_reminders_have_separate_deadlines(db: SharedDat
     thursday = datetime(2026, 9, 10, 15, tzinfo=UTC)
     await payments.sync_boards(now=thursday)
     await polls.evaluate_lift_signals(now=thursday)
-    cards = [r for r in client.sent if r.thread_id == LIFT_THREAD and "Payment open:" in r.text]
+    cards = [r for r in client.sent if r.thread_id == LIFT_THREAD and "Availability" in r.text]
     assert len(cards) == 2
-    assert "(Fri, 11 Sep)" in cards[0].text
-    assert "(Sat, 12 Sep)" in cards[1].text
+    assert not any(r.thread_id == LIFT_THREAD and "Payment open:" in r.text for r in client.sent)
     assert not any("⏳ Tomorrow" in r.text for r in client.sent)
     await polls.evaluate_lift_signals(now=datetime(2026, 9, 11, 14, tzinfo=UTC))
     reminders = [r for r in client.sent if "⏳ Tomorrow" in r.text]
@@ -2211,3 +2211,39 @@ async def test_funded_lift_reminder_updates_without_another_message(db: SharedDa
         mid == reminder.message_id and "8:30 — 5 riders · funded" in text
         for mid, text in client.edits
     )
+
+
+async def test_old_lift_cards_are_removed_without_replacement(db: SharedDatabase) -> None:
+    polls, payments, client, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0)
+    async with db.session() as session:
+        session.add(
+            PaymentsBoard(
+                environment="test",
+                chat_id=CHAT_ID,
+                service_date=day,
+                telegram_message_id=9000,
+                lift_message_id=9001,
+            )
+        )
+        await session.commit()
+    await payments.sync_boards()
+    assert 9001 in client.deleted and 9001 in client.unpinned
+    assert not any(r.thread_id == LIFT_THREAD and "Payment open:" in r.text for r in client.sent)
+    async with db.session() as session:
+        board = await session.scalar(select(PaymentsBoard))
+        assert board is not None and board.lift_message_id is None
+
+
+async def test_payment_buttons_are_under_existing_booking_status(db: SharedDatabase) -> None:
+    polls, payments, client, poll_id, _ = await _setup(db)
+    await _fill(polls, poll_id, 0)
+    await payments.sync_boards()
+    await polls._refresh_availability(poll_id)
+    board = next(r for r in client.sent if "Availability" in r.text)
+    markup = client.markups[board.message_id]
+    assert markup is not None
+    assert [[b.text for b in row] for row in markup.inline_keyboard] == [
+        ["💸 I paid"],
+        ["💵 Cash", "↩️ Undo"],
+    ]

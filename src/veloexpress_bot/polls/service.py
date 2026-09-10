@@ -67,6 +67,7 @@ from veloexpress_bot.db.models import (
     ServiceDayTerms,
 )
 from veloexpress_bot.deeplinks import message_link, topic_link
+from veloexpress_bot.payments.controls import payment_keyboard
 from veloexpress_bot.payments.coverage import CoverageTarget, reconcile_coverage
 
 # Safe despite payments importing polls: `myday` reaches only `polls.render`, and
@@ -1541,11 +1542,16 @@ class PollPostingService:
         # card, while the generic payment link remains a fallback before it exists.
         async with self._session_factory() as session:
             lift_message_id = await session.scalar(
-                select(PaymentsBoard.lift_message_id)
-                .where(PaymentsBoard.environment == self._settings.app_env)
-                .where(PaymentsBoard.chat_id == self._require_target_chat_id())
-                .where(PaymentsBoard.service_date == day.service_date)
-                .where(PaymentsBoard.retired_at.is_(None))
+                select(PollMessage.telegram_message_id)
+                .join(PollBatch, PollBatch.id == PollMessage.batch_id)
+                .where(PollBatch.environment == self._settings.app_env)
+                .where(PollBatch.chat_id == self._require_target_chat_id())
+                .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
+                .where(PollBatch.service_date == day.service_date)
+                .where(PollBatch.status == "posted")
+                .where(PollMessage.message_kind == "availability")
+                .order_by(PollMessage.id.desc())
+                .limit(1)
             )
         if lift_message_id is not None:
             link = message_link(
@@ -2178,12 +2184,32 @@ class PollPostingService:
             await self._refresh_availability(poll_id)
             await self._refresh_booking_monitors()
 
-    async def _refresh_availability(self, poll_id: str) -> None:
+    async def refresh_booking_statuses(self, *, now: datetime | None = None) -> None:
+        today = (now or datetime.now(UTC)).astimezone(self._zone).date()
+        async with self._session_factory() as session:
+            poll_ids = list(
+                await session.scalars(
+                    select(PollOptionSnapshot.poll_id)
+                    .join(PollBatch, PollBatch.id == PollOptionSnapshot.batch_id)
+                    .where(PollBatch.environment == self._settings.app_env)
+                    .where(PollBatch.chat_id == self._settings.telegram_target_chat_id)
+                    .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
+                    .where(PollBatch.status == "posted")
+                    .where(PollBatch.service_date >= today - timedelta(days=1))
+                    .distinct()
+                )
+            )
+        for poll_id in poll_ids:
+            await self._refresh_availability(poll_id, today=today)
+
+    async def _refresh_availability(self, poll_id: str, *, today: date | None = None) -> None:
         lock = self._availability_locks.setdefault(poll_id, Lock())
         async with lock:
-            await self._refresh_availability_locked(poll_id)
+            await self._refresh_availability_locked(poll_id, today=today)
 
-    async def _refresh_availability_locked(self, poll_id: str) -> None:
+    async def _refresh_availability_locked(
+        self, poll_id: str, *, today: date | None = None
+    ) -> None:
         async with self._session_factory() as session:
             snapshots = (
                 await session.scalars(
@@ -2297,6 +2323,27 @@ class PollPostingService:
                 if snapshot.lift_time is not None
             )
             text = render_availability_status(batch.service_date, availability)
+            payment_board = await session.scalar(
+                select(PaymentsBoard)
+                .where(PaymentsBoard.environment == self._settings.app_env)
+                .where(PaymentsBoard.chat_id == batch.chat_id)
+                .where(PaymentsBoard.service_date == batch.service_date)
+            )
+            today = today or datetime.now(UTC).astimezone(self._zone).date()
+            markup = (
+                payment_keyboard(batch.service_date)
+                if (
+                    self._settings.telegram_payments_thread_id is not None
+                    and payment_board is not None
+                    and payment_board.retired_at is None
+                    and batch.service_date >= today
+                    and any(
+                        not lift.cancelled and lift.seat_count >= MINIMUM_RIDERS
+                        for lift in availability
+                    )
+                )
+                else None
+            )
             chat_id = batch.chat_id
             thread_id = batch.thread_id
             batch_id = batch.id
@@ -2306,6 +2353,7 @@ class PollPostingService:
             chat_id=chat_id,
             message_id=availability_message_id,
             text=text,
+            reply_markup=markup,
             parse_mode=AVAILABILITY_PARSE_MODE,
         )
         if updated:
@@ -2328,6 +2376,7 @@ class PollPostingService:
                 chat_id=chat_id,
                 message_thread_id=thread_id,
                 text=text,
+                reply_markup=markup,
                 parse_mode=AVAILABILITY_PARSE_MODE,
             )
         except Exception:

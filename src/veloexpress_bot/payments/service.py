@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
@@ -23,6 +23,7 @@ from veloexpress_bot.db.models import (
     PaymentsBoard,
     PaymentsTopicPost,
     PollBatch,
+    PollMessage,
     PollOptionSnapshot,
     PollVote,
     RefundReport,
@@ -231,6 +232,8 @@ class PaymentsService:
         Idempotent and driven by the worker tick rather than by threshold events,
         so a restart mid-weekend simply catches up on the next tick.
         """
+        if self._settings.telegram_target_chat_id is not None:
+            await self._remove_lift_payment_cards()
         if not self.enabled:
             return
         moment = (now or datetime.now(UTC)).astimezone(self._zone)
@@ -1063,6 +1066,21 @@ class PaymentsService:
                         message_id=message_id,
                     ):
                         completed = False
+                availability_ids = list(
+                    await session.scalars(
+                        select(PollMessage.telegram_message_id)
+                        .join(PollBatch, PollBatch.id == PollMessage.batch_id)
+                        .where(PollBatch.environment == self._settings.app_env)
+                        .where(PollBatch.chat_id == board.chat_id)
+                        .where(PollBatch.service_date == board.service_date)
+                        .where(PollMessage.message_kind == "availability")
+                    )
+                )
+                for message_id in availability_ids:
+                    if not await self._telegram_client.clear_keyboard(
+                        chat_id=board.chat_id, message_id=message_id
+                    ):
+                        completed = False
                 if not completed:
                     continue
                 board.retired_at = datetime.now(UTC)
@@ -1080,47 +1098,39 @@ class PaymentsService:
         async with self._session_factory() as session:
             await self._lock_board(session, day.service_date)
             await self._refresh_payments_board(day)
-            await self._refresh_lift_payment_card(day)
 
-    async def _refresh_lift_payment_card(self, day: DayBookings) -> None:
-        thread_id = self._settings.telegram_target_thread_id
-        if thread_id == self._settings.telegram_payments_thread_id:
-            return
+    async def _remove_lift_payment_cards(self) -> None:
+        # Only tracked, bot-owned standalone payment cards are removed.
         async with self._session_factory() as session:
-            board = await session.scalar(
-                select(PaymentsBoard)
-                .where(PaymentsBoard.environment == self._settings.app_env)
-                .where(PaymentsBoard.chat_id == self._require_chat_id())
-                .where(PaymentsBoard.service_date == day.service_date)
+            boards = list(
+                await session.scalars(
+                    select(PaymentsBoard)
+                    .where(PaymentsBoard.environment == self._settings.app_env)
+                    .where(PaymentsBoard.chat_id == self._require_chat_id())
+                    .where(PaymentsBoard.lift_message_id.is_not(None))
+                    .order_by(PaymentsBoard.service_date, PaymentsBoard.id)
+                )
             )
-            if board is None or board.retired_at is not None:
-                return
-            # Paying in the lift topic is an in-place action, even when the board
-            # in payments has been configured to onboard through private links.
-            view = replace(await self._board_view(day), paid_url="", cash_url="")
-            draft = render_payments_board(view, compact=True)
-            if board.lift_message_id is not None and await self._telegram_client.edit_text(
-                chat_id=board.chat_id,
-                message_id=board.lift_message_id,
-                text=draft.text,
-                reply_markup=draft.reply_markup,
-                parse_mode=PAYMENTS_PARSE_MODE,
-            ):
-                return
-            if draft.reply_markup is None:
-                return
-            sent = await self._telegram_client.send_text(
-                chat_id=board.chat_id,
-                message_thread_id=thread_id,
-                text=draft.text,
-                reply_markup=draft.reply_markup,
-                parse_mode=PAYMENTS_PARSE_MODE,
-            )
-            board.lift_message_id = sent.message_id
-            await session.commit()
-            await self._telegram_client.pin_message(
-                chat_id=board.chat_id, message_id=sent.message_id
-            )
+            for board in boards:
+                await self._lock_board(session, board.service_date)
+                await session.refresh(board)
+                message_id = board.lift_message_id
+                if message_id is None:
+                    continue
+                if not await self._telegram_client.clear_keyboard(
+                    chat_id=board.chat_id, message_id=message_id
+                ):
+                    continue
+                if not await self._telegram_client.unpin_message(
+                    chat_id=board.chat_id, message_id=message_id
+                ):
+                    continue
+                if not await self._telegram_client.delete_message(
+                    chat_id=board.chat_id, message_id=message_id
+                ):
+                    continue
+                board.lift_message_id = None
+                await session.commit()
 
     async def _refresh_payments_board(self, day: DayBookings) -> None:
         view = await self._board_view(day)
