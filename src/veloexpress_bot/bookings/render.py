@@ -382,6 +382,7 @@ def render_lift_history(history: LiftHistory) -> BookingMonitorDraft:
         rows.append(pager)
     if history.days:
         rows.append([InlineKeyboardButton(text="📈 Trend", callback_data="mon:trend")])
+    rows.append([InlineKeyboardButton(text="📊 Statistics", callback_data="stats:30d:0")])
     rows.append([InlineKeyboardButton(text="⬅️ Back", callback_data="mon:menu")])
     return BookingMonitorDraft(
         text="\n".join(lines),

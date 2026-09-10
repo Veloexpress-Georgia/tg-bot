@@ -10,6 +10,7 @@ from veloexpress_bot.bot.handlers import router
 from veloexpress_bot.config import Settings, get_settings
 from veloexpress_bot.db.session import check_database, create_session_factory
 from veloexpress_bot.health import start_heartbeat_task
+from veloexpress_bot.history.service import HistoryStatistics
 from veloexpress_bot.observability import configure_logging
 from veloexpress_bot.payments.service import PaymentsService
 from veloexpress_bot.polls.autoposter import PollAutoScheduler
@@ -27,9 +28,11 @@ def build_dispatcher(
     planner: WeekendPlanner,
     payments_service: PaymentsService,
     service_day_defaults: ServiceDayDefaultsStore,
+    history_statistics: HistoryStatistics,
 ) -> Dispatcher:
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher.include_router(router)
+    dispatcher["history_statistics"] = history_statistics
     dispatcher["settings"] = settings
     dispatcher["poll_service"] = poll_service
     dispatcher["auto_scheduler"] = auto_scheduler
@@ -89,6 +92,9 @@ async def run_polling() -> None:
         scheduler_task = create_task(auto_scheduler.run(), name="veloexpress-poll-auto-scheduler")
         dispatcher = build_dispatcher(
             settings=settings,
+            history_statistics=HistoryStatistics(
+                settings=settings, session_factory=session_factory
+            ),
             poll_service=poll_service,
             auto_scheduler=auto_scheduler,
             planner=planner,

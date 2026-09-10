@@ -220,6 +220,7 @@ def _keyboard(view: RiderCardView, day: RiderDayView) -> InlineKeyboardMarkup:
         rows.extend(
             buttons for row in seated if (buttons := _lift_row(row, encoded_date=encoded_date))
         )
+    rows.append([InlineKeyboardButton(text="📊 My statistics", callback_data="rstats:30d:0")])
     rows.extend(_day_tabs(view))
     rows.extend(_season_row(view))
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -232,7 +233,11 @@ def _season_row(view: RiderCardView) -> list[list[InlineKeyboardButton]]:
 
 
 def _empty_card_keyboard(view: RiderCardView) -> InlineKeyboardMarkup | None:
-    rows = [*_day_tabs(view), *_season_row(view)]
+    rows = [
+        [InlineKeyboardButton(text="📊 My statistics", callback_data="rstats:30d:0")],
+        *_day_tabs(view),
+        *_season_row(view),
+    ]
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
@@ -258,6 +263,7 @@ def render_rider_season(season: RiderSeason) -> MyDayDraft:
         text="\n".join(lines),
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
+                [InlineKeyboardButton(text="📊 My statistics", callback_data="rstats:30d:0")],
                 [InlineKeyboardButton(text="⬅️ Back", callback_data="guest:card")],
             ]
         ),

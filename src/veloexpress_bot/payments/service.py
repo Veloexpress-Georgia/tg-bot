@@ -401,7 +401,7 @@ class PaymentsService:
         morning counts, and a booking they dropped before it went does not.
         """
         empty = RiderSeason(days=(), total_days=0, total_rides=0, total_seats=0, total_gel=0)
-        if not self.enabled:
+        if self._settings.telegram_target_chat_id is None:
             return empty
         async with self._session_factory() as session:
             ridden = (

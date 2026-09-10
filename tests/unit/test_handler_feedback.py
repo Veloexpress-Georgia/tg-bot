@@ -192,3 +192,39 @@ async def test_unknown_guest_action_cannot_change_seats(data: str) -> None:
     await handle_guest_form(cast(CallbackQuery, callback), payments)
     assert payments.mock_calls == []
     callback.answer.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "data, allowed",
+    [
+        ("rstats:30d:0", True),
+        ("rstats:30d:999:0", False),
+        ("astats:30d:999:0", False),
+        ("stats:30d:0", False),
+    ],
+)
+async def test_personal_statistics_cannot_select_another_rider(
+    monkeypatch, data: str, allowed: bool
+) -> None:  # type: ignore[no-untyped-def]
+    from types import SimpleNamespace
+    from typing import cast
+    from unittest.mock import AsyncMock
+
+    from tests.unit.test_payments_service import settings
+
+    from veloexpress_bot.bot import handlers
+    from veloexpress_bot.payments.myday import MyDayDraft
+
+    message = SimpleNamespace(chat=SimpleNamespace(type="private", id=100))
+    callback = SimpleNamespace(data=data, from_user=SimpleNamespace(id=100), answer=AsyncMock())
+    service = AsyncMock()
+    monkeypatch.setattr(handlers, "_accessible_message", lambda _: message)
+    monkeypatch.setattr(handlers, "_edit_card", AsyncMock())
+    monkeypatch.setattr(
+        handlers, "render_statistics", lambda *args, **kwargs: MyDayDraft("test", None)
+    )
+    await handlers.handle_statistics(cast(CallbackQuery, callback), settings(), service)
+    if allowed:
+        service.read.assert_awaited_once_with(period="30d", user_id=100)
+    else:
+        service.read.assert_not_awaited()

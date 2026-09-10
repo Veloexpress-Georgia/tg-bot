@@ -46,6 +46,7 @@ def test_one_lift_keeps_the_card_to_a_single_row() -> None:
     assert "8:30 — riding · 4 seats left" in draft.text
     assert _buttons(draft.reply_markup) == [
         [("＋ Guest · 8:30", "guest:add:20260801:0830")],
+        [("📊 My statistics", "rstats:30d:0")],
     ]
 
 
@@ -123,7 +124,7 @@ def test_a_rider_with_no_booking_gets_no_controls() -> None:
     draft = render_rider_card(_card())
 
     assert "not booked on any lift yet" in draft.text
-    assert draft.reply_markup is None
+    assert _buttons(draft.reply_markup) == [[("📊 My statistics", "rstats:30d:0")]]
 
 
 def test_a_waitlisted_rider_is_told_the_queue_and_asked_for_nothing() -> None:
@@ -202,7 +203,7 @@ def test_a_fully_booked_day_says_so_instead_of_offering_seats() -> None:
         )
     )
 
-    assert _buttons(draft.reply_markup) == []
+    assert _buttons(draft.reply_markup) == [[("📊 My statistics", "rstats:30d:0")]]
 
 
 def test_the_deep_link_round_trips_through_the_start_payload() -> None:
@@ -241,7 +242,7 @@ def test_a_rider_who_has_ridden_before_is_not_left_at_a_dead_end() -> None:
 
     assert "not booked on any lift yet" in draft.text
     assert draft.reply_markup is not None
-    assert ("📜 My past rides", "guest:season") in _buttons(draft.reply_markup)[0]
+    assert ("📜 My past rides", "guest:season") in _buttons(draft.reply_markup)[-1]
 
 
 def test_my_past_rides_lists_the_days_and_the_season_under_them() -> None:
@@ -271,7 +272,7 @@ def test_my_past_rides_lists_the_days_and_the_season_under_them() -> None:
     assert "Sat, 1 Aug · 8:30, 13:30 · 3 seats · 45 GEL" in draft.text
     assert "Sun, 2 Aug · 10:00 · 1 seat · 15 GEL" in draft.text
     assert "2 days · 3 lifts · 4 seats · 60 GEL" in draft.text
-    assert ("⬅️ Back", "guest:card") in _buttons(draft.reply_markup)[0]
+    assert ("⬅️ Back", "guest:card") in _buttons(draft.reply_markup)[-1]
 
 
 def test_my_past_rides_before_the_first_one() -> None:

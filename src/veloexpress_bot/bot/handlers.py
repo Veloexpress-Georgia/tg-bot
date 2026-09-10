@@ -24,6 +24,8 @@ from veloexpress_bot.bot.keyboards import start_menu_keyboard
 from veloexpress_bot.bot.permissions import is_admin
 from veloexpress_bot.bot.states import ExtraDayStates
 from veloexpress_bot.config import Settings
+from veloexpress_bot.history.render import render_statistics
+from veloexpress_bot.history.service import HistoryStatistics, Period
 from veloexpress_bot.payments.myday import (
     MY_DAY_PARSE_MODE,
     MyDayDraft,
@@ -131,6 +133,55 @@ async def open_guest_form(
         private_chat_id=message.chat.id,
         service_date=intent.service_date,
     )
+
+
+@router.callback_query(F.data.startswith(("stats:", "rstats:", "astats:")))
+async def handle_statistics(
+    callback: CallbackQuery,
+    settings: Settings,
+    history_statistics: HistoryStatistics,
+) -> None:
+    mode = (callback.data or "").split(":", 1)[0]
+    if mode == "rstats":
+        message = _accessible_message(callback)
+        if (
+            message is None
+            or message.chat.type != "private"
+            or message.chat.id != callback.from_user.id
+        ):
+            await callback.answer(PRIVATE_ONLY_TEXT, show_alert=True)
+            return
+    else:
+        message = await _admin_private_message(callback, settings)
+        if message is None:
+            return
+    try:
+        parts = (callback.data or "").split(":")
+        if len(parts) != (4 if mode == "astats" else 3) or parts[1] not in {"30d", "year", "all"}:
+            raise ValueError("Invalid statistics callback")
+        period = cast(Period, parts[1])
+        page = int(parts[-1])
+        user_id = (
+            int(parts[2])
+            if mode == "astats"
+            else callback.from_user.id
+            if mode == "rstats"
+            else None
+        )
+        if page < 0 or (user_id is not None and user_id <= 0):
+            raise ValueError("Invalid statistics callback")
+    except ValueError, IndexError:
+        await callback.answer(STALE_BOARD_ALERT, show_alert=True)
+        return
+    view = await history_statistics.read(period=period, user_id=user_id)
+    draft = render_statistics(
+        view,
+        personal=user_id is not None,
+        page=page,
+        admin_user_id=user_id if mode == "astats" else None,
+    )
+    await _edit_card(message, draft.text, draft.reply_markup, parse_mode="HTML")
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("guest:"))
