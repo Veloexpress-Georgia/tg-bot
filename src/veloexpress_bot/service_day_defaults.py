@@ -14,7 +14,9 @@ from veloexpress_bot.db.models import ServiceDayDefaults
 
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
-PRICE_STEP_GEL = 5
+# A 5 GEL step could only ever reach multiples of five: off a 15 GEL seat it was
+# a 33% jump, and 16 or 18 were not reachable at all.
+PRICE_STEP_GEL = 1
 DEADLINE_STEP_MINUTES = 30
 
 
@@ -135,11 +137,14 @@ class ServiceDayDefaultsStore:
 def render_service_day_defaults(values: ServiceDayDefaultValues) -> ServiceDayDefaultsCard:
     return ServiceDayDefaultsCard(
         text=(
-            "⚙️ Service day defaults\n\n"
+            "⚙️ Settings\n\n"
             f"💳 Price: {values.price_gel} GEL per seat\n"
-            f"⏰ Deadline: {values.deadline_time} the day before\n"
+            f"⏰ Booking deadline: {values.deadline_time} the evening before each lift day\n"
             f"🌍 Timezone: {values.timezone}\n\n"
-            "These values apply to newly published days. Existing days keep their snapshot."
+            # Said in full, because the two scopes are easy to confuse and the
+            # wrong reading is the expensive one.
+            "These apply to lift days published from now on.\n"
+            "Days already published keep the price and deadline they opened with."
         ),
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
@@ -162,6 +167,14 @@ def render_service_day_defaults(values: ServiceDayDefaultValues) -> ServiceDayDe
                         text=f"{DEADLINE_STEP_MINUTES} min ▶️",
                         callback_data="defaults:deadline:add",
                     ),
+                ],
+                # When polls open is a setting too, and looking for it under
+                # planning is only obvious once you know where it lives.
+                [
+                    InlineKeyboardButton(
+                        text="⏰ When polls open",
+                        callback_data="plan:schedule",
+                    )
                 ],
                 [InlineKeyboardButton(text="⬅️ Menu", callback_data="defaults:menu")],
             ]

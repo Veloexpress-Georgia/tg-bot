@@ -787,6 +787,40 @@ async def test_cancelling_a_day_reports_every_payment_as_a_refund(db: SharedData
     assert all(entry.kind == "received" for entry in entries)
 
 
+async def test_a_refund_preview_files_nothing(db: SharedDatabase) -> None:
+    """The confirmation screen asks a question; answering "no" must leave no trace.
+
+    It reads the same figures as the report that follows a real cancellation,
+    but an admin who backs out has not cancelled anything and owes nobody a
+    refund, so nothing is written down.
+    """
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
+    )
+
+    preview = await payments.cancellation_preview(
+        service_date=saturday,
+        cancelled_lift_time="8:30",
+    )
+
+    assert preview is not None
+    assert "@stas" in preview
+    async with db.session() as session:
+        assert await session.scalar(select(RefundReport)) is None
+        # And the money itself is untouched: no reversal, no second receipt.
+        entries = (await session.scalars(select(PaymentEntry))).all()
+    assert [entry.kind for entry in entries] == ["received"]
+
+    # The report that follows a real cancellation still files one.
+    await poll_service.cancel_lift(service_date=saturday, lift_time="8:30", admin_user_id=1)
+    await payments.cancellation_report(service_date=saturday, cancelled_lift_time="8:30")
+    async with db.session() as session:
+        assert await session.scalar(select(RefundReport)) is not None
+
+
 async def test_scheduler_finishes_an_interrupted_day_cancellation(db: SharedDatabase) -> None:
     poll_service, payments, _client, poll_id, saturday = await _setup(db)
     await _fill(poll_service, poll_id, 0, riders=5)

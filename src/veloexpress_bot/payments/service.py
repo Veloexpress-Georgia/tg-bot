@@ -574,6 +574,32 @@ class PaymentsService:
             paid_gel=day.paid_amount_by_user.get(telegram_user_id, 0),
         )
 
+    async def guest_lift_times(
+        self,
+        *,
+        service_date: date,
+        telegram_user_id: int,
+        delta: int,
+    ) -> tuple[str, ...]:
+        """Which of the rider's lifts a whole-day guest change may touch.
+
+        The rule lives here rather than being read back off the rendered card.
+        A button being visible is a consequence of the rule, not the rule
+        itself, and letting the markup answer meant a stale card could decide
+        which seats moved.
+        """
+        if not self.enabled:
+            return ()
+        day = await self._day(service_date)
+        if day is None or day.cancelled:
+            return ()
+        view = self._rider_day_view(day, telegram_user_id)
+        if view is None:
+            return ()
+        if delta < 0:
+            return tuple(row.lift_time for row in view.rows if row.guests)
+        return tuple(row.lift_time for row in view.rows if row.seats_left > 0)
+
     async def adjust_guest_seats(
         self,
         *,
@@ -704,6 +730,25 @@ class PaymentsService:
             await self._refresh_board(day)
         return "Removed."
 
+    async def cancellation_preview(
+        self,
+        *,
+        service_date: date,
+        cancelled_lift_time: str | None = None,
+    ) -> str | None:
+        """The same estimate, before anything is cancelled and without filing it.
+
+        A confirmation screen is a question, not a decision: an admin who reads
+        what a cancellation would cost and then keeps the lift must not leave a
+        refund report behind. The figures still read as "if you cancelled now",
+        because the lift is still in the rider's bookings at this point.
+        """
+        return await self._cancellation_estimate(
+            service_date=service_date,
+            cancelled_lift_time=cancelled_lift_time,
+            remember=False,
+        )
+
     async def cancellation_report(
         self,
         *,
@@ -715,6 +760,19 @@ class PaymentsService:
         Call this after the cancellation is recorded, so a rider's remaining lifts
         already exclude what was just cancelled.
         """
+        return await self._cancellation_estimate(
+            service_date=service_date,
+            cancelled_lift_time=cancelled_lift_time,
+            remember=True,
+        )
+
+    async def _cancellation_estimate(
+        self,
+        *,
+        service_date: date,
+        cancelled_lift_time: str | None,
+        remember: bool,
+    ) -> str | None:
         if not self.enabled:
             return None
         day = await self._day(service_date)
@@ -736,6 +794,7 @@ class PaymentsService:
                 claim,
                 day=day,
                 cancelled_lift_time=cancelled_lift_time,
+                pending=not remember,
             )
             for claim in claims
         )
@@ -744,7 +803,7 @@ class PaymentsService:
             cancelled_lift_time=cancelled_lift_time,
             rows=rows,
         )
-        if report is not None:
+        if report is not None and remember:
             # Kept, because cancelling clears the day's claims: without this the
             # admin's chat message is the only list of who is owed money, and a
             # stray delete takes it with them.
@@ -807,18 +866,27 @@ class PaymentsService:
         *,
         day: DayBookings | None,
         cancelled_lift_time: str | None,
+        pending: bool = False,
     ) -> RefundRow:
         """One rider's line: what they paid, what they still hold, what comes back.
 
         Cancelling one lift out of two does not undo the whole payment — the seats
         they still hold keep their share. Reporting the full amount had the admin
         handing back money for a trip that is still happening.
+
+        `pending` is the preview: the lift has not been cancelled yet, so it is
+        still among the rider's bookings and has to be taken out here. Without
+        that, every preview reported nothing to refund.
         """
-        remaining = (
+        remaining: tuple[str, ...] = (
             ()
             if day is None or cancelled_lift_time is None
             else day.booked_lift_times_by_user.get(claim.telegram_user_id, ())
         )
+        if pending and cancelled_lift_time is not None:
+            remaining = tuple(
+                lift_time for lift_time in remaining if lift_time != cancelled_lift_time
+            )
         held = len(remaining)
         if day is not None:
             held += sum(

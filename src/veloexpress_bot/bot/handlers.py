@@ -13,14 +13,15 @@ from aiogram.types import CallbackQuery, ErrorEvent, InlineKeyboardMarkup, Messa
 
 from veloexpress_bot.bookings.render import (
     BUMPED_REPORT_PARSE_MODE,
+    BookingMonitorDay,
+    BookingMonitorDraft,
     decode_monitor_date,
     decode_monitor_time,
     render_bumped_report,
     render_cancel_lift_confirmation,
-    render_lift_detail,
-    render_start_status,
+    render_posted_result,
 )
-from veloexpress_bot.bot.keyboards import start_menu_keyboard
+from veloexpress_bot.bookings.screens import AdminScreen
 from veloexpress_bot.bot.permissions import is_admin
 from veloexpress_bot.bot.states import ExtraDayStates
 from veloexpress_bot.config import Settings
@@ -28,7 +29,6 @@ from veloexpress_bot.history.render import render_statistics
 from veloexpress_bot.history.service import HistoryStatistics, Period
 from veloexpress_bot.payments.myday import (
     MY_DAY_PARSE_MODE,
-    MyDayDraft,
     decode_guest_date,
     decode_guest_time,
     parse_deep_link,
@@ -96,6 +96,7 @@ _payment_warned: set[tuple[int, date, str]] = set()
 
 PLAN_VIEWS: set[str] = {"main", "first", "last", "recreate"}
 EXTRA_VIEWS: set[str] = {"date", "main", "first", "last"}
+STATISTICS_PERIODS: set[str] = {"30d", "year", "all"}
 
 
 @router.message(CommandStart(deep_link=True))
@@ -139,6 +140,7 @@ async def open_guest_form(
 async def handle_statistics(
     callback: CallbackQuery,
     settings: Settings,
+    poll_service: PollPostingService,
     history_statistics: HistoryStatistics,
 ) -> None:
     mode = (callback.data or "").split(":", 1)[0]
@@ -157,7 +159,7 @@ async def handle_statistics(
             return
     try:
         parts = (callback.data or "").split(":")
-        if len(parts) != (4 if mode == "astats" else 3) or parts[1] not in {"30d", "year", "all"}:
+        if len(parts) != (4 if mode == "astats" else 3) or parts[1] not in STATISTICS_PERIODS:
             raise ValueError("Invalid statistics callback")
         period = cast(Period, parts[1])
         page = int(parts[-1])
@@ -180,7 +182,23 @@ async def handle_statistics(
         page=page,
         admin_user_id=user_id if mode == "astats" else None,
     )
-    await _edit_card(message, draft.text, draft.reply_markup, parse_mode="HTML")
+    if mode == "rstats":
+        # A rider's own card. It lives in their chat, not on the admin card, so
+        # there is no screen to remember.
+        await _edit_card(message, draft.text, draft.reply_markup, parse_mode="HTML")
+    else:
+        await _show_frozen(
+            message,
+            poll_service,
+            callback.from_user.id,
+            "rider" if mode == "astats" else "stats",
+            draft.text,
+            draft.reply_markup,
+            parse_mode="HTML",
+            period=period,
+            page=page,
+            rider_id=user_id if mode == "astats" else None,
+        )
     await callback.answer()
 
 
@@ -256,12 +274,13 @@ async def handle_guest_form(
         await _refresh_rider_card(callback, payments_service, service_date=service_date)
         await callback.answer(notice)
         return
+    delta = -1 if action in {"sub", "allsub"} else 1
     if action in {"all", "allsub"}:
-        card = await payments_service.my_day_card(
+        lift_times = await payments_service.guest_lift_times(
             service_date=service_date,
             telegram_user_id=user_id,
+            delta=delta,
         )
-        lift_times = _my_day_lift_times(card)
     else:
         lift_times = (decode_guest_time(parts[1]),)
 
@@ -269,7 +288,7 @@ async def handle_guest_form(
         service_date=service_date,
         telegram_user_id=user_id,
         lift_times=lift_times,
-        delta=-1 if action in {"sub", "allsub"} else 1,
+        delta=delta,
     )
     await _refresh_rider_card(callback, payments_service, service_date=service_date)
     await callback.answer(notice)
@@ -319,45 +338,45 @@ async def _refresh_rider_card(
         await _edit_card(message, card.text, card.reply_markup, parse_mode=MY_DAY_PARSE_MODE)
 
 
-def _my_day_lift_times(card: MyDayDraft) -> tuple[str, ...]:
-    """Read the lifts back off the rendered form, so "with me" means what it shows."""
-    if card.reply_markup is None:
-        return ()
-    times: list[str] = []
-    for row in card.reply_markup.inline_keyboard:
-        for button in row:
-            data = button.callback_data or ""
-            if data.startswith(("guest:add:", "guest:sub:")):
-                times.append(decode_guest_time(data.split(":")[3]))
-    return tuple(dict.fromkeys(times))
-
-
 @router.message(Command("start"))
 async def show_start_menu(
     message: Message,
     state: FSMContext,
     settings: Settings,
     poll_service: PollPostingService,
-    auto_scheduler: PollAutoScheduler,
 ) -> None:
-    if not is_admin(message.from_user.id if message.from_user else None, settings):
+    if message.from_user is None or not is_admin(message.from_user.id, settings):
         await message.answer(f"{START_TEXT}\n\nAdmins only.")
         return
 
+    if message.chat.type != "private":
+        await message.answer(PRIVATE_ONLY_TEXT)
+        return
     data = await state.get_data()
     stale = tuple(int(item) for item in _string_items(data.get("menu_message_ids", [])))
-    sent = await message.answer(
-        await _start_status(poll_service, auto_scheduler),
-        reply_markup=start_menu_keyboard(is_admin=True),
+    await state.clear()
+    # A day that is happening today beats one that is merely next: on a lift
+    # morning that is the only tab worth opening on. With no active day at all
+    # the same card renders as the menu, so /start is never a dead end.
+    selected = _preferred_day(await poll_service.status_days(), today=_today(settings))
+    message_id = await poll_service.open_booking_monitor(
+        admin_user_id=message.from_user.id,
+        private_chat_id=message.chat.id,
+        selected_service_date=selected,
     )
-    await state.update_data(menu_message_ids=[sent.message_id])
-    # There is no Close button: exactly one card should be live, so /start drops the
-    # command echo and whatever card an earlier /start left behind. Posting first
-    # means the admin is never briefly left with nothing.
+    await state.update_data(menu_message_ids=[message_id])
     await poll_service.cleanup_setup_messages(
         chat_id=message.chat.id,
-        message_ids=(message.message_id, *stale),
+        message_ids=tuple(dict.fromkeys((message.message_id, *stale))),
     )
+
+
+def _preferred_day(days: tuple[BookingMonitorDay, ...], *, today: date) -> date | None:
+    """Today if it is a lift day, otherwise the nearest day still ahead."""
+    active = sorted(day.service_date for day in days if not day.past)
+    if today in active:
+        return today
+    return active[0] if active else None
 
 
 @router.message(Command("create_lift_poll"))
@@ -422,41 +441,62 @@ async def open_extra_day(
     await callback.answer()
 
 
+@router.callback_query(F.data.in_({"mon:menu", "mon:settings"}))
+async def open_admin_menu(
+    callback: CallbackQuery,
+    settings: Settings,
+    poll_service: PollPostingService,
+    state: FSMContext,
+) -> None:
+    """Planning, the past and the settings, on the same card as the day.
+
+    Opening this does not unregister the admin: the card stays theirs and keeps
+    receiving the lift-day repost. What changes is that background refreshes
+    leave it alone until they navigate back to a day.
+    """
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+    await state.clear()
+    await state.update_data(menu_message_ids=[message.message_id])
+    await _show_menu(message, poll_service, callback.from_user.id)
+    await callback.answer()
+
+
+# Older cards still carry this; it now lands on the day the admin is registered
+# for rather than reposting a second monitor underneath the one they are reading.
 @router.callback_query(F.data == "menu:booking_monitor")
 async def open_booking_monitor(
     callback: CallbackQuery,
     settings: Settings,
     poll_service: PollPostingService,
 ) -> None:
-    if not is_admin(callback.from_user.id, settings):
-        await callback.answer(ADMIN_ONLY_TEXT, show_alert=True)
-        return
-    message = _accessible_message(callback)
+    message = await _admin_private_message(callback, settings)
     if message is None:
-        await callback.answer("Open /start again.", show_alert=True)
         return
-    if message.chat.type != "private":
-        await callback.answer("Open the bot in a private chat to use the monitor.", show_alert=True)
-        return
-
-    await callback.answer("Opening monitor…")
-    await poll_service.open_booking_monitor(
-        admin_user_id=callback.from_user.id,
-        private_chat_id=message.chat.id,
-    )
+    await callback.answer()
+    await _show_monitor(message, poll_service, callback.from_user.id, None)
 
 
 @router.callback_query(F.data == "menu:service_defaults")
 async def open_service_day_defaults(
     callback: CallbackQuery,
     settings: Settings,
+    poll_service: PollPostingService,
     service_day_defaults: ServiceDayDefaultsStore,
 ) -> None:
     message = await _admin_private_message(callback, settings)
     if message is None:
         return
     card = await service_day_defaults.card()
-    await _edit_card(message, card.text, card.reply_markup)
+    await _show_frozen(
+        message,
+        poll_service,
+        callback.from_user.id,
+        "settings",
+        card.text,
+        card.reply_markup,
+    )
     await callback.answer()
 
 
@@ -465,7 +505,6 @@ async def handle_service_day_defaults(
     callback: CallbackQuery,
     settings: Settings,
     poll_service: PollPostingService,
-    auto_scheduler: PollAutoScheduler,
     service_day_defaults: ServiceDayDefaultsStore,
 ) -> None:
     message = await _admin_private_message(callback, settings)
@@ -473,7 +512,7 @@ async def handle_service_day_defaults(
         return
     action, value = _split_callback(callback.data)
     if action == "menu":
-        await _show_menu(message, poll_service, auto_scheduler)
+        await _show_menu(message, poll_service, callback.from_user.id)
         await callback.answer()
         return
     try:
@@ -494,8 +533,15 @@ async def handle_service_day_defaults(
         await callback.answer(str(error), show_alert=True)
         return
     card = await service_day_defaults.card()
-    await _edit_card(message, card.text, card.reply_markup)
-    await callback.answer("Defaults updated.")
+    await _show_frozen(
+        message,
+        poll_service,
+        callback.from_user.id,
+        "settings",
+        card.text,
+        card.reply_markup,
+    )
+    await callback.answer("Saved. Days already published keep their own terms.")
 
 
 @router.callback_query(F.data.startswith("mon:day:"))
@@ -537,11 +583,12 @@ async def adjust_manual_booking(
         await message.answer(str(error))
         return
 
-    await _show_booking_management(
+    await _show_lift(
         message,
         poll_service,
         callback.from_user.id,
-        result.service_date,
+        service_date=result.service_date,
+        lift_time=result.lift_time,
     )
 
     if result.bumped:
@@ -560,8 +607,10 @@ async def adjust_manual_booking(
         )
 
 
-@router.callback_query(F.data.startswith("mon:manage:"))
-async def open_booking_management(
+# The middle "manage bookings" card is gone; old cards still link to it, and the
+# day it named is where its buttons led anyway.
+@router.callback_query(F.data.startswith(("mon:manage:", "mon:back:")))
+async def open_day_from_retired_card(
     callback: CallbackQuery,
     settings: Settings,
     poll_service: PollPostingService,
@@ -569,14 +618,9 @@ async def open_booking_management(
     message = await _admin_private_message(callback, settings)
     if message is None:
         return
-    service_date = decode_monitor_date((callback.data or "").removeprefix("mon:manage:"))
-    await _show_booking_management(
-        message,
-        poll_service,
-        callback.from_user.id,
-        service_date,
-    )
+    service_date = decode_monitor_date((callback.data or "").split(":")[2])
     await callback.answer()
+    await _show_monitor(message, poll_service, callback.from_user.id, service_date)
 
 
 @router.callback_query(F.data.startswith("mon:all:"))
@@ -590,7 +634,13 @@ async def open_all_riders(
         return
     service_date = decode_monitor_date((callback.data or "").removeprefix("mon:all:"))
     draft = await poll_service.all_riders_view(selected_service_date=service_date)
-    await _edit_card(message, draft.text, draft.reply_markup)
+    await _show_live(
+        message,
+        poll_service,
+        callback.from_user.id,
+        AdminScreen(name="riders", service_date=service_date),
+        draft,
+    )
     await callback.answer()
 
 
@@ -600,17 +650,33 @@ async def open_lift_history(
     settings: Settings,
     poll_service: PollPostingService,
 ) -> None:
-    """A page of finished days. Bare for the newest, dated for an older page."""
+    """A page of finished days: `mon:history[:<cursor>[:<period>]]`.
+
+    The cursor is `0` for the newest page or the day an older page starts before.
+    The period is the statistics span the admin came from, and it is only there
+    so the way back lands on the figures they were reading.
+    """
     message = await _admin_private_message(callback, settings)
     if message is None:
         return
-    cursor = (callback.data or "").removeprefix("mon:history").lstrip(":")
+    parts = (callback.data or "").split(":")[2:]
+    cursor = parts[0] if parts else ""
+    period = parts[1] if len(parts) > 1 and parts[1] in STATISTICS_PERIODS else None
     try:
-        before = decode_monitor_date(cursor) if cursor else None
+        before = decode_monitor_date(cursor) if cursor and cursor != "0" else None
     except ValueError:
         before = None
-    draft = await poll_service.lift_history_view(before=before)
-    await _edit_card(message, draft.text, draft.reply_markup)
+    draft = await poll_service.lift_history_view(before=before, period=period)
+    await _show_frozen(
+        message,
+        poll_service,
+        callback.from_user.id,
+        "history",
+        draft.text,
+        draft.reply_markup,
+        before=before,
+        period=period,
+    )
     await callback.answer()
 
 
@@ -624,9 +690,20 @@ async def open_lift_day_audit(
     message = await _admin_private_message(callback, settings)
     if message is None:
         return
-    service_date = decode_monitor_date((callback.data or "").removeprefix("mon:past:"))
-    draft = await poll_service.lift_day_audit_view(service_date=service_date)
-    await _edit_card(message, draft.text, draft.reply_markup)
+    parts = (callback.data or "").split(":")[2:]
+    service_date = decode_monitor_date(parts[0])
+    period = parts[1] if len(parts) > 1 and parts[1] in STATISTICS_PERIODS else None
+    draft = await poll_service.lift_day_audit_view(service_date=service_date, period=period)
+    await _show_frozen(
+        message,
+        poll_service,
+        callback.from_user.id,
+        "audit",
+        draft.text,
+        draft.reply_markup,
+        service_date=service_date,
+        period=period,
+    )
     await callback.answer()
 
 
@@ -640,32 +717,21 @@ async def open_lift_trend(
     if message is None:
         return
     draft = await poll_service.lift_trend_view()
-    await _edit_card(message, draft.text, draft.reply_markup)
-    await callback.answer()
-
-
-@router.callback_query(F.data == "mon:menu")
-async def close_lift_history(
-    callback: CallbackQuery,
-    settings: Settings,
-    poll_service: PollPostingService,
-) -> None:
-    """The way back out of history, which belongs to no day in particular."""
-    message = await _admin_private_message(callback, settings)
-    if message is None:
-        return
-    draft = await poll_service.booking_monitor_view(
-        admin_user_id=callback.from_user.id,
-        selected_service_date=None,
+    await _show_frozen(
+        message,
+        poll_service,
+        callback.from_user.id,
+        "trend",
+        draft.text,
+        draft.reply_markup,
     )
-    await _edit_card(message, draft.text, draft.reply_markup)
     await callback.answer()
 
 
-# Nothing renders a `mon:info:` button any more, but monitor cards already sitting
-# in admin chats still carry them, and a tap that spins forever reads as a dead bot.
-@router.callback_query(F.data.startswith("mon:info:"))
-async def open_lift_detail(
+# `mon:info:` and `mon:managelift:` were the old read-only and manage cards for a
+# lift. Both are one card now, and old buttons in admin chats still point here.
+@router.callback_query(F.data.startswith(("mon:lift:", "mon:info:", "mon:managelift:")))
+async def open_lift_card(
     callback: CallbackQuery,
     settings: Settings,
     poll_service: PollPostingService,
@@ -673,49 +739,18 @@ async def open_lift_detail(
     message = await _admin_private_message(callback, settings)
     if message is None:
         return
-    _, _, compact_date, compact_time = (callback.data or "").split(":")
+    compact_date, compact_time = (callback.data or "").split(":")[2:4]
     service_date = decode_monitor_date(compact_date)
-    detail = await poll_service.lift_detail(
+    shown = await _show_lift(
+        message,
+        poll_service,
+        callback.from_user.id,
         service_date=service_date,
         lift_time=decode_monitor_time(compact_time),
     )
-    if detail is None:
+    if not shown:
         await callback.answer("This lift is no longer active.", show_alert=True)
-        await _show_monitor(message, poll_service, callback.from_user.id, service_date)
         return
-    status, riders = detail
-    draft = render_lift_detail(service_date=service_date, lift=status, riders=riders)
-    await _edit_card(message, draft.text, draft.reply_markup)
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("mon:managelift:"))
-async def open_lift_tool(
-    callback: CallbackQuery,
-    settings: Settings,
-    poll_service: PollPostingService,
-) -> None:
-    message = await _admin_private_message(callback, settings)
-    if message is None:
-        return
-    _, compact_date, compact_time = (callback.data or "").split(":")[1:]
-    service_date = decode_monitor_date(compact_date)
-    detail = await poll_service.lift_detail(
-        service_date=service_date,
-        lift_time=decode_monitor_time(compact_time),
-    )
-    if detail is None:
-        await callback.answer("This lift is no longer active.", show_alert=True)
-        await _show_monitor(message, poll_service, callback.from_user.id, service_date)
-        return
-    status, riders = detail
-    draft = render_lift_detail(
-        service_date=service_date,
-        lift=status,
-        riders=riders,
-        mode="manage",
-    )
-    await _edit_card(message, draft.text, draft.reply_markup)
     await callback.answer()
 
 
@@ -739,12 +774,15 @@ async def show_past_refunds(
 
 
 @router.callback_query(
-    F.data.startswith("mon:cancel:")
-    | F.data.startswith("mon:docancel:")
-    | F.data.startswith("mon:restore:")
-    | F.data.startswith("mon:cancelday:")
-    | F.data.startswith("mon:docancelday:")
-    | F.data.startswith("mon:back:")
+    F.data.startswith(
+        (
+            "mon:cancel:",
+            "mon:docancel:",
+            "mon:restore:",
+            "mon:cancelday:",
+            "mon:docancelday:",
+        )
+    )
 )
 async def handle_lift_cancellation(
     callback: CallbackQuery,
@@ -763,26 +801,35 @@ async def handle_lift_cancellation(
     if action == "cancelday":
         draft = await poll_service.cancel_day_confirmation_view(
             selected_service_date=service_date,
+            # Read-only: the estimate an admin reads before deciding must not
+            # file a refund report for a cancellation that may not happen.
+            refund_preview=await payments_service.cancellation_preview(
+                service_date=service_date,
+            ),
         )
         if draft is None:
             await callback.answer("This day is no longer active.", show_alert=True)
             await _show_monitor(message, poll_service, admin_user_id, service_date)
             return
-        await _edit_card(message, draft.text, draft.reply_markup)
+        await _show_frozen(
+            message,
+            poll_service,
+            admin_user_id,
+            "confirm_day",
+            draft.text,
+            draft.reply_markup,
+            service_date=service_date,
+        )
         await callback.answer()
         return
     if action == "docancelday":
         await poll_service.cancel_day(service_date=service_date, admin_user_id=admin_user_id)
         await callback.answer("Day cancelled.")
-        await _show_monitor(message, poll_service, admin_user_id, service_date)
+        await _show_monitor(message, poll_service, admin_user_id, None)
         await _report_refunds(message, payments_service, service_date=service_date)
         # Only after the report: it is the record, and the money is going back, so a
         # revived poll must not open holding payments the bot no longer has.
         await payments_service.forget_day(service_date=service_date)
-        return
-    if action == "back":
-        await callback.answer()
-        await _show_monitor(message, poll_service, admin_user_id, service_date)
         return
 
     lift_time = decode_monitor_time(parts[3])
@@ -797,8 +844,21 @@ async def handle_lift_cancellation(
             service_date=service_date,
             lift=status,
             riders=riders,
+            refund_preview=await payments_service.cancellation_preview(
+                service_date=service_date,
+                cancelled_lift_time=lift_time,
+            ),
         )
-        await _edit_card(message, draft.text, draft.reply_markup)
+        await _show_frozen(
+            message,
+            poll_service,
+            admin_user_id,
+            "confirm_lift",
+            draft.text,
+            draft.reply_markup,
+            service_date=service_date,
+            lift_time=lift_time,
+        )
         await callback.answer()
         return
     if action == "docancel":
@@ -819,14 +879,15 @@ async def handle_lift_cancellation(
         service_date=service_date, lift_time=lift_time, admin_user_id=admin_user_id
     )
     await callback.answer("Lift restored.")
-
-    detail = await poll_service.lift_detail(service_date=service_date, lift_time=lift_time)
-    if detail is None:
+    shown = await _show_lift(
+        message,
+        poll_service,
+        admin_user_id,
+        service_date=service_date,
+        lift_time=lift_time,
+    )
+    if not shown:
         await _show_monitor(message, poll_service, admin_user_id, service_date)
-        return
-    status, riders = detail
-    draft = render_lift_detail(service_date=service_date, lift=status, riders=riders)
-    await _edit_card(message, draft.text, draft.reply_markup)
 
 
 @router.callback_query(F.data.startswith("plan:"))
@@ -845,11 +906,18 @@ async def handle_weekend_plan_card(
 
     if action == "schedule":
         card = await auto_scheduler.schedule_card()
-        await _edit_card(message, card.text, card.reply_markup)
+        await _show_frozen(
+            message,
+            poll_service,
+            callback.from_user.id,
+            "schedule",
+            card.text,
+            card.reply_markup,
+        )
         await callback.answer()
         return
     if action == "menu":
-        await _show_menu(message, poll_service, auto_scheduler)
+        await _show_menu(message, poll_service, callback.from_user.id)
         await callback.answer()
         return
     if action == "posted":
@@ -879,6 +947,7 @@ async def handle_weekend_plan_card(
                 callback=callback,
                 message=message,
                 planner=planner,
+                poll_service=poll_service,
             )
             if answer_text is None:
                 return
@@ -898,7 +967,14 @@ async def handle_weekend_plan_card(
         return
 
     card = await planner.plan_card(view=view)
-    await _edit_card(message, card.text, card.reply_markup)
+    await _show_frozen(
+        message,
+        poll_service,
+        callback.from_user.id,
+        "plan",
+        card.text,
+        card.reply_markup,
+    )
     await callback.answer(answer_text)
 
 
@@ -907,6 +983,7 @@ async def _post_now(
     callback: CallbackQuery,
     message: Message,
     planner: WeekendPlanner,
+    poll_service: PollPostingService,
 ) -> tuple[str | None, PlanCardView]:
     try:
         result = await planner.post_now(admin_user_id=callback.from_user.id)
@@ -925,8 +1002,24 @@ async def _post_now(
 
     if result.already_posted:
         return ALREADY_POSTED_ALERT, "recreate"
+    # The result replaces the planning card rather than flashing past it: the
+    # plan screen left behind still reads as though nothing had been posted.
+    draft = render_posted_result(
+        result.service_dates,
+        back_callback="menu:weekend_plan",
+        back_text="📋 Weekend",
+    )
+    await _show_frozen(
+        message,
+        poll_service,
+        callback.from_user.id,
+        "posted",
+        draft.text,
+        draft.reply_markup,
+    )
     poll_label = "poll" if result.created_count == 1 else "polls"
-    return f"Posted {result.created_count} {poll_label}.", "main"
+    await callback.answer(f"Posted {result.created_count} {poll_label}.")
+    return None, "main"
 
 
 async def _recreate_weekend(
@@ -982,7 +1075,7 @@ async def handle_poll_schedule_card(
         await callback.answer()
         return
     if action == "menu":
-        await _show_menu(message, poll_service, auto_scheduler)
+        await _show_menu(message, poll_service, callback.from_user.id)
         await callback.answer()
         return
 
@@ -1010,7 +1103,14 @@ async def handle_poll_schedule_card(
         return
 
     card = await auto_scheduler.schedule_card(view=view)
-    await _edit_card(message, card.text, card.reply_markup)
+    await _show_frozen(
+        message,
+        poll_service,
+        callback.from_user.id,
+        "schedule",
+        card.text,
+        card.reply_markup,
+    )
     await callback.answer()
 
 
@@ -1030,7 +1130,7 @@ async def handle_extra_day_card(
 
     if action == "menu":
         await state.clear()
-        await _show_menu(message, poll_service, auto_scheduler)
+        await _show_menu(message, poll_service, callback.from_user.id)
         await callback.answer()
         return
 
@@ -1060,12 +1160,9 @@ async def handle_extra_day_card(
                 message=message,
                 state=state,
                 poll_service=poll_service,
-                auto_scheduler=auto_scheduler,
                 draft=draft,
             )
             if answer_text is None:
-                return
-            if answer_text.startswith("Posted"):
                 return
         else:
             await callback.answer()
@@ -1080,7 +1177,14 @@ async def handle_extra_day_card(
         extra_cancelled=list(draft.cancelled_lift_times),
     )
     card = render_extra_day_card(draft, view=view, today=_today(settings))
-    await _edit_card(message, card.text, card.reply_markup)
+    await _show_frozen(
+        message,
+        poll_service,
+        callback.from_user.id,
+        "extra",
+        card.text,
+        card.reply_markup,
+    )
     await callback.answer(answer_text)
 
 
@@ -1090,7 +1194,6 @@ async def _post_extra_day(
     message: Message,
     state: FSMContext,
     poll_service: PollPostingService,
-    auto_scheduler: PollAutoScheduler,
     draft: ExtraDayDraftState,
 ) -> str | None:
     if draft.selected_date is None:
@@ -1104,7 +1207,16 @@ async def _post_extra_day(
     try:
         await poll_service.create_poll(setup, include_notice=True, pin_after_send=False)
     except DuplicatePollError:
-        return "Polls for this date already exist."
+        # Not a dead end: the day exists, so offer it instead of the same form.
+        await state.clear()
+        await callback.answer("This day already has polls.")
+        await _show_monitor(
+            message,
+            poll_service,
+            callback.from_user.id,
+            draft.selected_date,
+        )
+        return None
     except TelegramTargetForbiddenError:
         logger.exception("Extra day posting failed because target chat rejected the bot")
         await callback.answer()
@@ -1117,9 +1229,21 @@ async def _post_extra_day(
         return None
 
     await state.clear()
+    result = render_posted_result(
+        (draft.selected_date,),
+        back_callback="mon:menu",
+        back_text="☰ Menu",
+    )
+    await _show_frozen(
+        message,
+        poll_service,
+        callback.from_user.id,
+        "posted",
+        result.text,
+        result.reply_markup,
+    )
     await callback.answer("Posted extra day polls.")
-    await _show_menu(message, poll_service, auto_scheduler)
-    return "Posted"
+    return None
 
 
 async def _extra_day_state(
@@ -1315,26 +1439,90 @@ async def _show_monitor(
     message: Message,
     poll_service: PollPostingService,
     admin_user_id: int,
-    service_date: date,
+    service_date: date | None,
 ) -> None:
-    draft = await poll_service.booking_monitor_view(
-        admin_user_id=admin_user_id,
-        selected_service_date=service_date,
+    draft = await poll_service.booking_monitor_view(selected_service_date=service_date)
+    await _show_live(
+        message,
+        poll_service,
+        admin_user_id,
+        AdminScreen(name="day", service_date=service_date),
+        draft,
     )
-    await _edit_card(message, draft.text, draft.reply_markup)
 
 
-async def _show_booking_management(
+async def _show_lift(
     message: Message,
     poll_service: PollPostingService,
     admin_user_id: int,
+    *,
     service_date: date,
-) -> None:
-    draft = await poll_service.booking_management_view(
-        admin_user_id=admin_user_id,
-        selected_service_date=service_date,
+    lift_time: str,
+) -> bool:
+    """False when the lift is gone, so the caller can say so and fall back."""
+    draft = await poll_service.lift_screen_view(
+        service_date=service_date,
+        lift_time=lift_time,
     )
+    if draft is None:
+        await _show_monitor(message, poll_service, admin_user_id, service_date)
+        return False
+    await _show_live(
+        message,
+        poll_service,
+        admin_user_id,
+        AdminScreen(name="lift", service_date=service_date, lift_time=lift_time),
+        draft,
+    )
+    return True
+
+
+async def _show_live(
+    message: Message,
+    poll_service: PollPostingService,
+    admin_user_id: int,
+    screen: AdminScreen,
+    draft: BookingMonitorDraft,
+) -> None:
+    """Draw a screen the background refresh is allowed to keep up to date."""
     await _edit_card(message, draft.text, draft.reply_markup)
+    await poll_service.record_screen(admin_user_id=admin_user_id, screen=screen)
+
+
+async def _show_frozen(
+    message: Message,
+    poll_service: PollPostingService,
+    admin_user_id: int,
+    name: str,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None,
+    *,
+    parse_mode: str | None = None,
+    service_date: date | None = None,
+    lift_time: str | None = None,
+    period: str | None = None,
+    page: int = 0,
+    rider_id: int | None = None,
+    before: date | None = None,
+) -> None:
+    """Draw a screen the admin chose, which background work must not replace.
+
+    The registration itself is untouched: this card still belongs to them, and
+    the next `/start`, day tab or lift-day repost picks it straight back up.
+    """
+    await _edit_card(message, text, reply_markup, parse_mode=parse_mode)
+    await poll_service.record_screen(
+        admin_user_id=admin_user_id,
+        screen=AdminScreen(
+            name=name,
+            service_date=service_date,
+            lift_time=lift_time,
+            period=period,
+            page=page,
+            rider_id=rider_id,
+            before=before,
+        ),
+    )
 
 
 async def _report_refunds(
@@ -1356,22 +1544,16 @@ async def _report_refunds(
 async def _show_menu(
     message: Message,
     poll_service: PollPostingService,
-    auto_scheduler: PollAutoScheduler,
+    admin_user_id: int,
 ) -> None:
-    await _edit_card(
+    draft = await poll_service.menu_view()
+    await _show_frozen(
         message,
-        await _start_status(poll_service, auto_scheduler),
-        start_menu_keyboard(is_admin=True),
-    )
-
-
-async def _start_status(
-    poll_service: PollPostingService,
-    auto_scheduler: PollAutoScheduler,
-) -> str:
-    return render_start_status(
-        await poll_service.status_days(),
-        schedule_line=await auto_scheduler.schedule_summary(),
+        poll_service,
+        admin_user_id,
+        "menu",
+        draft.text,
+        draft.reply_markup,
     )
 
 

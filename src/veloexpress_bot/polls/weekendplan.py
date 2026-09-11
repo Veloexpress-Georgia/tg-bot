@@ -17,6 +17,10 @@ RECREATE_WARNING = (
     "fresh polls; tracked votes are reported first."
 )
 
+# Said on the card rather than learned by tapping: every control above this line
+# edits a plan, and the group sees nothing until the time named or Post now.
+PLAN_SCOPE_NOTE = "Edits are saved as a plan. Nothing reaches the group until then."
+
 
 @dataclass(frozen=True)
 class DayPlanStatus:
@@ -72,8 +76,16 @@ def render_weekend_plan_card(
             ),
         )
     if view == "recreate":
+        posted = ", ".join(_day_label(day.service_date) for day in view_state.days if day.posted)
+        warning = RECREATE_WARNING
+        if posted:
+            warning = (
+                f"⚠️ {posted}: the posted polls are deleted and replaced.\n\n"
+                "Riders lose their answers and have to book again. Tracked votes "
+                "are reported to you first, so nobody is silently dropped."
+            )
         return PlanCardDraft(
-            text=f"{_card_text(view_state)}\n\n{RECREATE_WARNING}",
+            text=f"{_card_text(view_state)}\n\n{warning}",
             reply_markup=_recreate_keyboard(),
         )
     return PlanCardDraft(
@@ -96,6 +108,8 @@ def _card_text(view_state: WeekendPlanView) -> str:
     posted_days = [day for day in view_state.days if day.posted]
     for day in posted_days:
         lines.append(f"✅ {_day_label(day.service_date)}: posted")
+    if view_state.has_pending_day:
+        lines.extend(("", PLAN_SCOPE_NOTE))
     return "\n".join(lines)
 
 

@@ -10,6 +10,7 @@ from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from veloexpress_bot.bookings.screens import AdminScreen
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.base import Base
 from veloexpress_bot.db.models import (
@@ -307,7 +308,7 @@ async def test_admin_booking_monitor_controls_manual_counts_and_tracks_votes(
     )
 
     assert client.sent_markups[-1] is not None
-    assert client.sent_texts[-1].startswith("📊 Booking monitor · ")
+    assert client.sent_texts[-1].startswith("📊 ")
 
     adjustment = await service.adjust_manual_booking(
         service_date=saturday,
@@ -506,17 +507,14 @@ async def test_booking_monitor_surfaces_money_guests_waitlist_and_late_exits(
         option_ids=(),
     )
 
-    view = await service.booking_monitor_view(
-        admin_user_id=1,
-        selected_service_date=saturday,
-    )
+    view = await service.booking_monitor_view(selected_service_date=saturday)
 
-    assert "💵 Cash to collect: @rider100 30 GEL" in view.text
+    assert "💵 Reported in cash: @rider100 30 GEL" in view.text
     assert "👥 Guests: @rider100 +1 (8:30)" in view.text
     assert "@rider109 8:30 #1" in view.text
     assert "@late204 10:00" in view.text
-    assert "🔴 Unpaid:" in view.text
-    assert "🚐 10:00 · 4/10" in view.text
+    assert "🔴 No payment reported:" in view.text
+    assert "🚐 10:00 · 4/10 seats" in view.text
 
     detail = await service.lift_detail(service_date=saturday, lift_time="8:30")
     assert detail is not None
@@ -529,7 +527,8 @@ async def test_booking_monitor_surfaces_money_guests_waitlist_and_late_exits(
 
     all_riders = await service.all_riders_view(selected_service_date=saturday)
     assert "👥 All riders" in all_riders.text
-    assert "8:30 — 12/10" in all_riders.text
+    # Ten seats and two waiting, never "12/10" in a ten-seat van.
+    assert "8:30 — 10/10 · full · 2 waiting" in all_riders.text
     assert "10:00 — 4/10 · decision needed" in all_riders.text
     assert "💵 @rider100 · +1 guest" in all_riders.text
     assert "⏳ @rider109" in all_riders.text
@@ -610,8 +609,8 @@ async def test_cancel_day_retires_batch_and_clears_monitor(db: SharedDatabase) -
     assert batch.status == "cancelled"
 
     # Day leaves the monitor; nothing active to manage.
-    view = await service.booking_monitor_view(admin_user_id=1, selected_service_date=saturday)
-    assert "📊 Booking monitor · quiet week" in view.text
+    view = await service.booking_monitor_view(selected_service_date=saturday)
+    assert "☰ Veloexpress admin" in view.text
     assert "No lift polls are open." in view.text
 
     # A fresh poll for the same date is allowed and starts clean.
@@ -956,7 +955,7 @@ async def test_a_posted_notice_keeps_its_snapshotted_money_rules(db: SharedDatab
 async def test_runtime_defaults_apply_only_to_newly_published_days(db: SharedDatabase) -> None:
     service_settings = settings()
     defaults = ServiceDayDefaultsStore(settings=service_settings, session_factory=db.session)
-    await defaults.adjust_price(5, admin_user_id=1)
+    await defaults.adjust_price(1, admin_user_id=1)
     await defaults.adjust_deadline(-30, admin_user_id=1)
     service = PollPostingService(
         settings=service_settings,
@@ -970,7 +969,7 @@ async def test_runtime_defaults_apply_only_to_newly_published_days(db: SharedDat
         PollSetup(service_date=saturday, created_by_user_id=1),
         pin_after_send=False,
     )
-    await defaults.adjust_price(5, admin_user_id=1)
+    await defaults.adjust_price(1, admin_user_id=1)
     await defaults.adjust_deadline(30, admin_user_id=1)
     await service.create_poll(
         PollSetup(service_date=sunday, created_by_user_id=1),
@@ -982,8 +981,8 @@ async def test_runtime_defaults_apply_only_to_newly_published_days(db: SharedDat
             await session.scalars(select(ServiceDayTerms).order_by(ServiceDayTerms.service_date))
         ).all()
     assert [(row.price_gel, row.deadline_time, row.timezone) for row in rows] == [
-        (20, "19:30", "Asia/Tbilisi"),
-        (25, "20:00", "Asia/Tbilisi"),
+        (16, "19:30", "Asia/Tbilisi"),
+        (17, "20:00", "Asia/Tbilisi"),
     ]
 
 
@@ -2772,3 +2771,27 @@ async def test_cancellation_deletes_status_and_retries_cleanup_without_another_n
     await service.refresh_booking_statuses()
     assert client.deleted.count(poll.availability_message_id) == 1
     assert sum("All lifts on" in text for text in client.sent_texts) == 1
+
+
+async def test_a_screen_the_admin_opened_is_not_overwritten_by_a_refresh(
+    db: SharedDatabase,
+) -> None:
+    """Settings, planning, history, a confirmation: the admin put it there.
+
+    The card stays registered to them throughout, so the next day tab and the
+    lift-morning repost still find it. Only the redraw is held back.
+    """
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    await service.open_booking_monitor(admin_user_id=1, private_chat_id=1)
+    await service.record_screen(admin_user_id=1, screen=AdminScreen(name="settings"))
+    before = (len(client.sent_texts), len(client.edited_texts))
+    await service._refresh_booking_monitors()
+    assert (len(client.sent_texts), len(client.edited_texts)) == before
+    # Still registered: a refresh resumes the moment they open a day again.
+    assert (await service.admin_screen(admin_user_id=1)).name == "settings"
+    await service.record_screen(admin_user_id=1, screen=AdminScreen(name="day"))
+    await service._refresh_booking_monitors()
+    assert len(client.edited_texts) > before[1]

@@ -136,6 +136,16 @@ async def test_statistic_rendering_escapes_names_and_keeps_admin_period_controls
     assert "astats:year:100:2" in callbacks
     assert "stats:30d:2" in callbacks
     assert not any(c and c.startswith("rstats") for c in callbacks)
+
+    # Admin overview: the period rides along into the days list and back out of
+    # it, and there is a way out that is not "open a day and press back".
+    overview = render_statistics(replace(view, period="year"), personal=False)
+    assert overview.reply_markup is not None
+    overview_callbacks = [
+        b.callback_data for row in overview.reply_markup.inline_keyboard for b in row
+    ]
+    assert "mon:history:0:year" in overview_callbacks
+    assert "mon:menu" in overview_callbacks
     await db.dispose()
 
 

@@ -323,13 +323,9 @@ def _main_keyboard(
             ),
         ],
     ]
-    target_week = skip_target_week(state, now, zone=zone)
-    if target_week is not None:
-        if state.skip_week_start == target_week:
-            skip_text = f"↩️ Unskip {_weekend_label(target_week)}"
-        else:
-            skip_text = f"⏭ Skip {_weekend_label(target_week)}"
-        rows.append([InlineKeyboardButton(text=skip_text, callback_data="sched:skip")])
+    # Skipping belongs to one weekend, so it lives on the weekend card and only
+    # there. Offering it from both screens meant two buttons for one flag, in two
+    # places that named the weekend differently.
     rows.append([InlineKeyboardButton(text="⬅️ Weekend", callback_data="sched:plan")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

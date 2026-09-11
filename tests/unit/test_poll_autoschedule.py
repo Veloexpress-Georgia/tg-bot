@@ -181,7 +181,9 @@ def test_render_schedule_card_shows_state_and_next_run() -> None:
     assert "🚲 Lifts: 8:30 → 13:30 · 4 lifts" in card.text
     assert "Create polls manually before the run" in card.text
     button_texts = [button.text for row in card.reply_markup.inline_keyboard for button in row]
-    assert any("Skip Sat 25 Jul" in text for text in button_texts)
+    # Skipping one weekend belongs to that weekend's card, not to the standing
+    # schedule: two buttons for one flag, naming the weekend differently.
+    assert not any("Skip" in text for text in button_texts)
     assert "⏸ Pause" in button_texts
 
 

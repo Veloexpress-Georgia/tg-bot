@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 from aiogram import Dispatcher
 from aiogram.dispatcher.event.bases import UNHANDLED
@@ -84,17 +86,16 @@ def test_core_callback_handlers_are_registered() -> None:
     names = {handler.callback.__name__ for handler in router.callback_query.handlers}
 
     assert {
+        "open_admin_menu",
         "open_booking_monitor",
         "select_booking_monitor_day",
-        "open_booking_management",
+        "open_day_from_retired_card",
         "open_all_riders",
         "open_lift_history",
         "open_lift_day_audit",
         "open_lift_trend",
-        "close_lift_history",
         "adjust_manual_booking",
-        "open_lift_detail",
-        "open_lift_tool",
+        "open_lift_card",
         "handle_lift_cancellation",
         "open_weekend_plan",
         "handle_weekend_plan_card",
@@ -223,8 +224,89 @@ async def test_personal_statistics_cannot_select_another_rider(
     monkeypatch.setattr(
         handlers, "render_statistics", lambda *args, **kwargs: MyDayDraft("test", None)
     )
-    await handlers.handle_statistics(cast(CallbackQuery, callback), settings(), service)
+    await handlers.handle_statistics(
+        cast(CallbackQuery, callback), settings(), AsyncMock(), service
+    )
     if allowed:
         service.read.assert_awaited_once_with(period="30d", user_id=100)
     else:
         service.read.assert_not_awaited()
+
+
+def test_start_prefers_today_over_the_next_lift_day() -> None:
+    """On a lift morning the admin wants today, whatever tab they left open."""
+    from veloexpress_bot.bookings.render import BookingMonitorDay
+    from veloexpress_bot.bot.handlers import _preferred_day
+
+    today = date(2026, 9, 12)
+    days = (
+        BookingMonitorDay(service_date=date(2026, 9, 6), lifts=(), past=True),
+        BookingMonitorDay(service_date=today, lifts=()),
+        BookingMonitorDay(service_date=date(2026, 9, 13), lifts=()),
+    )
+
+    assert _preferred_day(days, today=today) == today
+    # Midweek: the nearest day still ahead, never a finished one.
+    assert _preferred_day(days[:1] + days[2:], today=today) == date(2026, 9, 13)
+    # Only finished days left, so there is nothing live to open on.
+    assert _preferred_day(days[:1], today=today) is None
+    assert _preferred_day((), today=today) is None
+
+
+@pytest.mark.parametrize(
+    "data, handler",
+    [
+        # Cards already sitting in admin chats carry the retired callbacks.
+        ("mon:manage:20260912", "open_day_from_retired_card"),
+        ("mon:back:20260912", "open_day_from_retired_card"),
+        ("mon:managelift:20260912:0830", "open_lift_card"),
+        ("mon:info:20260912:0830", "open_lift_card"),
+        ("mon:lift:20260912:0830", "open_lift_card"),
+        ("mon:settings", "open_admin_menu"),
+        ("mon:menu", "open_admin_menu"),
+    ],
+)
+def test_every_retired_callback_still_lands_somewhere(data: str, handler: str) -> None:
+    """A button that spins forever reads as a dead bot, so nothing may fall through."""
+    matched = [
+        registered.callback.__name__
+        for registered in router.callback_query.handlers
+        if _matches(registered, data)
+    ]
+
+    assert matched[:1] == [handler], f"{data} → {matched}"
+
+
+def _matches(registered, data: str) -> bool:  # type: ignore[no-untyped-def]
+    callback = CallbackQuery.model_construct(data=data)
+    return all(
+        bool(callback_filter.callback(callback)) for callback_filter in registered.filters or ()
+    )
+
+
+async def test_admin_start_opens_live_monitor_and_cleans_previous_menu(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from tests.unit.test_payments_service import settings
+
+    from veloexpress_bot.bot.handlers import show_start_menu
+
+    message = SimpleNamespace(
+        from_user=SimpleNamespace(id=1),
+        chat=SimpleNamespace(id=1, type="private"),
+        message_id=99,
+        answer=AsyncMock(),
+    )
+    state = AsyncMock()
+    state.get_data.return_value = {"menu_message_ids": [55]}
+    service = AsyncMock()
+    service.status_days.return_value = [SimpleNamespace(service_date=date(2099, 1, 1), past=False)]
+    service.open_booking_monitor.return_value = 66
+    await show_start_menu(message, state, settings(), service)
+    message.answer.assert_not_awaited()
+    service.open_booking_monitor.assert_awaited_once_with(
+        admin_user_id=1, private_chat_id=1, selected_service_date=date(2099, 1, 1)
+    )
+    state.update_data.assert_awaited_once_with(menu_message_ids=[66])
+    service.cleanup_setup_messages.assert_awaited_once_with(chat_id=1, message_ids=(99, 55))

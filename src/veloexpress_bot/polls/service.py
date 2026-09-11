@@ -33,14 +33,16 @@ from veloexpress_bot.bookings.render import (
     MonitorRider,
     MonitorWaitlistRider,
     TrendRow,
+    render_admin_menu,
     render_all_riders,
-    render_booking_management,
     render_booking_monitor,
     render_cancel_day_confirmation,
     render_lift_day_audit,
+    render_lift_detail,
     render_lift_history,
     render_lift_trend,
 )
+from veloexpress_bot.bookings.screens import AdminScreen, decode_screen
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.locking import transaction_lock
 from veloexpress_bot.db.models import (
@@ -63,7 +65,6 @@ from veloexpress_bot.db.models import (
     PollScheduleHistory,
     PollVote,
     PollVoteEvent,
-    RefundReport,
     ServiceDayNotice,
     ServiceDayTerms,
 )
@@ -487,55 +488,101 @@ class PollPostingService:
         )
         return message_id
 
+    async def record_screen(self, *, admin_user_id: int, screen: AdminScreen) -> None:
+        """Remember what the card is showing, so background work knows to leave it.
+
+        Never deletes the registration: an admin who opens settings still wants
+        tomorrow's monitor and the lift-day repost.
+        """
+        async with self._session_factory() as session:
+            monitor = await self._booking_monitor_row(session=session, admin_user_id=admin_user_id)
+            if monitor is None:
+                return
+            monitor.screen = screen.name
+            monitor.screen_state = screen.to_state()
+            if screen.service_date is not None:
+                monitor.selected_service_date = screen.service_date
+            monitor.updated_at = datetime.now(UTC)
+            await session.commit()
+
+    async def admin_screen(self, *, admin_user_id: int) -> AdminScreen:
+        async with self._session_factory() as session:
+            monitor = await self._booking_monitor_row(session=session, admin_user_id=admin_user_id)
+            if monitor is None:
+                return AdminScreen()
+            return decode_screen(
+                monitor.screen,
+                monitor.screen_state,
+                service_date=monitor.selected_service_date,
+            )
+
     async def status_days(self) -> tuple[BookingMonitorDay, ...]:
         """Current and upcoming lift days, for the start card."""
         return await self._booking_monitor_days()
 
+    async def live_screen_draft(self, screen: AdminScreen) -> BookingMonitorDraft | None:
+        """Redraw one of the screens built from live booking data.
+
+        None when the screen it describes no longer exists — a lift that was
+        cancelled out from under an open card, say. The caller decides whether
+        that means falling back to the day or leaving the card alone.
+        """
+        if not screen.live:
+            return None
+        days = await self._booking_monitor_days()
+        selected = screen.service_date
+        if selected not in {day.service_date for day in days}:
+            selected = None
+        if screen.name == "lift" and selected is not None and screen.lift_time is not None:
+            return await self.lift_screen_view(
+                service_date=selected,
+                lift_time=screen.lift_time,
+            )
+        if screen.name == "riders" and selected is not None:
+            return await self.all_riders_view(selected_service_date=selected)
+        if selected is None:
+            selected = _preferred_monitor_date(
+                days,
+                today=datetime.now(UTC).astimezone(self._zone).date(),
+            )
+        return await self._monitor_draft(days, selected_service_date=selected)
+
+    async def lift_screen_view(
+        self,
+        *,
+        service_date: date,
+        lift_time: str,
+    ) -> BookingMonitorDraft | None:
+        """One lift, with its seats, its riders and the controls that change them."""
+        detail = await self.lift_detail(service_date=service_date, lift_time=lift_time)
+        if detail is None:
+            return None
+        status, riders = detail
+        return render_lift_detail(service_date=service_date, lift=status, riders=riders)
+
     async def booking_monitor_view(
         self,
         *,
-        admin_user_id: int,
         selected_service_date: date | None = None,
     ) -> BookingMonitorDraft:
-        """Render the monitor for in-place edits (day tabs, detail back) without reposting."""
+        """Render the monitor for in-place edits (day tabs, back from a lift)."""
         days = await self._booking_monitor_days()
         available_dates = {day.service_date for day in days}
         selected_date = selected_service_date
         if selected_date not in available_dates:
-            selected_date = days[0].service_date if days else None
-        draft = await self._monitor_draft(days, selected_service_date=selected_date)
+            selected_date = _preferred_monitor_date(
+                days,
+                today=datetime.now(UTC).astimezone(self._zone).date(),
+            )
+        return await self._monitor_draft(days, selected_service_date=selected_date)
 
-        now = datetime.now(UTC)
-        async with self._session_factory() as session:
-            monitor = await self._booking_monitor_row(session=session, admin_user_id=admin_user_id)
-            if monitor is not None:
-                monitor.selected_service_date = selected_date
-                monitor.updated_at = now
-                await session.commit()
-        return draft
-
-    async def booking_management_view(
-        self,
-        *,
-        admin_user_id: int,
-        selected_service_date: date | None = None,
-    ) -> BookingMonitorDraft:
-        """Rare seat mutations live on their own card, away from daily monitoring."""
-        days = await self._booking_monitor_days()
-        available_dates = {day.service_date for day in days}
-        selected_date = selected_service_date
-        if selected_date not in available_dates:
-            selected_date = days[0].service_date if days else None
-        draft = render_booking_management(days, selected_service_date=selected_date)
-
-        now = datetime.now(UTC)
-        async with self._session_factory() as session:
-            monitor = await self._booking_monitor_row(session=session, admin_user_id=admin_user_id)
-            if monitor is not None:
-                monitor.selected_service_date = selected_date
-                monitor.updated_at = now
-                await session.commit()
-        return draft
+    async def menu_view(self) -> BookingMonitorDraft:
+        """Everything that is not the day in front of the admin."""
+        return render_admin_menu(
+            await self._booking_monitor_days(),
+            schedule_line=await self._schedule_line(),
+            history=await self.lift_history(),
+        )
 
     async def _monitor_draft(
         self,
@@ -714,8 +761,13 @@ class PollPostingService:
             .where(LiftDayResult.thread_id == self._settings.telegram_target_thread_id)
         )
 
-    async def lift_history_view(self, *, before: date | None = None) -> BookingMonitorDraft:
-        return render_lift_history(await self.lift_history(before=before))
+    async def lift_history_view(
+        self,
+        *,
+        before: date | None = None,
+        period: str | None = None,
+    ) -> BookingMonitorDraft:
+        return render_lift_history(await self.lift_history(before=before), period=period)
 
     async def lift_day_audit(self, *, service_date: date) -> LiftDayAudit | None:
         """One finished day in full — which vans went, who was on them, what came in.
@@ -797,11 +849,16 @@ class PollPostingService:
             reconstructed=any(row.source != "closed" for row in ordered),
         )
 
-    async def lift_day_audit_view(self, *, service_date: date) -> BookingMonitorDraft:
+    async def lift_day_audit_view(
+        self,
+        *,
+        service_date: date,
+        period: str | None = None,
+    ) -> BookingMonitorDraft:
         audit = await self.lift_day_audit(service_date=service_date)
         if audit is None:
-            return await self.lift_history_view()
-        return render_lift_day_audit(audit)
+            return await self.lift_history_view(period=period)
+        return render_lift_day_audit(audit, period=period)
 
     async def lift_trend(self) -> LiftTrend:
         """Which departures earn their place in the template, and which days carry them.
@@ -889,13 +946,16 @@ class PollPostingService:
         self,
         *,
         selected_service_date: date,
+        refund_preview: str | None = None,
     ) -> BookingMonitorDraft | None:
         days = await self._booking_monitor_days()
         day = next(
             (day for day in days if day.service_date == selected_service_date),
             None,
         )
-        return render_cancel_day_confirmation(day) if day is not None else None
+        if day is None:
+            return None
+        return render_cancel_day_confirmation(day, refund_preview=refund_preview)
 
     async def adjust_manual_booking(
         self,
@@ -2829,8 +2889,10 @@ class PollPostingService:
         telegram_message_id: int,
         selected_service_date: date | None,
         reposted_for: date | None = None,
+        screen: AdminScreen | None = None,
     ) -> None:
         now = datetime.now(UTC)
+        screen = screen or AdminScreen(service_date=selected_service_date)
         async with self._session_factory() as session:
             monitor = await self._booking_monitor_row(
                 session=session,
@@ -2846,6 +2908,8 @@ class PollPostingService:
                         private_chat_id=private_chat_id,
                         telegram_message_id=telegram_message_id,
                         selected_service_date=selected_service_date,
+                        screen=screen.name,
+                        screen_state=screen.to_state(),
                         reposted_for=reposted_for,
                         updated_at=now,
                     )
@@ -2854,6 +2918,8 @@ class PollPostingService:
                 monitor.private_chat_id = private_chat_id
                 monitor.telegram_message_id = telegram_message_id
                 monitor.selected_service_date = selected_service_date
+                monitor.screen = screen.name
+                monitor.screen_state = screen.to_state()
                 if reposted_for is not None:
                     monitor.reposted_for = reposted_for
                 monitor.updated_at = now
@@ -2958,13 +3024,27 @@ class PollPostingService:
         available_dates = {day.service_date for day in days}
         today = datetime.now(UTC).astimezone(self._zone).date()
         for monitor in monitors:
+            screen = decode_screen(
+                monitor.screen,
+                monitor.screen_state,
+                service_date=monitor.selected_service_date,
+            )
+            if not screen.live:
+                # Planning, settings, history, a confirmation: the admin put that
+                # there, and a vote arriving is no reason to take it away.
+                continue
             selected_date = monitor.selected_service_date
             if selected_date not in available_dates:
                 # Today first: on a lift day that is the tab the admin wants. The
                 # stored tab is left alone while it still exists, so the card does
                 # not jump under them while they are reading another day.
                 selected_date = _preferred_monitor_date(days, today=today)
-            draft = await self._monitor_draft(days, selected_service_date=selected_date)
+            draft = await self.live_screen_draft(screen.on_day(selected_date))
+            if draft is None:
+                # The lift behind an open card is gone. Fall back to its day
+                # rather than leaving a card that can no longer be refreshed.
+                screen = AdminScreen(name="day", service_date=selected_date)
+                draft = await self._monitor_draft(days, selected_service_date=selected_date)
             try:
                 updated = await self._telegram_client.edit_text(
                     chat_id=monitor.private_chat_id,
@@ -2986,6 +3066,7 @@ class PollPostingService:
                     private_chat_id=monitor.private_chat_id,
                     telegram_message_id=message_id,
                     selected_service_date=selected_date,
+                    screen=screen.on_day(selected_date),
                 )
             except Exception:
                 logger.exception(
@@ -3092,14 +3173,6 @@ class PollPostingService:
                     .order_by(PollVoteEvent.created_at)
                 )
             ).all()
-            has_refund_reports = (
-                await session.scalar(
-                    select(RefundReport.id)
-                    .where(RefundReport.environment == self._settings.app_env)
-                    .where(RefundReport.chat_id == self._settings.telegram_target_chat_id)
-                    .limit(1)
-                )
-            ) is not None
 
         votes_by_poll: dict[str, list[PollVote]] = {}
         for vote in votes:
@@ -3336,7 +3409,6 @@ class PollPostingService:
                     )
                     * day_price,
                     past=batch.service_date < today,
-                    has_refund_reports=has_refund_reports,
                     unpaid_riders=unpaid_riders,
                     cash_pending=cash_pending,
                     guests=monitor_guests,

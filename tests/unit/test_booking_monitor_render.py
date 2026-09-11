@@ -17,8 +17,8 @@ from veloexpress_bot.bookings.render import (
     TrendRow,
     decode_monitor_date,
     decode_monitor_time,
+    render_admin_menu,
     render_all_riders,
-    render_booking_management,
     render_booking_monitor,
     render_bumped_report,
     render_cancel_day_confirmation,
@@ -27,7 +27,6 @@ from veloexpress_bot.bookings.render import (
     render_lift_detail,
     render_lift_history,
     render_lift_trend,
-    render_start_status,
 )
 
 
@@ -57,30 +56,32 @@ def test_booking_monitor_renders_day_tabs_counts_and_controls() -> None:
         selected_service_date=date(2026, 7, 18),
     )
 
-    assert "📊 Booking monitor · Sat, 18 Jul" in draft.text
-    # Paid of owed, never a bare total: on its own the money figure sat next to a
-    # seat count built from different rules and read as a contradiction.
-    assert "At minimum 2 of 2 · funded 0 · 16 seats · claimed 3/9 · 60 of 240 GEL" in draft.text
-    # Seats, not arithmetic: "3 left" is something the admin can read off 7/10.
-    assert "🚐 8:30 · 7/10 · payment open · 0/5 paid · 1 manual" in draft.text
-    assert "🚐 10:00 · 9/10" in draft.text
+    assert "📊 Sat, 18 Jul" in draft.text
+    # Two short lines, not one with six figures in it. Reaching the rider minimum
+    # and being paid for are different states and stay on different halves.
+    assert "2 of 2 lifts running · 0 funded" in draft.text
+    assert "Reported 60 of 240 GEL" in draft.text
+    assert "🚐 8:30 · 7/10 seats · 0/5 paid · 1 manual" in draft.text
+    assert "🚐 10:00 · 9/10 seats · 0/5 paid" in draft.text
+    # The old header invited both of these readings, and both were wrong.
+    assert "claimed" not in draft.text
+    assert "Needs attention" not in draft.text
     assert draft.reply_markup is not None
     assert [button.text for button in draft.reply_markup.inline_keyboard[0]] == [
         "✅ Sat 18",
         "Sun 19",
     ]
-    assert [button.callback_data for button in draft.reply_markup.inline_keyboard[1]] == [
-        "mon:all:20260718"
-    ]
     buttons = _button_map(draft.reply_markup)
+    # Lifts open straight from the day; there is no card in between any more.
+    assert buttons["mon:lift:20260718:0830"] == "8:30 · 7/10"
+    assert buttons["mon:lift:20260718:1000"] == "10:00 · 9/10"
     assert buttons["mon:all:20260718"] == "👥 All riders"
-    assert buttons["mon:manage:20260718"] == "⚙️ Manage bookings"
-    assert not any(data.startswith(("mon:add:", "mon:sub:")) for data in buttons)
-    # One button per lift on top of "All riders" was the same list twice.
-    assert not any(data.startswith("mon:info:") for data in buttons)
+    assert buttons["mon:cancelday:20260718"] == "🚫 Cancel day"
+    assert buttons["mon:menu"] == "☰ Menu"
+    assert not any(data.startswith(("mon:manage:", "mon:add:", "mon:sub:")) for data in buttons)
 
 
-def test_booking_monitor_falls_back_to_first_day_and_shows_waitlist() -> None:
+def test_booking_monitor_counts_a_waitlist_apart_from_seats() -> None:
     draft = render_booking_monitor(
         (
             BookingMonitorDay(
@@ -92,10 +93,12 @@ def test_booking_monitor_falls_back_to_first_day_and_shows_waitlist() -> None:
     )
 
     assert "Sun, 19 Jul" in draft.text
-    assert "🚐 10:00 · 12/10 · payment open · 0/5 paid · waitlist +2 · 2 manual" in draft.text
+    # Twelve bookings, ten seats. `12/10` read as twelve people in a ten-seat van.
+    assert "🚐 10:00 · 10/10 seats · 2 waiting · 0/5 paid · 2 manual" in draft.text
+    assert "12/10" not in draft.text
 
 
-def test_booking_monitor_shows_cancelled_lift_and_cancel_day_control() -> None:
+def test_booking_monitor_opens_a_cancelled_lift_too() -> None:
     draft = render_booking_monitor(
         (
             BookingMonitorDay(
@@ -110,32 +113,28 @@ def test_booking_monitor_shows_cancelled_lift_and_cancel_day_control() -> None:
     )
 
     # 6 riders is above the minimum, so 8:30 is happening; 10:00 is named, not listed.
-    assert "🚐 8:30 · 6/10" in draft.text
+    assert "🚐 8:30 · 6/10 seats" in draft.text
     assert "❌ Cancelled: 10:00" in draft.text
     assert draft.reply_markup is not None
     buttons = _button_map(draft.reply_markup)
-    assert buttons["mon:manage:20260718"] == "⚙️ Manage bookings"
+    # Restoring a cancelled lift means opening it, so it keeps its button.
+    assert buttons["mon:lift:20260718:1000"] == "❌ 10:00 · 0/10"
+    assert buttons["mon:cancelday:20260718"] == "🚫 Cancel day"
 
-    management = render_booking_management(
+
+def test_a_day_with_nothing_running_says_so_instead_of_counting_to_zero() -> None:
+    draft = render_booking_monitor(
         (
             BookingMonitorDay(
                 service_date=date(2026, 7, 18),
-                lifts=(
-                    BookingLiftStatus(time="8:30", vote_count=6, manual_count=0),
-                    BookingLiftStatus(time="10:00", vote_count=0, manual_count=0, cancelled=True),
-                ),
+                lifts=(BookingLiftStatus(time="8:30", vote_count=2, manual_count=0),),
             ),
         ),
         selected_service_date=date(2026, 7, 18),
     )
-    management_buttons = _button_map(management.reply_markup)
-    assert management_buttons["mon:managelift:20260718:0830"] == "8:30 · 6/10"
-    assert management_buttons["mon:managelift:20260718:1000"] == "❌ 10:00 · 0/10"
-    assert not any(
-        data.startswith(("mon:add:", "mon:sub:", "mon:restore:")) for data in management_buttons
-    )
-    assert management_buttons["mon:cancelday:20260718"].startswith("🚫 Cancel all")
-    assert management_buttons["mon:back:20260718"] == "⬅️ Back to monitor"
+
+    assert "Nothing running yet · 2 seats booked" in draft.text
+    assert "💤 Not filled: 8:30" in draft.text
 
 
 def test_booking_monitor_puts_operational_attention_on_the_top_level() -> None:
@@ -163,12 +162,39 @@ def test_booking_monitor_puts_operational_attention_on_the_top_level() -> None:
         selected_service_date=date(2026, 8, 22),
     )
 
-    assert "⚠️ Needs attention · 4" in draft.text
-    assert "🔴 Unpaid: @anna 15 GEL" in draft.text
-    assert "💵 Cash to collect: @vitaly 30 GEL" in draft.text
+    # No total above them: one rider in two categories used to be counted twice,
+    # and a waitlist read as a fault.
+    assert "Needs attention" not in draft.text
+    assert "🔴 No payment reported: @anna 15 GEL" in draft.text
+    # The cash has already changed hands and the ledger counts it as received.
+    assert "💵 Reported in cash: @vitaly 30 GEL" in draft.text
+    assert "Cash to collect" not in draft.text
     assert "⏳ Waitlist: @giorgi 10:00 #1" in draft.text
     assert "⏰ Left after deadline: @stas 10:00 · 21:14" in draft.text
     assert "👥 Guests: @vitaly +1 (10:00)" in draft.text
+
+
+def test_a_long_handle_does_not_turn_a_category_into_a_paragraph() -> None:
+    """Eight ordinary handles fit on a phone line; three long ones do not."""
+    draft = render_booking_monitor(
+        (
+            BookingMonitorDay(
+                service_date=date(2026, 8, 22),
+                lifts=(BookingLiftStatus(time="10:00", vote_count=10, manual_count=0),),
+                unpaid_riders=(
+                    MonitorRider(1, "@a_really_long_telegram_handle_here", amount_gel=30),
+                    MonitorRider(2, "@another_fairly_long_handle", amount_gel=15),
+                    MonitorRider(3, "@nika", amount_gel=15),
+                ),
+            ),
+        ),
+        selected_service_date=date(2026, 8, 22),
+    )
+
+    line = next(line for line in draft.text.splitlines() if line.startswith("🔴"))
+    assert "@a_really_long_telegram_handle_here 30 GEL" in line
+    assert line.endswith("more")
+    assert len(line) <= 80
 
 
 def test_all_riders_shows_every_lift_in_one_read_only_card() -> None:
@@ -207,7 +233,7 @@ def test_all_riders_shows_every_lift_in_one_read_only_card() -> None:
     assert "💵 @vitaly · +1 guest" in draft.text
     assert "⏳ @giorgi" in draft.text
     buttons = _button_map(draft.reply_markup)
-    assert buttons["mon:back:20260822"] == "⬅️ Back to monitor"
+    assert buttons["mon:day:20260822"] == "⬅️ Back"
     assert not any(data.startswith("mon:paid:") for data in buttons)
 
 
@@ -247,12 +273,17 @@ def test_destructive_cancellations_require_a_second_explicit_callback() -> None:
             LiftRider(1, "@anna", paid=True),
             LiftRider(2, "@nika"),
         ),
+        refund_preview="Refund estimate: @anna 15 GEL",
     )
     assert "⚠️ Cancel 10:00" in lift_confirmation.text
-    assert "10 seats · 2 Telegram riders" in lift_confirmation.text
+    assert "10 seats · 2 riders from the poll" in lift_confirmation.text
+    assert "1 added by hand · 2 guests" in lift_confirmation.text
+    assert "1 of them reported a payment" in lift_confirmation.text
+    # Read before deciding, so the estimate is on the screen rather than promised.
+    assert "Refund estimate: @anna 15 GEL" in lift_confirmation.text
     lift_buttons = _button_map(lift_confirmation.reply_markup)
     assert lift_buttons["mon:docancel:20260822:1000"] == "🚫 Confirm cancel 10:00"
-    assert lift_buttons["mon:managelift:20260822:1000"] == "Keep lift"
+    assert lift_buttons["mon:lift:20260822:1000"] == "Keep lift"
 
     day_confirmation = render_cancel_day_confirmation(
         BookingMonitorDay(
@@ -262,49 +293,55 @@ def test_destructive_cancellations_require_a_second_explicit_callback() -> None:
             expected_gel=30,
         )
     )
-    assert "⚠️ Cancel all" in day_confirmation.text
+    assert "⚠️ Cancel the whole day" in day_confirmation.text
+    assert "1 lift · 10 seats" in day_confirmation.text
+    assert "1 rider reported 30 GEL" in day_confirmation.text
     day_buttons = _button_map(day_confirmation.reply_markup)
     assert day_buttons["mon:docancelday:20260822"] == "🚫 Confirm cancel whole day"
-    assert day_buttons["mon:manage:20260822"] == "Keep day"
+    assert day_buttons["mon:day:20260822"] == "Keep day"
 
 
-def test_render_lift_detail_reads_by_default_and_acts_only_under_manage() -> None:
-    active = render_lift_detail(
+def test_lift_card_reads_and_acts_on_one_screen() -> None:
+    card = render_lift_detail(
         service_date=date(2026, 7, 18),
-        lift=BookingLiftStatus(time="8:30", vote_count=2, manual_count=1),
+        lift=BookingLiftStatus(time="8:30", vote_count=5, manual_count=1),
         riders=(
             LiftRider(telegram_user_id=10, label="@stas", paid=True),
             LiftRider(telegram_user_id=11, label="Anna"),
         ),
     )
-    assert "🚲 8:30 · Sat, 18 Jul" in active.text
-    assert "Total: 3/10" in active.text
-    assert "Paid: 1/2" in active.text
-    assert "✅ @stas" in active.text
-    assert "🔴 Anna" in active.text
-    active_buttons = _button_map(active.reply_markup)
-    assert active_buttons["mon:back:20260718"] == "⬅️ Back"
+    assert "🚲 8:30 · Sat, 18 Jul" in card.text
+    assert "6/10 seats · 0/5 paid" in card.text
+    assert "5 from the poll · 1 added by hand" in card.text
+    assert "Payment reported by 1 of 2" in card.text
+    assert "✅ @stas" in card.text
+    assert "🔴 Anna" in card.text
+    buttons = _button_map(card.reply_markup)
+    # Seeing who is on the lift and adding the rider next to you is one screen.
+    assert buttons["mon:add:20260718:0830"] == "➕ Offline seat"
+    assert buttons["mon:sub:20260718:0830"] == "➖ Offline seat"
+    assert buttons["mon:cancel:20260718:0830"] == "🚫 Cancel lift"
+    assert buttons["mon:day:20260718"] == "⬅️ Back"
     # Who paid is worth reading; recording it for them is not the bot's job.
     assert not any(
-        data.startswith(("mon:paid:", "mon:cashreceived:", "mon:liftmoney:"))
-        for data in active_buttons
+        data.startswith(("mon:paid:", "mon:cashreceived:", "mon:liftmoney:")) for data in buttons
     )
 
-    management = render_lift_detail(
+
+def test_a_cancelled_lift_offers_restore_instead_of_seats() -> None:
+    card = render_lift_detail(
         service_date=date(2026, 7, 18),
-        lift=BookingLiftStatus(time="8:30", vote_count=2, manual_count=1),
+        lift=BookingLiftStatus(time="8:30", vote_count=2, manual_count=1, cancelled=True),
         riders=(),
-        mode="manage",
     )
-    management_buttons = _button_map(management.reply_markup)
-    assert management_buttons["mon:add:20260718:0830"] == "➕ Manual"
-    assert management_buttons["mon:sub:20260718:0830"] == "➖ Manual"
-    assert management_buttons["mon:cancel:20260718:0830"] == "🚫 Cancel lift"
-    assert management_buttons["mon:manage:20260718"] == "⬅️ Back"
+    buttons = _button_map(card.reply_markup)
+    assert "❌ Cancelled." in card.text
+    assert buttons["mon:restore:20260718:0830"] == "♻️ Restore lift"
+    assert not any(data.startswith(("mon:add:", "mon:sub:")) for data in buttons)
 
 
-def test_start_status_answers_instead_of_greeting() -> None:
-    text = render_start_status(
+def test_menu_opens_with_what_is_live_and_the_three_places_to_go() -> None:
+    draft = render_admin_menu(
         (
             BookingMonitorDay(
                 service_date=date(2026, 8, 1),
@@ -323,21 +360,34 @@ def test_start_status_answers_instead_of_greeting() -> None:
         schedule_line="⏰ Next polls open Fri 14:00.",
     )
 
-    assert text.splitlines() == [
-        "🚐 Veloexpress",
+    assert draft.text.splitlines() == [
+        "☰ Veloexpress admin",
         "",
-        "Sat, 1 Aug · 1 of 2 lifts running · paid 3/8",
-        "Sun, 2 Aug · 2 booked, nothing running yet",
-        "",
+        "Sat, 1 Aug · 1 of 2 running · 0 funded",
+        "Sun, 2 Aug · 2 seats booked, nothing running yet",
         "⏰ Next polls open Fri 14:00.",
     ]
+    buttons = _button_map(draft.reply_markup)
+    assert buttons["menu:weekend_plan"] == "📋 Weekend"
+    assert buttons["menu:extra_day"] == "➕ Extra lift day"
+    assert buttons["mon:history"] == "📜 History"
+    assert buttons["stats:30d:0"] == "📈 Statistics"
+    assert buttons["menu:service_defaults"] == "⚙️ Settings"
+    assert buttons["mon:refunds"] == "🧾 Refunds"
+    # Back to the day, named rather than called "back": it is a destination.
+    assert buttons["mon:day:20260801"] == "📊 Sat 1"
 
 
-def test_start_status_says_so_when_there_is_nothing_on() -> None:
-    text = render_start_status((), schedule_line="⏰ Auto-posting is off.")
+def test_menu_says_so_when_there_is_nothing_on() -> None:
+    draft = render_admin_menu((), schedule_line="⏰ Auto-posting is off.")
 
-    assert "No active lift polls." in text
-    assert "⏰ Auto-posting is off." in text
+    assert "No lift polls are open." in draft.text
+    assert "⏰ Auto-posting is off." in draft.text
+    # No day to go back to, but planning and the past are still one tap away.
+    buttons = _button_map(draft.reply_markup)
+    assert "menu:weekend_plan" in buttons
+    assert "mon:history" in buttons
+    assert not any(data.startswith("mon:day:") for data in buttons)
 
 
 def test_a_quiet_week_turns_the_monitor_into_the_way_in() -> None:
@@ -378,7 +428,7 @@ def test_a_quiet_week_turns_the_monitor_into_the_way_in() -> None:
         ),
     )
 
-    assert "📊 Booking monitor · quiet week" in draft.text
+    assert "☰ Veloexpress admin" in draft.text
     assert "⏰ Next polls open Thu 18:00." in draft.text
     # Both days of the weekend just gone, not the one before it.
     assert "Last lifts · 22–23 Aug" in draft.text
@@ -386,11 +436,10 @@ def test_a_quiet_week_turns_the_monitor_into_the_way_in() -> None:
     buttons = _button_map(draft.reply_markup)
     assert buttons["menu:weekend_plan"] == "📋 Weekend"
     assert buttons["menu:extra_day"] == "➕ Extra lift day"
-    assert buttons["plan:schedule"] == "⏰ Schedule"
-    assert buttons["mon:history"] == "📜 Lift history"
+    assert buttons["mon:history"] == "📜 History"
 
 
-def test_a_first_quiet_week_offers_no_history_to_read() -> None:
+def test_a_first_quiet_week_still_reaches_planning() -> None:
     draft = render_booking_monitor(
         (),
         selected_service_date=None,
@@ -399,7 +448,7 @@ def test_a_first_quiet_week_offers_no_history_to_read() -> None:
     )
 
     buttons = _button_map(draft.reply_markup)
-    assert "mon:history" not in buttons
+    assert buttons["menu:weekend_plan"] == "📋 Weekend"
     assert "Last lifts" not in draft.text
 
 
@@ -449,7 +498,7 @@ def test_guests_are_counted_like_any_other_seat() -> None:
 
     # Guests are in the seat count and named in their own section; repeating them
     # on the lift line was the same fact three times.
-    assert "🚐 8:30 · 10/10 · payment open · 0/5 paid · full · 1 manual" in draft.text
+    assert "🚐 8:30 · 10/10 seats · full · 0/5 paid · 1 manual" in draft.text
 
 
 def test_a_day_that_already_ran_cannot_be_cancelled() -> None:
@@ -471,20 +520,22 @@ def test_a_day_that_already_ran_cannot_be_cancelled() -> None:
     assert "8:30" in draft.text
 
 
-def test_past_refunds_are_reachable_once_any_exist() -> None:
+def test_the_day_card_carries_one_way_out_of_the_day() -> None:
+    """Refunds and history hang off the menu now, not off every day card."""
     draft = render_booking_monitor(
         (
             BookingMonitorDay(
                 service_date=date(2026, 7, 18),
                 lifts=(BookingLiftStatus(time="8:30", vote_count=7, manual_count=0),),
-                has_refund_reports=True,
             ),
         ),
         selected_service_date=date(2026, 7, 18),
     )
 
     assert draft.reply_markup is not None
-    assert _button_map(draft.reply_markup)["mon:refunds"] == "🧾 Past refunds"
+    buttons = _button_map(draft.reply_markup)
+    assert buttons["mon:menu"] == "☰ Menu"
+    assert "mon:refunds" not in buttons
 
 
 def test_bumped_report_separates_the_refund_from_the_rest() -> None:
@@ -564,7 +615,7 @@ def test_a_live_week_can_still_reach_the_history() -> None:
         ),
     )
 
-    assert _button_map(draft.reply_markup)["mon:history"] == "📜 Lift history"
+    assert _button_map(draft.reply_markup)["mon:menu"] == "☰ Menu"
 
 
 def test_lift_history_opens_each_day_and_offers_the_older_page() -> None:
@@ -584,10 +635,77 @@ def test_lift_history_opens_each_day_and_offers_the_older_page() -> None:
     assert buttons["mon:past:20260823"] == "Sun 23"
     assert buttons["mon:past:20260822"] == "Sat 22"
     assert buttons["mon:history:20260822"] == "📅 Older"
-    assert buttons["mon:history"] == "⏮ Latest"
-    assert buttons["mon:trend"] == "📈 Trend"
+    assert buttons["mon:history:0"] == "⏮ Latest"
+    assert buttons["mon:trend"] == "🕑 By time"
     # A page is a page; the season line still counts the whole season.
     assert "All time · 12 days · 47 lifts · 380 seats · 5700 GEL" in draft.text
+
+
+def test_a_period_carries_through_history_and_back_out_of_it() -> None:
+    """Opening the days of a year and pressing back used to land on 30 days."""
+    draft = render_lift_history(
+        LiftHistory(
+            days=(_history_day(date(2026, 8, 23)), _history_day(date(2026, 8, 22))),
+            total_days=12,
+            total_ran=47,
+            total_seats=380,
+            total_gel=5700,
+            older_before=date(2026, 8, 22),
+            has_newer=True,
+        ),
+        period="year",
+    )
+
+    buttons = _button_map(draft.reply_markup)
+    assert buttons["mon:past:20260823:year"] == "Sun 23"
+    assert buttons["mon:history:20260822:year"] == "📅 Older"
+    assert buttons["mon:history:0:year"] == "⏮ Latest"
+    assert buttons["stats:year:0"] == "📈 Statistics"
+
+
+def test_a_finished_day_reads_like_the_day_card_without_the_controls() -> None:
+    draft = render_lift_day_audit(
+        LiftDayAudit(
+            service_date=date(2026, 8, 22),
+            lifts=(
+                LiftDayAuditLift(
+                    lift_time="8:30",
+                    ran=True,
+                    seats=9,
+                    capacity=10,
+                    covered_seats=8,
+                    manual_seats=1,
+                    guest_seats=0,
+                    riders=(LiftDayAuditSeat(label="@anna", seats=1, guests=0, covered_seats=1),),
+                ),
+                LiftDayAuditLift(
+                    lift_time="10:00",
+                    ran=False,
+                    seats=3,
+                    capacity=10,
+                    covered_seats=0,
+                    manual_seats=0,
+                    guest_seats=0,
+                ),
+            ),
+            price_gel=15,
+            received_gel=120,
+            refunded_gel=15,
+        ),
+        period="year",
+    )
+
+    assert "🗓 Sat, 22 Aug" in draft.text
+    # Same shape as today's card: what ran, then the money, then a block per lift.
+    assert "1 of 2 lifts ran · 9 seats" in draft.text
+    buttons = _button_map(draft.reply_markup)
+    assert buttons["mon:history:0:year"] == "⬅️ Back to history"
+    # Money went back on this day, so the list of who is owed is reachable here.
+    assert buttons["mon:refunds"] == "🧾 Refunds"
+    # Nothing that would change a finished day.
+    assert not any(
+        data.startswith(("mon:add:", "mon:sub:", "mon:cancel", "mon:restore:")) for data in buttons
+    )
 
 
 def test_the_newest_page_of_history_offers_no_way_forward() -> None:

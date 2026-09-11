@@ -69,6 +69,9 @@ def test_plan_card_shows_lifts_and_auto_open_moment() -> None:
     assert "📋 Weekend plan · Sat 25 Jul + Sun 26" in card.text
     assert "🚲 Lifts: 8:30 → 13:30 · 4 lifts" in card.text
     assert "🕓 Opens: Fri, 24 Jul · 14:00 (auto)" in card.text
+    # Nothing here reaches the group on its own, and the card says so rather
+    # than leaving an admin to find out by toggling a day.
+    assert "Edits are saved as a plan. Nothing reaches the group until then." in card.text
     buttons = button_map(card.reply_markup)
     assert buttons["plan:day:sat"] == "✅ Sat 25"
     assert buttons["plan:day:sun"] == "✅ Sun 26"
@@ -88,6 +91,8 @@ def test_plan_card_marks_posted_days_and_offers_recreate() -> None:
     )
 
     assert "✅ Polls are posted." in card.text
+    # Nothing is pending, so there is no plan note promising a later post.
+    assert "saved as a plan" not in card.text
     buttons = button_map(card.reply_markup)
     assert buttons["plan:posted"].startswith("📌")
     assert "plan:post" not in buttons
@@ -139,10 +144,20 @@ def test_a_paused_schedule_offers_no_skip_and_takes_the_blame_itself() -> None:
     assert "plan:skip" not in button_map(card.reply_markup)
 
 
-def test_plan_card_recreate_view_requires_confirmation() -> None:
-    card = render_weekend_plan_card(plan_view(), view="recreate")
+def test_plan_card_recreate_view_names_the_days_it_will_replace() -> None:
+    card = render_weekend_plan_card(
+        plan_view(
+            days=(
+                DayPlanStatus(service_date=WEEK, enabled=True, posted=True),
+                DayPlanStatus(service_date=date(2026, 7, 26), enabled=True, posted=False),
+            ),
+        ),
+        view="recreate",
+    )
 
-    assert "Recreating deletes them" in card.text
+    # Which days, and what it costs the riders — not "polls are already posted".
+    assert "⚠️ Sat 25: the posted polls are deleted and replaced." in card.text
+    assert "Riders lose their answers" in card.text
     buttons = button_map(card.reply_markup)
     assert buttons["plan:recreate"] == "♻️ Confirm recreate"
     assert buttons["plan:view:main"] == "⬅️ Back"

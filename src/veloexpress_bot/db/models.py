@@ -584,6 +584,12 @@ class AdminBookingMonitor(Base):
     private_chat_id: Mapped[int] = mapped_column(BigInteger)
     telegram_message_id: Mapped[int] = mapped_column(BigInteger)
     selected_service_date: Mapped[date | None] = mapped_column(Date)
+    # Which screen the card is showing, and the context that screen needs. The
+    # row stays the admin's long-lived registration either way: a background
+    # refresh reads this to decide whether the card is its to redraw, instead of
+    # the registration being deleted whenever the admin opens settings.
+    screen: Mapped[str] = mapped_column(String(32), default="day", server_default="day")
+    screen_state: Mapped[str | None] = mapped_column(Text)
     # The lift day this card was last reposted for. The monitor is edited in place
     # all week, which on the morning of a lift day leaves it buried above whatever
     # the admin has been reading since.

@@ -101,12 +101,15 @@ def render_statistics(
         rows.append(
             [InlineKeyboardButton(text="⬅️ Riders", callback_data=f"stats:{view.period}:{page}")]
         )
+    elif personal:
+        rows.append([InlineKeyboardButton(text="📜 Days", callback_data="guest:season")])
     else:
+        # The period rides along, so the days list and the way back out of it stay
+        # on the span the admin picked instead of snapping to the last 30 days.
         rows.append(
             [
-                InlineKeyboardButton(
-                    text="📜 Days", callback_data="guest:season" if personal else "mon:history"
-                )
+                InlineKeyboardButton(text="📜 Days", callback_data=f"mon:history:0:{view.period}"),
+                InlineKeyboardButton(text="⬅️ Menu", callback_data="mon:menu"),
             ]
         )
     return MyDayDraft(

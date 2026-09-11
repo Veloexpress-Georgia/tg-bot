@@ -62,6 +62,9 @@ class WeekPlan:
 class PostNowResult:
     created_count: int
     already_posted: bool
+    # The days that now have polls, so the caller can offer to open one rather
+    # than leaving the admin to find it.
+    service_dates: tuple[date, ...] = ()
 
 
 async def load_week_plan(
@@ -225,7 +228,11 @@ class WeekendPlanner:
             )
         await self._poll_service.pin_created_results(tuple(results))
         await self._record_posted_plan(plan, admin_user_id=admin_user_id)
-        return PostNowResult(created_count=len(results), already_posted=False)
+        return PostNowResult(
+            created_count=len(results),
+            already_posted=False,
+            service_dates=tuple(setup.service_date for setup in pending),
+        )
 
     async def recreate(
         self,
