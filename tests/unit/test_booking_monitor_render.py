@@ -27,6 +27,7 @@ from veloexpress_bot.bookings.render import (
     render_lift_detail,
     render_lift_history,
     render_lift_trend,
+    render_refund_reports,
 )
 
 
@@ -706,6 +707,47 @@ def test_a_finished_day_reads_like_the_day_card_without_the_controls() -> None:
     assert not any(
         data.startswith(("mon:add:", "mon:sub:", "mon:cancel", "mon:restore:")) for data in buttons
     )
+
+
+def test_past_refunds_read_as_records_one_page_at_a_time() -> None:
+    """Five stored reports used to arrive as five messages under the card.
+
+    They read as fresh cancellations because nothing said when they were
+    written, and they pushed the admin's card out of sight.
+    """
+    draft = render_refund_reports(
+        (
+            ("13 Sep 2026, 02:01", "💸 Sun, 13 Sep cancelled"),
+            ("05 Sep 2026, 19:20", "💸 15:30 · Sat, 5 Sep cancelled — who paid:"),
+        ),
+        page=1,
+    )
+
+    assert "🧾 Refunds · 2/2" in draft.text
+    assert "Written 05 Sep 2026, 19:20" in draft.text
+    assert "the day may have moved since" in draft.text
+    assert "💸 15:30 · Sat, 5 Sep cancelled" in draft.text
+    # One report per page, so the other one is not on this screen.
+    assert "Sun, 13 Sep" not in draft.text
+    buttons = _button_map(draft.reply_markup)
+    assert buttons["mon:refunds:0"] == "⏮ Newer"
+    assert "mon:refunds:2" not in buttons
+    assert buttons["mon:menu"] == "⬅️ Menu"
+
+
+def test_a_page_past_the_end_lands_on_the_last_report() -> None:
+    """A stale pager button must not open an empty screen."""
+    draft = render_refund_reports((("05 Sep 2026, 19:20", "💸 one"),), page=9)
+
+    assert "🧾 Refunds · 1/1" in draft.text
+    assert "💸 one" in draft.text
+
+
+def test_no_refunds_yet_is_a_screen_not_a_loose_message() -> None:
+    draft = render_refund_reports(())
+
+    assert "No cancellation has had money in it yet." in draft.text
+    assert _button_map(draft.reply_markup)["mon:menu"] == "⬅️ Menu"
 
 
 def test_the_newest_page_of_history_offers_no_way_forward() -> None:

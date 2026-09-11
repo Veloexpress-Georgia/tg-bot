@@ -341,6 +341,53 @@ def render_admin_menu(
     )
 
 
+# The stored reports carry rider mentions, so this screen is HTML like them.
+REFUND_REPORTS_PARSE_MODE = "HTML"
+
+
+def render_refund_reports(
+    reports: tuple[tuple[str, str], ...],
+    *,
+    page: int = 0,
+) -> BookingMonitorDraft:
+    """Past refund estimates, one per page, on the card rather than in the chat.
+
+    Sending them as loose messages buried the admin's card under a wall of
+    HTML and read as though the cancellations had just happened. Each is headed
+    with when it was written, because a stored estimate describes the world as
+    it stood that day: the wording is whatever the bot said at the time, and an
+    old one may name riders whose bookings have long since moved.
+    """
+    if not reports:
+        return BookingMonitorDraft(
+            text="🧾 Refunds\n\nNo cancellation has had money in it yet.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Menu", callback_data="mon:menu")],
+                ]
+            ),
+        )
+    page = min(max(page, 0), len(reports) - 1)
+    label, text = reports[page]
+    lines = [
+        f"🧾 Refunds · {page + 1}/{len(reports)}",
+        f"Written {label}. Kept as a record; the day may have moved since.",
+        "",
+        text,
+    ]
+    pager: list[InlineKeyboardButton] = []
+    if page:
+        pager.append(InlineKeyboardButton(text="⏮ Newer", callback_data=f"mon:refunds:{page - 1}"))
+    if page + 1 < len(reports):
+        pager.append(InlineKeyboardButton(text="📅 Older", callback_data=f"mon:refunds:{page + 1}"))
+    rows = [pager] if pager else []
+    rows.append([InlineKeyboardButton(text="⬅️ Menu", callback_data="mon:menu")])
+    return BookingMonitorDraft(
+        text="\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
 def render_posted_result(
     service_dates: tuple[date, ...],
     *,

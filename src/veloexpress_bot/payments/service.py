@@ -113,6 +113,17 @@ class ClaimOutcome:
     needs_confirmation: bool = False
 
 
+@dataclass(frozen=True)
+class StoredRefundReport:
+    """A refund estimate as it was shown when the cancellation happened."""
+
+    text: str
+    service_date: date
+    # None when the whole day went; otherwise the single lift that was called off.
+    lift_time: str | None
+    created_at: datetime
+
+
 CASH_METHOD = "cash"
 TRANSFER_METHOD = "transfer"
 
@@ -905,8 +916,14 @@ class PaymentsService:
             ),
         )
 
-    async def recent_refund_reports(self, *, limit: int = 5) -> tuple[str, ...]:
-        """The last few refund lists, newest first, so a deleted message is not lost."""
+    async def recent_refund_reports(self, *, limit: int = 10) -> tuple[StoredRefundReport, ...]:
+        """The last few refund lists, newest first, so a deleted message is not lost.
+
+        The text is returned exactly as it was shown at the time, wording and
+        all — that is the point of storing it. When it was written comes along
+        beside it, because an estimate from three weeks ago describes a world
+        that has since moved on.
+        """
         if not self.enabled:
             return ()
         async with self._session_factory() as session:
@@ -919,7 +936,15 @@ class PaymentsService:
                     .limit(limit)
                 )
             ).all()
-        return tuple(row.text for row in rows)
+        return tuple(
+            StoredRefundReport(
+                text=row.text,
+                service_date=row.service_date,
+                lift_time=row.lift_time,
+                created_at=_as_utc(row.created_at),
+            )
+            for row in rows
+        )
 
     async def forget_day(self, *, service_date: date) -> None:
         """Drop the day's payments once the refunds have been reported.

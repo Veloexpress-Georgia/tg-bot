@@ -13,6 +13,7 @@ from aiogram.types import CallbackQuery, ErrorEvent, InlineKeyboardMarkup, Messa
 
 from veloexpress_bot.bookings.render import (
     BUMPED_REPORT_PARSE_MODE,
+    REFUND_REPORTS_PARSE_MODE,
     BookingMonitorDay,
     BookingMonitorDraft,
     decode_monitor_date,
@@ -20,6 +21,7 @@ from veloexpress_bot.bookings.render import (
     render_bumped_report,
     render_cancel_lift_confirmation,
     render_posted_result,
+    render_refund_reports,
 )
 from veloexpress_bot.bookings.screens import AdminScreen
 from veloexpress_bot.bot.permissions import is_admin
@@ -38,6 +40,7 @@ from veloexpress_bot.payments.service import (
     CASH_METHOD,
     TRANSFER_METHOD,
     PaymentsService,
+    StoredRefundReport,
 )
 from veloexpress_bot.polls.autoposter import PollAutoScheduler
 from veloexpress_bot.polls.autoschedule import CardView
@@ -754,23 +757,44 @@ async def open_lift_card(
     await callback.answer()
 
 
-@router.callback_query(F.data == "mon:refunds")
+@router.callback_query(F.data.startswith("mon:refunds"))
 async def show_past_refunds(
     callback: CallbackQuery,
     settings: Settings,
+    poll_service: PollPostingService,
     payments_service: PaymentsService,
 ) -> None:
-    """Re-send the refund lists, because the originals can be deleted."""
+    """Past refund estimates, one per page, because the originals can be deleted.
+
+    On the card rather than as loose messages: sending five stored reports into
+    the chat buried the card under them and read as five fresh cancellations.
+    """
     message = await _admin_private_message(callback, settings)
     if message is None:
         return
+    cursor = (callback.data or "").removeprefix("mon:refunds").lstrip(":")
+    page = int(cursor) if cursor.isdigit() else 0
     reports = await payments_service.recent_refund_reports()
+    draft = render_refund_reports(
+        tuple((_report_label(report, settings), report.text) for report in reports),
+        page=page,
+    )
+    await _show_frozen(
+        message,
+        poll_service,
+        callback.from_user.id,
+        "refunds",
+        draft.text,
+        draft.reply_markup,
+        parse_mode=REFUND_REPORTS_PARSE_MODE,
+        page=page,
+    )
     await callback.answer()
-    if not reports:
-        await message.answer("No cancellations with money in them yet.")
-        return
-    for report in reports:
-        await message.answer(report, parse_mode="HTML")
+
+
+def _report_label(report: StoredRefundReport, settings: Settings) -> str:
+    local = report.created_at.astimezone(ZoneInfo(settings.schedule_timezone))
+    return f"{local:%d %b %Y, %H:%M}"
 
 
 @router.callback_query(
