@@ -357,6 +357,71 @@ async def test_admin_booking_monitor_controls_manual_counts_and_tracks_votes(
     assert monitor.telegram_message_id == monitor_message_id
 
 
+async def test_day_money_covers_the_lift_that_leaves_not_the_earliest_one(
+    db: SharedDatabase,
+) -> None:
+    """One seat paid, two lifts booked, only one of them running.
+
+    Coverage used to be spent in clock order, so a rider who booked a dead 8:30
+    read as paid there and unpaid on the 11:45 they are actually taking.
+    """
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(),
+        session_factory=db.session,
+        telegram_client=client,
+    )
+    saturday, _ = _upcoming_weekend()
+    poll = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1),
+        pin_after_send=False,
+    )
+    poll_id = poll.poll_id or ""
+    await service.track_poll_answer(
+        poll_id=poll_id,
+        telegram_user_id=10,
+        username="stas",
+        full_name="Stas",
+        option_ids=(0, 2),
+    )
+    for user_id in range(11, 16):
+        await service.track_poll_answer(
+            poll_id=poll_id,
+            telegram_user_id=user_id,
+            username=f"rider{user_id}",
+            full_name=f"Rider {user_id}",
+            option_ids=(2,),
+        )
+    async with db.session() as session:
+        session.add(
+            PaymentClaim(
+                environment="test",
+                chat_id=-100123,
+                thread_id=7,
+                service_date=saturday,
+                telegram_user_id=10,
+                username="stas",
+                full_name="Stas",
+                seats=1,
+                amount_gel=15,
+                method="transfer",
+            )
+        )
+        await session.commit()
+
+    quiet = await service.lift_detail(service_date=saturday, lift_time="8:30")
+    running = await service.lift_detail(service_date=saturday, lift_time="11:45")
+    assert quiet is not None
+    assert running is not None
+    assert [(rider.label, rider.paid) for rider in quiet[1]] == [("@stas", False)]
+    assert ("@stas", True) in [(rider.label, rider.paid) for rider in running[1]]
+
+    all_riders = await service.all_riders_view(selected_service_date=saturday)
+    assert "8:30 — 1/10 · needs 4 more" in all_riders.text
+    assert "💤 @stas" in all_riders.text
+    assert "✅ @stas" in all_riders.text
+
+
 async def test_booking_monitor_surfaces_money_guests_waitlist_and_late_exits(
     db: SharedDatabase,
 ) -> None:

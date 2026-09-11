@@ -593,7 +593,7 @@ def render_all_riders(
     for lift, riders in rosters:
         lines.extend(("", _lift_line(lift)))
         if riders:
-            lines.extend(_lift_rider_line(rider) for rider in riders)
+            lines.extend(_lift_rider_line(rider, running=lift.running) for rider in riders)
         elif not lift.manual_count and not lift.guest_count:
             lines.append("—")
     rows: list[list[InlineKeyboardButton]] = []
@@ -849,8 +849,12 @@ def _summary_line(day: BookingMonitorDay) -> str:
     return " · ".join(parts)
 
 
-def _lift_rider_line(rider: LiftRider) -> str:
-    if rider.waitlisted:
+def _lift_rider_line(rider: LiftRider, *, running: bool = True) -> str:
+    if not running:
+        # A lift that is not leaving has no paid/unpaid question to answer: the
+        # money is still the day's, and it follows the rider to a lift that runs.
+        marker = "💤"
+    elif rider.waitlisted:
         marker = "⏳"
     elif rider.cash:
         marker = "💵"

@@ -175,8 +175,8 @@ def test_all_riders_shows_every_lift_in_one_read_only_card() -> None:
     saturday = BookingMonitorDay(
         service_date=date(2026, 8, 22),
         lifts=(
-            BookingLiftStatus(time="8:30", vote_count=2, manual_count=0),
-            BookingLiftStatus(time="10:00", vote_count=2, manual_count=0),
+            BookingLiftStatus(time="8:30", vote_count=6, manual_count=0),
+            BookingLiftStatus(time="10:00", vote_count=6, manual_count=0),
         ),
     )
     draft = render_all_riders(
@@ -200,15 +200,36 @@ def test_all_riders_shows_every_lift_in_one_read_only_card() -> None:
         ),
     )
 
-    assert "8:30 — 2/10" in draft.text
+    assert "8:30 — 6/10" in draft.text
     assert "✅ @anna" in draft.text
     assert "🔴 @nika" in draft.text
-    assert "10:00 — 2/10" in draft.text
+    assert "10:00 — 6/10" in draft.text
     assert "💵 @vitaly · +1 guest" in draft.text
     assert "⏳ @giorgi" in draft.text
     buttons = _button_map(draft.reply_markup)
     assert buttons["mon:back:20260822"] == "⬅️ Back to monitor"
     assert not any(data.startswith("mon:paid:") for data in buttons)
+
+
+def test_all_riders_drops_the_money_verdict_on_a_lift_that_will_not_leave() -> None:
+    """A lift short of the minimum has no paid/unpaid answer worth printing.
+
+    Day money is movable until the deadline, so marking a rider paid on a lift
+    nobody is taking — and unpaid on the one they are — read as a contradiction.
+    """
+    saturday = BookingMonitorDay(
+        service_date=date(2026, 8, 22),
+        lifts=(BookingLiftStatus(time="8:30", vote_count=1, manual_count=0),),
+    )
+    draft = render_all_riders(
+        (saturday,),
+        selected_service_date=saturday.service_date,
+        rosters=((saturday.lifts[0], (LiftRider(1, "@anna", paid=True),)),),
+    )
+
+    assert "8:30 — 1/10 · needs 4 more" in draft.text
+    assert "💤 @anna" in draft.text
+    assert "✅ @anna" not in draft.text
 
 
 def test_destructive_cancellations_require_a_second_explicit_callback() -> None:
