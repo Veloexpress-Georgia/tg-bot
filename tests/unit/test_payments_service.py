@@ -29,6 +29,7 @@ from veloexpress_bot.payments.myday import RiderSeason
 from veloexpress_bot.payments.service import (
     ALREADY_SETTLED_TEXT,
     CASH_METHOD,
+    METHOD_VERIFIED_TEXT,
     NOT_BOOKED_TEXT,
     PAYMENTS_DISABLED_TEXT,
     UNDO_AFTER_DEADLINE_TEXT,
@@ -599,6 +600,131 @@ async def test_a_cash_tap_records_the_method_so_misho_can_reconcile(
         claim = await session.scalar(select(PaymentClaim))
     assert claim is not None
     assert claim.method == CASH_METHOD
+
+
+async def test_a_rider_can_correct_cash_to_transfer_without_changing_the_amount(
+    db: SharedDatabase,
+) -> None:
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.sync_boards()
+    board = client.payments_sends()[-1]
+    await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="konstantin",
+        full_name="Konstantin",
+        method=CASH_METHOD,
+    )
+    card = await payments.my_day_card(service_date=saturday, telegram_user_id=100)
+    assert card.reply_markup is not None
+    assert any(
+        button.text == "💸 Change to I paid"
+        for row in card.reply_markup.inline_keyboard
+        for button in row
+    )
+
+    outcome = await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="konstantin",
+        full_name="Konstantin",
+        method="transfer",
+    )
+
+    assert outcome.text == "Payment method changed to transfer."
+    async with db.session() as session:
+        claim = await session.scalar(select(PaymentClaim))
+        entries = (await session.scalars(select(PaymentEntry).order_by(PaymentEntry.id))).all()
+    assert claim is not None
+    assert (claim.amount_gel, claim.cash_amount_gel, claim.method) == (15, 0, "transfer")
+    assert [(entry.amount_gel, entry.method, entry.kind) for entry in entries] == [
+        (15, "cash", "received"),
+        (0, "transfer", "method_change"),
+    ]
+    posted = client.payments_sends()[-1]
+    assert any(
+        message_id == posted.message_id and "· cash" not in text
+        for message_id, text in client.edits
+    )
+    board_text = [text for message_id, text in client.edits if message_id == board.message_id][-1]
+    assert "· cash" not in board_text
+    assert "15 GEL" in board_text
+
+    again = await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="konstantin",
+        full_name="Konstantin",
+        method="transfer",
+    )
+    assert again.text == ALREADY_SETTLED_TEXT
+
+
+async def test_correcting_cash_after_the_deadline_does_not_undo_payment(
+    db: SharedDatabase,
+) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+        method=CASH_METHOD,
+    )
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+
+    outcome = await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+        method="transfer",
+    )
+
+    assert outcome.text == "Payment method changed to transfer."
+    async with db.session() as session:
+        claim = await session.scalar(select(PaymentClaim))
+    assert claim is not None
+    assert claim.amount_gel == 15
+    assert claim.method == "transfer"
+
+
+async def test_a_rider_cannot_change_an_admin_verified_payment_method(
+    db: SharedDatabase,
+) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+        method=CASH_METHOD,
+    )
+    async with db.session() as session:
+        claim = await session.scalar(select(PaymentClaim))
+        assert claim is not None
+        claim.verified_by_user_id = 1
+        await session.commit()
+
+    outcome = await payments.claim(
+        service_date=saturday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+        method="transfer",
+    )
+
+    assert outcome.text == METHOD_VERIFIED_TEXT
+    async with db.session() as session:
+        claim = await session.scalar(select(PaymentClaim))
+        entries = (await session.scalars(select(PaymentEntry))).all()
+    assert claim is not None
+    assert claim.method == CASH_METHOD
+    assert len(entries) == 1
 
 
 async def test_writing_in_the_payments_topic_marks_the_rider_paid(db: SharedDatabase) -> None:

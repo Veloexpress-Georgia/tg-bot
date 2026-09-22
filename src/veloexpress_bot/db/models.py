@@ -424,7 +424,7 @@ class ServiceDayDefaults(Base):
 
 
 class PaymentEntry(Base):
-    """One append-only money movement for a rider and service day."""
+    """One append-only money movement or method correction for a rider and day."""
 
     __tablename__ = "payment_entry"
 

@@ -137,7 +137,7 @@ It is off by default because the trade is real: a callback records the claim the
 
 When the setting is on, arriving by one of those links settles up immediately, unless something needs saying first. A partial booking or a waitlist place records nothing and opens the card instead: the board has to squeeze those warnings into a 200-character toast and a second tap, while the card has room to lay out which lifts filled, what is due now and what the whole day costs, with the buttons underneath. Explaining beats charging quietly, and it retires the two-tap gesture.
 
-Riders act on the board with inline buttons rather than a command. `💸 I paid` and `💵 Cash` append only the outstanding amount to the rider's day ledger. `👤 Guests` opens the private rider card, where guest seats are adjusted per lift. Before the deadline, `↩️ Undo` appends a reversal rather than erasing financial history.
+Riders act on the board with inline buttons rather than a command. `💸 I paid` and `💵 Cash` append only the outstanding amount to the rider's day ledger. If the day is already settled, tapping the other payment method corrects the reported method without changing the amount; the private rider card also offers this correction. `👤 Guests` opens the private rider card, where guest seats are adjusted per lift. Before the deadline, `↩️ Undo` appends a reversal rather than erasing financial history.
 
 When a rider reports payment, the bot posts their day and amount to the payments topic on their behalf, without a fixed lift list: coverage follows their current bookings before the deadline. If that rider already wrote in the payments topic since the poll was created, the bot stays silent and records the report only once.
 

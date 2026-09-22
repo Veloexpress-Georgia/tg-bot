@@ -63,6 +63,7 @@ class RiderDayView:
     due_now_gel: int = 0
     due_all_gel: int = 0
     paid_gel: int = 0
+    payment_method: str | None = None
 
     @property
     def total_guests(self) -> int:
@@ -311,6 +312,23 @@ def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyb
             ]
         )
     if day.paid_gel:
+        if day.paid_gel >= day.due_now_gel:
+            if day.payment_method == "cash":
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text="💸 Change to I paid", callback_data=f"guest:pay:{encoded_date}"
+                        )
+                    ]
+                )
+            elif day.payment_method == "transfer":
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text="💵 Change to Cash", callback_data=f"guest:cash:{encoded_date}"
+                        )
+                    ]
+                )
         rows.append(
             [InlineKeyboardButton(text="↩️ Undo", callback_data=f"guest:undo:{encoded_date}")]
         )

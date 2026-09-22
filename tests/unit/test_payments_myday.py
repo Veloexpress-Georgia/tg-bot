@@ -166,6 +166,23 @@ def test_paid_in_full_is_shown_as_settled() -> None:
     assert "guest:undo:20260801" in buttons
 
 
+def test_paid_cash_can_be_changed_to_a_transfer_from_the_rider_card() -> None:
+    draft = render_rider_card(
+        _card(
+            RiderDayView(
+                service_date=SATURDAY,
+                rows=(RiderLiftRow(lift_time="8:30", seats_left=3),),
+                due_now_gel=15,
+                due_all_gel=15,
+                paid_gel=15,
+                payment_method="cash",
+            )
+        )
+    )
+
+    assert ("💸 Change to I paid", "guest:pay:20260801") in _buttons(draft.reply_markup)[0]
+
+
 def test_the_weekend_is_one_card_with_day_tabs() -> None:
     """Two cards would mean two chances to read a stale amount with a live button."""
     draft = render_rider_card(

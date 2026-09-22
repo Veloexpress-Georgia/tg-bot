@@ -87,6 +87,7 @@ NOTHING_TO_UNDO_TEXT = "You have not marked a payment for this day."
 # Undo erases the only record that money arrived, so it stops where the money
 # stops being the rider's to take back: an admin recorded it, or booking closed.
 UNDO_VERIFIED_TEXT = "Misho recorded this payment. Ask him if it needs undoing."
+METHOD_VERIFIED_TEXT = "Misho recorded this payment. Ask him to correct its method."
 UNDO_AFTER_DEADLINE_TEXT = "Booking closed for this day. Ask Misho about a refund."
 NOT_CLAIMED_YET_TEXT = "Tap 💸 I paid or 💵 Cash first."
 BOARD_GONE_TEXT = "This payments board is no longer active."
@@ -160,6 +161,7 @@ class DayBookings:
     waitlist_by_lift: dict[str, tuple[int, ...]] = field(default_factory=dict)
     paid_seats_by_user: dict[int, int] = field(default_factory=dict)
     paid_amount_by_user: dict[int, int] = field(default_factory=dict)
+    payment_method_by_user: dict[int, str | None] = field(default_factory=dict)
 
     def pending_lift_times(self, telegram_user_id: int) -> tuple[str, ...]:
         """Lifts the rider booked that have not reached the minimum yet."""
@@ -290,69 +292,96 @@ class PaymentsService:
             owed = len(paying_for) + guests
             owed_amount = owed * day.price_gel
             if claim is not None and claim.amount_gel >= owed_amount:
-                return ClaimOutcome(ALREADY_SETTLED_TEXT)
-            if not acknowledged:
-                if day.is_waitlisted(telegram_user_id):
-                    return ClaimOutcome(WAITLIST_WARNING_TEXT, needs_confirmation=True)
-                if pending and not include_pending:
-                    # Charging for part of a booking without saying so is the silent
-                    # 15 GEL that reads as a bug. One warning at a time, worst first.
-                    return ClaimOutcome(
-                        _partial_booking_warning(
-                            confirmed=lift_times,
-                            pending=pending,
-                            due_now=(len(lift_times) + guests) * day.price_gel,
-                            due_later=len(pending) * day.price_gel,
-                        ),
-                        needs_confirmation=True,
+                if claim.method not in {CASH_METHOD, TRANSFER_METHOD} or claim.method == method:
+                    return ClaimOutcome(ALREADY_SETTLED_TEXT)
+                if claim.verified_by_user_id is not None:
+                    return ClaimOutcome(METHOD_VERIFIED_TEXT)
+                # This corrects the reported method, not the money received. Keep
+                # the original entry and append an audit event with zero GEL.
+                claim.method = method
+                claim.cash_amount_gel = claim.amount_gel if method == CASH_METHOD else 0
+                claim.updated_at = datetime.now(UTC)
+                session.add(
+                    PaymentEntry(
+                        environment=self._settings.app_env,
+                        chat_id=self._require_chat_id(),
+                        thread_id=self._settings.telegram_target_thread_id,
+                        service_date=service_date,
+                        telegram_user_id=telegram_user_id,
+                        amount_gel=0,
+                        method=method,
+                        kind="method_change",
+                        recorded_at=claim.updated_at,
                     )
-            # The button means "I have paid everything I owe right now", so tapping it
-            # again after re-voting or adding a guest settles the difference.
-            if claim is None:
-                claim = PaymentClaim(
-                    environment=self._settings.app_env,
-                    chat_id=self._require_chat_id(),
-                    thread_id=self._settings.telegram_target_thread_id,
-                    service_date=service_date,
-                    telegram_user_id=telegram_user_id,
-                    username=username,
-                    full_name=full_name,
-                    amount_gel=0,
-                    cash_amount_gel=0,
                 )
-                session.add(claim)
-            claim.username = username
-            claim.full_name = full_name
-            claim.seats = owed
-            received_delta = owed_amount - (claim.amount_gel or 0)
-            claim.amount_gel = owed_amount
-            if method == CASH_METHOD:
-                claim.cash_amount_gel = (claim.cash_amount_gel or 0) + received_delta
-            if claim.cash_amount_gel == claim.amount_gel:
-                claim.method = CASH_METHOD
-            elif claim.cash_amount_gel:
-                claim.method = "mixed"
+                await session.commit()
+                method_corrected = True
             else:
-                claim.method = TRANSFER_METHOD
-            recorded_at = datetime.now(UTC)
-            claim.updated_at = recorded_at
-            session.add(
-                PaymentEntry(
-                    environment=self._settings.app_env,
-                    chat_id=self._require_chat_id(),
-                    thread_id=self._settings.telegram_target_thread_id,
-                    service_date=service_date,
-                    telegram_user_id=telegram_user_id,
-                    amount_gel=received_delta,
-                    method=method,
-                    kind="received",
-                    recorded_at=recorded_at,
+                method_corrected = False
+                if not acknowledged:
+                    if day.is_waitlisted(telegram_user_id):
+                        return ClaimOutcome(WAITLIST_WARNING_TEXT, needs_confirmation=True)
+                    if pending and not include_pending:
+                        # Charging for part of a booking without saying so is the silent
+                        # 15 GEL that reads as a bug. One warning at a time, worst first.
+                        return ClaimOutcome(
+                            _partial_booking_warning(
+                                confirmed=lift_times,
+                                pending=pending,
+                                due_now=(len(lift_times) + guests) * day.price_gel,
+                                due_later=len(pending) * day.price_gel,
+                            ),
+                            needs_confirmation=True,
+                        )
+                # Tapping again after re-voting or adding a guest settles the difference.
+                if claim is None:
+                    claim = PaymentClaim(
+                        environment=self._settings.app_env,
+                        chat_id=self._require_chat_id(),
+                        thread_id=self._settings.telegram_target_thread_id,
+                        service_date=service_date,
+                        telegram_user_id=telegram_user_id,
+                        username=username,
+                        full_name=full_name,
+                        amount_gel=0,
+                        cash_amount_gel=0,
+                    )
+                    session.add(claim)
+                claim.username = username
+                claim.full_name = full_name
+                claim.seats = owed
+                received_delta = owed_amount - (claim.amount_gel or 0)
+                claim.amount_gel = owed_amount
+                if method == CASH_METHOD:
+                    claim.cash_amount_gel = (claim.cash_amount_gel or 0) + received_delta
+                if claim.cash_amount_gel == claim.amount_gel:
+                    claim.method = CASH_METHOD
+                elif claim.cash_amount_gel:
+                    claim.method = "mixed"
+                else:
+                    claim.method = TRANSFER_METHOD
+                recorded_at = datetime.now(UTC)
+                claim.updated_at = recorded_at
+                session.add(
+                    PaymentEntry(
+                        environment=self._settings.app_env,
+                        chat_id=self._require_chat_id(),
+                        thread_id=self._settings.telegram_target_thread_id,
+                        service_date=service_date,
+                        telegram_user_id=telegram_user_id,
+                        amount_gel=received_delta,
+                        method=method,
+                        kind="received",
+                        recorded_at=recorded_at,
+                    )
                 )
-            )
-            await session.commit()
+                await session.commit()
 
         await self._announce_claim(day, telegram_user_id)
         await self._refresh_board(day)
+        if method_corrected:
+            label = "cash" if method == CASH_METHOD else "transfer"
+            return ClaimOutcome(f"Payment method changed to {label}.")
         # Name the lifts: the amount only makes sense once you can see that lifts
         # still short of the minimum are not charged for.
         how = " in cash" if method == CASH_METHOD else ""
@@ -583,6 +612,7 @@ class PaymentsService:
             # leaving them out quoted an amount the next tap would not accept.
             due_all_gel=(len(running) + len(pending) + guests_all) * day.price_gel,
             paid_gel=day.paid_amount_by_user.get(telegram_user_id, 0),
+            payment_method=day.payment_method_by_user.get(telegram_user_id),
         )
 
     async def guest_lift_times(
@@ -1435,6 +1465,7 @@ class PaymentsService:
                         PaymentClaim.telegram_user_id,
                         PaymentClaim.seats,
                         PaymentClaim.amount_gel,
+                        PaymentClaim.method,
                     )
                     .where(PaymentClaim.environment == self._settings.app_env)
                     .where(PaymentClaim.chat_id == chat_id)
@@ -1459,10 +1490,12 @@ class PaymentsService:
         paid_by_date: dict[date, set[int]] = {}
         paid_seats_by_date: dict[date, dict[int, int]] = {}
         paid_amount_by_date: dict[date, dict[int, int]] = {}
-        for claim_date, claim_user_id, claim_seats, claim_amount in claim_keys:
+        payment_method_by_date: dict[date, dict[int, str | None]] = {}
+        for claim_date, claim_user_id, claim_seats, claim_amount, claim_method in claim_keys:
             paid_by_date.setdefault(claim_date, set()).add(claim_user_id)
             paid_seats_by_date.setdefault(claim_date, {})[claim_user_id] = claim_seats
             paid_amount_by_date.setdefault(claim_date, {})[claim_user_id] = claim_amount
+            payment_method_by_date.setdefault(claim_date, {})[claim_user_id] = claim_method
         frozen_by_date: dict[date, DeadlineSnapshot] = {}
         terms_by_date = {row.service_date: row for row in terms_rows}
         for roster_row in roster_rows:
@@ -1500,6 +1533,7 @@ class PaymentsService:
                 ),
                 paid_seats_by_user=dict(paid_seats_by_date.get(service_date, {})),
                 paid_amount_by_user=dict(paid_amount_by_date.get(service_date, {})),
+                payment_method_by_user=dict(payment_method_by_date.get(service_date, {})),
             )
             running: list[str] = []
             for snapshot in (s for s in snapshots if s.batch_id == batch.id):
