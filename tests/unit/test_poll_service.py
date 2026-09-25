@@ -96,6 +96,23 @@ class FakeTelegramClient:
             self.existing_message_ids.add(message_id)
         return SentTextMessage(message_id=message_id)
 
+    async def send_availability_card(
+        self,
+        *,
+        chat_id: int,
+        message_thread_id: int | None,
+        image: bytes,
+        caption: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> SentTextMessage:
+        assert image.startswith(b"\x89PNG")
+        return await self.send_text(
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
+            text=caption,
+            reply_markup=reply_markup,
+        )
+
     async def send_poll(
         self,
         *,
@@ -138,6 +155,23 @@ class FakeTelegramClient:
         self.edited_texts.append((message_id, text))
         self.edited_markups.append(reply_markup)
         return True
+
+    async def edit_availability_card(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        image: bytes,
+        caption: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> bool:
+        assert image.startswith(b"\x89PNG")
+        return await self.edit_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=caption,
+            reply_markup=reply_markup,
+        )
 
     async def pin_message(self, *, chat_id: int, message_id: int) -> bool:
         assert chat_id == -100123
@@ -864,7 +898,8 @@ async def test_the_deadline_reminder_stays_fresh_and_never_claims_booking_is_shu
 
     await service.evaluate_lift_signals(now=deadline + timedelta(minutes=5))
     edits = [text for message_id, text in client.edited_texts if message_id == reminder_id]
-    assert "deadline has passed. Late changes are up to Misho." in edits[-1]
+    assert "deadline has passed." in edits[-1]
+    assert "Late changes are up to Misho" not in edits[-1]
     assert "closed" not in edits[-1]
 
 
@@ -926,6 +961,7 @@ async def test_new_polls_reopen_the_monitor_at_the_bottom_of_the_admin_chat(
 async def test_a_posted_notice_keeps_its_snapshotted_money_rules(db: SharedDatabase) -> None:
     """A redeploy must not rewrite the price riders already agreed for this day."""
     service_settings = settings()
+    service_settings.payment_price_gel = 15
     client = FakeTelegramClient()
     service = PollPostingService(
         settings=service_settings,
@@ -946,7 +982,7 @@ async def test_a_posted_notice_keeps_its_snapshotted_money_rules(db: SharedDatab
     edits = [
         text for message_id, text in client.edited_texts if message_id == result.notice_message_id
     ]
-    assert "15 GEL per seat." in edits[-1]
+    assert "15 GEL per seat" in edits[-1]
     # Once per day per process: a second pass would spend an API call to change
     # nothing, and Telegram edits are silent anyway.
     assert await service.refresh_poll_notices() == 0
@@ -954,6 +990,7 @@ async def test_a_posted_notice_keeps_its_snapshotted_money_rules(db: SharedDatab
 
 async def test_runtime_defaults_apply_only_to_newly_published_days(db: SharedDatabase) -> None:
     service_settings = settings()
+    service_settings.payment_price_gel = 15
     defaults = ServiceDayDefaultsStore(settings=service_settings, session_factory=db.session)
     await defaults.adjust_price(1, admin_user_id=1)
     await defaults.adjust_deadline(-30, admin_user_id=1)
@@ -1180,8 +1217,8 @@ async def test_poll_service_can_send_notice_before_poll_and_pin_poll(
     assert result.notice_message_id == 42
     assert result.availability_message_id == 43
     assert result.message_id == 44
-    assert client.sent_texts[0].startswith("📍 All lifts: Vake Park.")
-    assert "Wait for the ✅ message, then pay" in client.sent_texts[0]
+    assert client.sent_texts[0].startswith("📍 All lifts: opposite Vake Park")
+    assert "Pay for each booked seat once its lift reaches 5" in client.sent_texts[0]
     assert "🚐 Availability · Sat, 16 May" in client.sent_texts[1]
     assert client.sent[0].question == "🚐 Saturday · May 16"
 

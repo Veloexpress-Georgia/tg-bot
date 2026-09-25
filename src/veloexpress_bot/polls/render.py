@@ -132,7 +132,10 @@ def render_poll(render_input: PollRenderInput) -> PollDraft:
 
 def render_poll_notice(first_lift_location: StartLocation, *, terms: PaymentTerms) -> str:
     if first_lift_location == StartLocation.VAKE:
-        route_notice = "📍 All lifts: Vake Park."
+        route_notice = (
+            "📍 All lifts: opposite Vake Park "
+            '(<a href="https://maps.app.goo.gl/nSNiv7GnNiQt5J64A">meeting point</a>).'
+        )
     else:
         route_notice = (
             "📍 The day's first running lift departs from Justice Hall. "
@@ -144,6 +147,8 @@ def render_poll_notice(first_lift_location: StartLocation, *, terms: PaymentTerm
 def render_availability_status(
     service_date: date,
     lifts: tuple[LiftAvailability, ...],
+    *,
+    deadline_passed: bool = False,
 ) -> str:
     day = SHORT_DAY_LABELS.get(service_date.weekday(), "Lift day")
     header = f"🚐 Availability · {day}, {service_date.day} {EN_SHORT_MONTHS[service_date.month]}"
@@ -151,17 +156,50 @@ def render_availability_status(
         return header
 
     lines = [header, ""]
-    for lift in lifts:
-        lines.append(_availability_line(lift))
-        off_poll = _off_poll_line(lift)
-        if off_poll:
-            lines.append(off_poll)
-        if lift.waitlist:
-            # Named right where the seats are counted, so "waitlist +2" stops being a
-            # riddle. The board is edited in place and a Telegram edit sends no
-            # notification, so this informs without pinging anyone.
-            lines.append(f"    ⏳ {' '.join(_waitlist_mention(r) for r in lift.waitlist)}")
+    if deadline_passed:
+        running, short, cancelled = partition_availability_lifts(lifts)
+        lines.append(f"✅ 5+ seats booked · {len(running)} lifts")
+        for lift in running:
+            lines.extend(_availability_lines(lift))
+        if short:
+            lines.extend(("", "Below minimum"))
+            for lift in short:
+                lines.extend(_availability_lines(lift))
+        if cancelled:
+            lines.extend(("", "Cancelled"))
+            for lift in cancelled:
+                lines.extend(_availability_lines(lift))
+    else:
+        for lift in lifts:
+            lines.extend(_availability_lines(lift))
     return "\n".join(lines)
+
+
+def partition_availability_lifts(
+    lifts: tuple[LiftAvailability, ...],
+) -> tuple[
+    tuple[LiftAvailability, ...], tuple[LiftAvailability, ...], tuple[LiftAvailability, ...]
+]:
+    """Keep chronological order within the three post-deadline groups."""
+    running = tuple(
+        lift for lift in lifts if not lift.cancelled and lift.seat_count >= MINIMUM_RIDERS
+    )
+    short = tuple(lift for lift in lifts if not lift.cancelled and lift.seat_count < MINIMUM_RIDERS)
+    cancelled = tuple(lift for lift in lifts if lift.cancelled)
+    return running, short, cancelled
+
+
+def _availability_lines(lift: LiftAvailability) -> list[str]:
+    lines = [_availability_line(lift)]
+    off_poll = _off_poll_line(lift)
+    if off_poll:
+        lines.append(off_poll)
+    if lift.waitlist:
+        # Named right where the seats are counted, so "waitlist +2" stops being a
+        # riddle. The board is edited in place and a Telegram edit sends no
+        # notification, so this informs without pinging anyone.
+        lines.append(f"    ⏳ {' '.join(_waitlist_mention(r) for r in lift.waitlist)}")
+    return lines
 
 
 def _off_poll_line(lift: LiftAvailability) -> str:
@@ -175,7 +213,7 @@ def _off_poll_line(lift: LiftAvailability) -> str:
         return ""
     parts = [f"{_guest_mention(party)} +{party.count}" for party in lift.guests if party.count]
     if lift.manual_count:
-        parts.append(f"+{lift.manual_count} booked offline")
+        parts.append(f"+{lift.manual_count} external seats")
     return f"    🎟 {' · '.join(parts)}"
 
 

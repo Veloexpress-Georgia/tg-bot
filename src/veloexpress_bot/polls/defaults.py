@@ -43,13 +43,14 @@ class PaymentTerms:
 
     def rules(self) -> tuple[str, ...]:
         lines = (
-            f"💳 {self.price_gel} GEL per seat.",
-            f"A lift runs from {MINIMUM_RIDERS} riders. Wait for the ✅ message, then pay — "
-            "nothing to pay before that.",
-            f"Book, change or cancel free until {self.deadline_time} the day before.",
-            # Cash was the first thing riders asked about, and the bot said nothing
-            # about it. It does not care how the money arrived, only that it did.
-            "💵 Cash is fine — settle with Misho and tap 💵 Cash on the payments board.",
+            f"💳 {self.price_gel} GEL per seat · 10 seats per lift.",
+            f"A lift runs from {MINIMUM_RIDERS} booked seats. Pay for each booked seat "
+            f"once its lift reaches {MINIMUM_RIDERS}.",
+            f"Pay by {self.deadline_time} the evening before; if you book later, pay immediately.",
+            "Be at the meeting point 10 minutes before departure. Message the chat if late.",
+            "If leaving, remove your vote and post the day and time in the chat early.",
+            "A paid seat is not refunded if you miss your lift; find a replacement if possible.",
+            "💵 Can't transfer? Message Misho and tap 💵 Cash after paying him.",
         )
         return (*lines, self._link_line("Where to pay")) if self.link else lines
 

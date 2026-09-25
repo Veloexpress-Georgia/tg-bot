@@ -222,11 +222,9 @@ def render_deadline_reminder(
     day = SHORT_DAY_LABELS.get(service_date.weekday(), "Lift day")
     month = EN_SHORT_MONTHS[service_date.month]
     if deadline_passed:
-        # Not "closed": the poll is still open and the bot enforces nothing. What
-        # changed is that late changes are now Misho's call, not an entitlement.
+        # The poll remains open, so simply mark that the payment deadline passed.
         headline = (
-            f"🚐 {day}, {service_date.day} {month} — "
-            f"{terms.deadline_time} deadline has passed. Late changes are up to Misho."
+            f"🚐 {day}, {service_date.day} {month} — {terms.deadline_time} deadline has passed."
         )
     else:
         headline = (

@@ -77,6 +77,7 @@ from veloexpress_bot.payments.coverage import CoverageTarget, reconcile_coverage
 # rather than moved into `deeplinks`, which is about t.me/c group links.
 from veloexpress_bot.payments.myday import deep_link
 from veloexpress_bot.polls.autoschedule import render_schedule_summary, state_from_row
+from veloexpress_bot.polls.card import availability_caption, render_availability_card
 from veloexpress_bot.polls.defaults import (
     DEFAULT_CANCELLED_LIFT_TIMES,
     DEFAULT_LIFTS,
@@ -100,7 +101,6 @@ from veloexpress_bot.polls.liftsignals import (
     render_lift_signal_notice,
 )
 from veloexpress_bot.polls.render import (
-    AVAILABILITY_PARSE_MODE,
     GuestParty,
     LiftAvailability,
     PollDraft,
@@ -146,6 +146,26 @@ class SentTextMessage:
 
 
 class TelegramPollClient(Protocol):
+    async def send_availability_card(
+        self,
+        *,
+        chat_id: int,
+        message_thread_id: int | None,
+        image: bytes,
+        caption: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> SentTextMessage: ...
+
+    async def edit_availability_card(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        image: bytes,
+        caption: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> bool: ...
+
     async def send_text(
         self,
         *,
@@ -1988,10 +2008,7 @@ class PollPostingService:
             )
         )
         manual_counts = await self._manual_booking_counts_for_date(setup.service_date)
-        initial_availability = render_availability_status(
-            setup.service_date,
-            _initial_lift_availability(setup.cancelled_lift_times, manual_counts),
-        )
+        initial_lifts = _initial_lift_availability(setup.cancelled_lift_times, manual_counts)
         base_idempotency_key = setup.idempotency_key(self._settings)
         idempotency_key = (
             f"{base_idempotency_key}:manual:{uuid4()}" if allow_duplicate else base_idempotency_key
@@ -2051,17 +2068,16 @@ class PollPostingService:
                 .where(ServiceDayTerms.service_date == setup.service_date)
             )
             if terms is None:
-                session.add(
-                    ServiceDayTerms(
-                        environment=self._settings.app_env,
-                        chat_id=self._settings.telegram_target_chat_id,
-                        thread_id=self._settings.telegram_target_thread_id,
-                        service_date=setup.service_date,
-                        price_gel=defaults.price_gel,
-                        deadline_time=defaults.deadline_time,
-                        timezone=defaults.timezone,
-                    )
+                terms = ServiceDayTerms(
+                    environment=self._settings.app_env,
+                    chat_id=self._settings.telegram_target_chat_id,
+                    thread_id=self._settings.telegram_target_thread_id,
+                    service_date=setup.service_date,
+                    price_gel=defaults.price_gel,
+                    deadline_time=defaults.deadline_time,
+                    timezone=defaults.timezone,
                 )
+                session.add(terms)
             # A fresh poll for this date starts with a clean slate: drop lift
             # cancellations and the record of which notices already went out, or a
             # re-posted day would never announce itself again.
@@ -2096,6 +2112,19 @@ class PollPostingService:
             notice_message: SentTextMessage | None = None
             availability_message: SentTextMessage | None = None
             try:
+                deadline_passed = datetime.now(UTC).astimezone(self._zone) > booking_deadline_at(
+                    setup.service_date, terms.deadline_time, zone=self._zone
+                )
+                initial_availability = availability_caption(
+                    render_availability_status(
+                        setup.service_date, initial_lifts, deadline_passed=deadline_passed
+                    )
+                )
+                initial_card = render_availability_card(
+                    setup.service_date,
+                    initial_lifts,
+                    deadline_passed=deadline_passed,
+                )
                 if include_notice:
                     notice_message = await self._telegram_client.send_text(
                         chat_id=self._settings.telegram_target_chat_id,
@@ -2106,11 +2135,11 @@ class PollPostingService:
                         ),
                         parse_mode=PAYMENT_TERMS_PARSE_MODE,
                     )
-                availability_message = await self._telegram_client.send_text(
+                availability_message = await self._telegram_client.send_availability_card(
                     chat_id=self._settings.telegram_target_chat_id,
                     message_thread_id=self._settings.telegram_target_thread_id,
-                    text=initial_availability,
-                    parse_mode=AVAILABILITY_PARSE_MODE,
+                    image=initial_card,
+                    caption=initial_availability,
                 )
                 sent_message = await self._telegram_client.send_poll(
                     chat_id=self._settings.telegram_target_chat_id,
@@ -2508,7 +2537,29 @@ class PollPostingService:
                 for snapshot in snapshots
                 if snapshot.lift_time is not None
             )
-            text = render_availability_status(batch.service_date, availability)
+            terms = await session.scalar(
+                select(ServiceDayTerms)
+                .where(ServiceDayTerms.environment == self._settings.app_env)
+                .where(ServiceDayTerms.chat_id == batch.chat_id)
+                .where(ServiceDayTerms.thread_id == batch.thread_id)
+                .where(ServiceDayTerms.service_date == batch.service_date)
+            )
+            deadline_time = (
+                terms.deadline_time if terms is not None else self._settings.booking_deadline_time
+            )
+            deadline_passed = datetime.now(UTC).astimezone(self._zone) > booking_deadline_at(
+                batch.service_date, deadline_time, zone=self._zone
+            )
+            text = availability_caption(
+                render_availability_status(
+                    batch.service_date, availability, deadline_passed=deadline_passed
+                )
+            )
+            card = render_availability_card(
+                batch.service_date,
+                availability,
+                deadline_passed=deadline_passed,
+            )
             payment_board = await session.scalar(
                 select(PaymentsBoard)
                 .where(PaymentsBoard.environment == self._settings.app_env)
@@ -2535,12 +2586,12 @@ class PollPostingService:
             batch_id = batch.id
             availability_message_id = availability_message.telegram_message_id
 
-        updated = await self._telegram_client.edit_text(
+        updated = await self._telegram_client.edit_availability_card(
             chat_id=chat_id,
             message_id=availability_message_id,
-            text=text,
+            image=card,
+            caption=text,
             reply_markup=markup,
-            parse_mode=AVAILABILITY_PARSE_MODE,
         )
         if updated or not allow_recreate:
             return
@@ -2558,12 +2609,12 @@ class PollPostingService:
             return
 
         try:
-            replacement = await self._telegram_client.send_text(
+            replacement = await self._telegram_client.send_availability_card(
                 chat_id=chat_id,
                 message_thread_id=thread_id,
-                text=text,
+                image=card,
+                caption=text,
                 reply_markup=markup,
-                parse_mode=AVAILABILITY_PARSE_MODE,
             )
         except Exception:
             logger.exception(

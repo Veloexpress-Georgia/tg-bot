@@ -20,6 +20,10 @@ def test_settings_parses_admin_ids_from_csv() -> None:
     assert settings.telegram_admin_ids == (10, 20, 30)
 
 
+def test_new_days_default_to_twenty_gel_per_seat() -> None:
+    assert make_settings().payment_price_gel == 20
+
+
 def test_settings_treats_empty_optional_telegram_ids_as_none() -> None:
     settings = make_settings(
         telegram_bot_token="token",

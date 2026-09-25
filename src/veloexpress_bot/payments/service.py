@@ -323,7 +323,7 @@ class PaymentsService:
                         return ClaimOutcome(WAITLIST_WARNING_TEXT, needs_confirmation=True)
                     if pending and not include_pending:
                         # Charging for part of a booking without saying so is the silent
-                        # 15 GEL that reads as a bug. One warning at a time, worst first.
+                        # one-seat charge that reads as a bug. One warning at a time, worst first.
                         return ClaimOutcome(
                             _partial_booking_warning(
                                 confirmed=lift_times,

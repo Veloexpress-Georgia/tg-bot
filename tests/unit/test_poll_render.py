@@ -38,14 +38,16 @@ def test_render_poll_notice_explains_dynamic_first_lift_location() -> None:
 
 def test_render_poll_notice_states_the_money_rules_in_order() -> None:
     assert render_poll_notice(StartLocation.VAKE, terms=TERMS).splitlines() == [
-        "📍 All lifts: Vake Park.",
+        "📍 All lifts: opposite Vake Park "
+        '(<a href="https://maps.app.goo.gl/nSNiv7GnNiQt5J64A">meeting point</a>).',
         "",
-        "💳 15 GEL per seat.",
-        # The old notice said "prepay after voting", which is now simply wrong.
-        "A lift runs from 5 riders. Wait for the ✅ message, then pay — "
-        "nothing to pay before that.",
-        "Book, change or cancel free until 20:00 the day before.",
-        "💵 Cash is fine — settle with Misho and tap 💵 Cash on the payments board.",
+        "💳 15 GEL per seat · 10 seats per lift.",
+        "A lift runs from 5 booked seats. Pay for each booked seat once its lift reaches 5.",
+        "Pay by 20:00 the evening before; if you book later, pay immediately.",
+        "Be at the meeting point 10 minutes before departure. Message the chat if late.",
+        "If leaving, remove your vote and post the day and time in the chat early.",
+        "A paid seat is not refunded if you miss your lift; find a replacement if possible.",
+        "💵 Can't transfer? Message Misho and tap 💵 Cash after paying him.",
         '🔗 <a href="https://pay.example">Where to pay</a>',
     ]
 
@@ -57,7 +59,7 @@ def test_the_poll_notice_omits_the_link_when_none_is_configured() -> None:
     )
 
     assert "🔗" not in notice
-    assert "15 GEL per seat." in notice
+    assert "15 GEL per seat" in notice
 
 
 def test_availability_names_the_waitlist_where_the_seats_are_counted() -> None:
@@ -106,6 +108,23 @@ def test_render_availability_status_shows_counts_and_state_tags() -> None:
     assert "15:30 — <b>12/10</b> · waitlist +2" in status
     assert "🟢" not in status and "🔴" not in status
     assert "<pre>" not in status
+
+
+def test_after_deadline_availability_groups_viable_lifts_before_short_lifts() -> None:
+    status = render_availability_status(
+        date(2026, 9, 26),
+        (
+            LiftAvailability(time="8:30", seat_count=1),
+            LiftAvailability(time="10:00", seat_count=5),
+            LiftAvailability(time="11:45", seat_count=3),
+            LiftAvailability(time="13:30", seat_count=7),
+            LiftAvailability(time="15:30", seat_count=0, cancelled=True),
+        ),
+        deadline_passed=True,
+    )
+    assert status.index("10:00") < status.index("13:30") < status.index("Below minimum")
+    assert status.index("Below minimum") < status.index("8:30") < status.index("11:45")
+    assert status.index("11:45") < status.index("Cancelled") < status.index("15:30")
 
 
 def test_render_poll_can_cancel_lifts() -> None:
@@ -165,7 +184,7 @@ def test_availability_names_who_holds_the_seats_the_poll_cannot_show() -> None:
     assert lines[2] == "8:30 — <b>0/10</b> · needs 5 more"
     assert lines[3] == "10:00 — <b>9/10</b> · 1 left"
     assert lines[4] == '    🎟 <a href="tg://user?id=21">@vitaly</a> +1'
-    assert lines[6] == ('    🎟 <a href="tg://user?id=21">@vitaly</a> +1 · +2 booked offline')
+    assert lines[6] == ('    🎟 <a href="tg://user?id=21">@vitaly</a> +1 · +2 external seats')
     # A cancelled lift carries nobody, so its guests are not worth a line.
     assert lines[7] == "13:30 — ❌ cancelled"
     assert len(lines) == 8

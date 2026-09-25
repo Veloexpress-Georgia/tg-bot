@@ -2,7 +2,7 @@ import logging
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, InputMediaPhoto
 
 from veloexpress_bot.polls.render import PollDraft
 from veloexpress_bot.polls.service import SentPollMessage, SentTextMessage
@@ -51,6 +51,69 @@ class AiogramTelegramClient:
                 telegram_message=error.message,
             ) from error
         return SentTextMessage(message_id=message.message_id)
+
+    async def send_availability_card(
+        self,
+        *,
+        chat_id: int,
+        message_thread_id: int | None,
+        image: bytes,
+        caption: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> SentTextMessage:
+        try:
+            message = await self._bot.send_photo(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                photo=BufferedInputFile(image, filename="availability.png"),
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
+        except TelegramForbiddenError as error:
+            raise TelegramTargetForbiddenError(
+                "Telegram target chat rejected card posting.", telegram_message=error.message
+            ) from error
+        except TelegramAPIError as error:
+            raise TelegramPollPostError(
+                "Telegram failed to create availability card.", telegram_message=error.message
+            ) from error
+        return SentTextMessage(message_id=message.message_id)
+
+    async def edit_availability_card(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        image: bytes,
+        caption: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> bool:
+        try:
+            await self._bot.edit_message_media(
+                chat_id=chat_id,
+                message_id=message_id,
+                media=InputMediaPhoto(
+                    media=BufferedInputFile(image, filename="availability.png"),
+                    caption=caption,
+                    parse_mode="HTML",
+                ),
+                reply_markup=reply_markup,
+            )
+        except TelegramBadRequest as error:
+            error_text = error.message.lower()
+            if "message is not modified" in error_text:
+                return True
+            if "message to edit not found" in error_text or "message not found" in error_text:
+                return False
+            raise TelegramPollPostError(
+                "Telegram failed to edit availability card.", telegram_message=error.message
+            ) from error
+        except TelegramAPIError as error:
+            raise TelegramPollPostError(
+                "Telegram failed to edit availability card.", telegram_message=error.message
+            ) from error
+        return True
 
     async def send_poll(
         self,

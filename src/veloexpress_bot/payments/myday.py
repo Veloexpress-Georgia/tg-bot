@@ -148,7 +148,7 @@ def _money_lines(day: RiderDayView) -> list[str]:
         lines.extend(("", "⏳ You hold no seat yet — nothing to pay until one frees up."))
         return lines
     if day.pending_lift_times:
-        # Naming them is the point: "15 GEL" alone looks wrong to somebody who booked
+        # Naming them is the point: one seat's price alone looks wrong to somebody who booked
         # three lifts, and cash cannot easily be topped up later.
         pending = ", ".join(day.pending_lift_times)
         lines.extend(

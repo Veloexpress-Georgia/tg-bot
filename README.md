@@ -60,7 +60,7 @@ TELEGRAM_TARGET_CHAT_ID=-1001234567890
 TELEGRAM_TARGET_THREAD_ID=
 TELEGRAM_PAYMENTS_THREAD_ID=
 TELEGRAM_PIN_POLL=true
-PAYMENT_PRICE_GEL=15
+PAYMENT_PRICE_GEL=20
 BOOKING_DEADLINE_TIME=20:00
 PAYMENTS_VIA_PRIVATE_CHAT=false
 ```
@@ -69,7 +69,7 @@ PAYMENTS_VIA_PRIVATE_CHAT=false
 
 `TELEGRAM_PAYMENTS_THREAD_ID` is the payments topic. Leave it empty to switch the payments board off entirely.
 
-`SCHEDULE_TIMEZONE` defaults to `Asia/Tbilisi`. `PAYMENT_PRICE_GEL=15` and `BOOKING_DEADLINE_TIME=20:00` are bootstrap defaults; admins can change the price and deadline at runtime from `⚙️ Settings`. Runtime changes apply only to days published afterwards.
+`SCHEDULE_TIMEZONE` defaults to `Asia/Tbilisi`. `PAYMENT_PRICE_GEL=20` and `BOOKING_DEADLINE_TIME=20:00` are bootstrap defaults; admins can change the price and deadline at runtime from `⚙️ Settings`. Runtime changes apply only to days published afterwards.
 
 For a forum topic, set `TELEGRAM_TARGET_THREAD_ID` to the topic message thread id. Leave it empty for a normal group.
 
@@ -123,11 +123,15 @@ A lift opens payment once it reaches the rider minimum — five, the point where
 
 One `PaymentTerms` object carries the money rules — price, deadline, link — so the notices and payments board state them consistently. The poll notice says payment opens at five riders. Instead of a separate tagged ✅ message or payment card in the lift topic, payment controls live under the existing booking statistics (`Availability`). `I paid` occupies a full keyboard row, with `Cash` and `Undo` underneath. The worker updates existing messages after deployment and removes controls after the service day. Previously posted standalone payment cards in the lift topic are unpinned and deleted automatically; failed cleanup is retried. Full transfer details, a small `Guests` text link, and detailed payment history remain in the payments topic and private rider card.
 
+The September 2026 group rules set 20 GEL per seat for newly published days. The poll notice links the Vake Park meeting point, asks riders to arrive ten minutes early, gives the 20:00 payment deadline and immediate payment rule for late bookings, and tells riders to announce withdrawals and delays in the lift chat. It states that a paid seat is not refunded when a rider misses the lift. The existing bank accounts already match the published details. A previously saved admin price overrides the bootstrap default; if it still reads 15 GEL in `⚙️ Settings`, an admin must set it to 20 before publishing the next day. No-show warnings, bans and chat moderation stay with human admins; a bot cannot infer from a missed poll vote whether somebody warned the group.
+
+The public `Availability` message is a generated image card. Its occupancy bar is split by source, from left to right: external bookings, guest seats, then Telegram votes, with a mark at the five-seat minimum. External and guest seats are reserved before poll votes; votes on the waitlist do not color seats inside the van. Guest hosts and waitlisted riders appear directly below the relevant lift. After the snapshotted 20:00 deadline, lifts with at least five seats appear first and those below the minimum move to a separate compact section. The text caption follows the same grouping for accessibility and keeps rider mentions clickable. Payment buttons remain beneath the card. Vote and booking changes edit the card in place; older text availability messages become image cards on their next refresh. The image is generated with Pillow and DejaVu Sans in the container. Samples are in [before deadline](docs/design/availability-card-preview.png) and [after deadline](docs/design/availability-card-after-deadline.png).
+
 Opening polls on Thursday does not start a daily reminder cycle. A Saturday service day's payment deadline is Friday evening; Sunday's is Saturday evening. The payments board includes the deadline date as well as its time so a Thursday reader need not guess. Each day gets at most one pre-deadline reminder, linking back to its booking statistics in the lift topic.
 
 Price, deadline and timezone are snapshotted when a service day is first published. A later deploy or default-price change cannot rewrite an amount riders already agreed to; new defaults apply to newly published days.
 
-`BOOKING_DEADLINE_TIME` is when booking and paying closes, on the evening *before* a lift day. Two hours before it, each service day gets one reminder in the lift topic naming the deadline and what every lift still needs. It is sent once and then kept fresh in place: riders book after it lands, and a stale count is worse than none in the message people act on. It stays live past the deadline too, because nothing actually closes — the Telegram poll stays open and the bot enforces nothing — so only the call to action changes, to say the deadline passed and late changes are Misho's call. Editing costs nothing when the text has not moved. It is sent while an active lift needs more riders or has reached the rider minimum but still needs paid seats to fund it. The message distinguishes missing riders from missing paid seats and updates silently when either changes. Fully funded days and days with everything cancelled need no reminder. The reminder tags nobody: whoever is booked is already booked, and tagging the whole group is the spam this bot exists to avoid.
+`BOOKING_DEADLINE_TIME` is the payment deadline on the evening *before* a lift day. Two hours before it, each service day gets one reminder in the lift topic naming the deadline and what every lift still needs. It is sent once and then kept fresh in place: riders book after it lands, and a stale count is worse than none in the message people act on. It stays live past the deadline too, because the Telegram poll remains open; the headline simply says that the deadline passed. Editing costs nothing when the text has not moved. It is sent while an active lift needs more riders or has reached the rider minimum but still needs paid seats to fund it. The message distinguishes missing riders from missing paid seats and updates silently when either changes. Fully funded days and days with everything cancelled need no reminder. The reminder tags nobody: whoever is booked is already booked, and tagging the whole group is the spam this bot exists to avoid.
 
 The board is pinned in the payments topic, because it is the payments menu and belongs at the top rather than wherever the day's chatter pushed it. On the next local day, the worker removes its buttons and unpins it, keeping the message as history. Older tracked boards are cleaned up automatically after a restart too; failed cleanup is retried, and late bookkeeping never restores the old controls. Once a lift reaches the rider minimum, the bot posts one payments board into `TELEGRAM_PAYMENTS_THREAD_ID` and keeps editing it: which lifts have payment open, the snapshotted price, reported payments, and the riders still outstanding. Nothing appears before a lift reaches the minimum.
 
@@ -147,9 +151,9 @@ A message in the payments topic counts as a payment report on its own: the group
 
 The board tags whoever still owes rather than printing a count. Editing a message sends no Telegram notification, so the names show the gap without nagging anybody.
 
-Tapping 💸 or 💵 while only part of a booking has filled warns first and charges on the second tap, naming what filled and what did not. Charging 15 GEL to somebody who booked three lifts reads as a bug rather than a rule, and cash makes it worse — money handed over twice means finding Misho twice. The warning fits Telegram's 200-character callback answer, so it stays terse. One warning shows at a time, waitlist first.
+Tapping 💸 or 💵 while only part of a booking has filled warns first and charges on the second tap, naming what filled and what did not. Charging for one seat to somebody who booked three lifts reads as a bug rather than a rule, and cash makes it worse — money handed over twice means finding Misho twice. The warning fits Telegram's 200-character callback answer, so it stays terse. One warning shows at a time, waitlist first.
 
-The private form can settle the whole day instead, unfilled lifts included. Nobody is pushed there — the rule stays that you need not pay before five riders — but one transfer beats two. Paying ahead then reads as `15 prepaid` on the board rather than `15 back`: the arithmetic is the same as an overpayment and the meaning is the opposite, so the two are told apart by whether the rider still holds an unfilled booking.
+The private form can settle the whole day instead, unfilled lifts included. Nobody is pushed there — the rule stays that you need not pay before five riders — but one transfer beats two. Paying ahead then reads as prepaid on the board rather than money back: the arithmetic is the same as an overpayment and the meaning is the opposite, so the two are told apart by whether the rider still holds an unfilled booking.
 
 Behind every pay link is the rider's own card: their whole upcoming weekend, with days as tabs the same way the admin monitor works. It holds what a shared board cannot — where they stand in a waitlist queue, what they personally owe against what they have paid, and one row per lift for guests. Bringing someone for the whole day is one tap; the per-lift rows are for a guest who only rides some laps, and vanish when the host holds a single lift. A full lift offers no plus button. Guest seats are per lift because a seat is capacity, and capacity belongs to a lift.
 
@@ -282,7 +286,7 @@ TELEGRAM_TARGET_THREAD_ID=
 TELEGRAM_PAYMENTS_THREAD_ID=
 TELEGRAM_PIN_POLL=true
 SCHEDULE_TIMEZONE=Asia/Tbilisi
-PAYMENT_PRICE_GEL=15
+PAYMENT_PRICE_GEL=20
 BOOKING_DEADLINE_TIME=20:00
 PAYMENTS_VIA_PRIVATE_CHAT=false
 ```

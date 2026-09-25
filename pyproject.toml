@@ -9,6 +9,7 @@ dependencies = [
     "aiogram>=3.28,<4",
     "alembic>=1.17,<2",
     "asyncpg>=0.31,<1",
+    "pillow>=11,<13",
     "pydantic-settings>=2.12,<3",
     "sqlalchemy[asyncio]>=2.0,<3",
 ]

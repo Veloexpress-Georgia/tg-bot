@@ -95,6 +95,23 @@ class FakeTelegramClient:
         )
         return SentTextMessage(message_id=self.next_message_id)
 
+    async def send_availability_card(
+        self,
+        *,
+        chat_id: int,
+        message_thread_id: int | None,
+        image: bytes,
+        caption: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> SentTextMessage:
+        assert image.startswith(b"\x89PNG")
+        return await self.send_text(
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
+            text=caption,
+            reply_markup=reply_markup,
+        )
+
     async def send_poll(
         self,
         *,
@@ -120,6 +137,23 @@ class FakeTelegramClient:
         self.edits.append((message_id, text))
         self.markups[message_id] = reply_markup
         return True
+
+    async def edit_availability_card(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        image: bytes,
+        caption: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> bool:
+        assert image.startswith(b"\x89PNG")
+        return await self.edit_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=caption,
+            reply_markup=reply_markup,
+        )
 
     async def pin_message(self, *, chat_id: int, message_id: int) -> bool:
         return True
@@ -2321,7 +2355,7 @@ async def test_thursday_opening_updates_booking_status_without_new_lift_cards(
 
 
 async def test_weekend_cards_and_reminders_have_separate_deadlines(db: SharedDatabase) -> None:
-    saturday = date(2026, 9, 12)
+    saturday = _saturday() + timedelta(days=7)
     polls, payments, client, saturday_id, _ = await _setup(db, service_date=saturday)
     sunday_poll = await polls.create_poll(
         PollSetup(
@@ -2333,22 +2367,25 @@ async def test_weekend_cards_and_reminders_have_separate_deadlines(db: SharedDat
     )
     await _fill(polls, saturday_id, 0)
     await _fill(polls, sunday_poll.poll_id or "", 0)
-    thursday = datetime(2026, 9, 10, 15, tzinfo=UTC)
+    thursday = datetime.combine(saturday - timedelta(days=2), datetime.min.time(), tzinfo=UTC)
+    thursday = thursday.replace(hour=15)
     await payments.sync_boards(now=thursday)
     await polls.evaluate_lift_signals(now=thursday)
     cards = [r for r in client.sent if r.thread_id == LIFT_THREAD and "Availability" in r.text]
     assert len(cards) == 2
     assert not any(r.thread_id == LIFT_THREAD and "Payment open:" in r.text for r in client.sent)
     assert not any("⏳ Tomorrow" in r.text for r in client.sent)
-    await polls.evaluate_lift_signals(now=datetime(2026, 9, 11, 14, tzinfo=UTC))
+    friday = datetime.combine(saturday - timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+    await polls.evaluate_lift_signals(now=friday.replace(hour=14))
     reminders = [r for r in client.sent if "⏳ Tomorrow" in r.text]
     assert len(reminders) == 1
-    assert "Sat, 12 Sep" in reminders[0].text
+    assert f"Sat, {saturday.day} {saturday:%b}" in reminders[0].text
     assert f"https://t.me/c/123/{LIFT_THREAD}/{cards[0].message_id}" in reminders[0].text
-    await polls.evaluate_lift_signals(now=datetime(2026, 9, 12, 14, tzinfo=UTC))
+    await polls.evaluate_lift_signals(now=friday.replace(hour=14) + timedelta(days=1))
     reminders = [r for r in client.sent if "⏳ Tomorrow" in r.text]
     assert len(reminders) == 2
-    assert "Sun, 13 Sep" in reminders[1].text
+    sunday = saturday + timedelta(days=1)
+    assert f"Sun, {sunday.day} {sunday:%b}" in reminders[1].text
 
 
 async def test_funded_lift_reminder_updates_without_another_message(db: SharedDatabase) -> None:

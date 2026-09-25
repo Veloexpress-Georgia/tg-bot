@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     schedule_timezone: str = "Asia/Tbilisi"
     # Misho raises this from time to time; a redeploy should not be the way to
     # change a price.
-    payment_price_gel: int = 15
+    payment_price_gel: int = 20
     # Riders must be booked and paid by this time the evening before a lift day.
     booking_deadline_time: str = "20:00"
     # Route the board's 💸/💵 buttons through the bot's private chat instead of

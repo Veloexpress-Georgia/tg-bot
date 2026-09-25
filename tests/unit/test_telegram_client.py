@@ -2,8 +2,9 @@ from typing import cast
 
 import pytest
 from aiogram import Bot
-from aiogram.exceptions import TelegramForbiddenError
-from aiogram.methods import SendPoll
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.methods import EditMessageMedia, SendPoll
+from aiogram.types import BufferedInputFile, InputMediaPhoto
 
 from veloexpress_bot.polls.render import PollDraft
 from veloexpress_bot.telegram.client import AiogramTelegramClient
@@ -32,6 +33,29 @@ class EditingBot:
 
     async def edit_message_text(self, **kwargs: object) -> object:
         self.kwargs = kwargs
+        return object()
+
+
+class CardBot:
+    def __init__(self, error: str | None = None) -> None:
+        self.kwargs: dict[str, object] = {}
+        self.error = error
+
+    async def send_photo(self, **kwargs: object) -> object:
+        self.kwargs = kwargs
+        return type("Message", (), {"message_id": 71})()
+
+    async def edit_message_media(self, **kwargs: object) -> object:
+        self.kwargs = kwargs
+        if self.error:
+            raise TelegramBadRequest(
+                method=EditMessageMedia(
+                    chat_id=-100123,
+                    message_id=71,
+                    media=cast(InputMediaPhoto, kwargs["media"]),
+                ),
+                message=self.error,
+            )
         return object()
 
 
@@ -80,6 +104,47 @@ async def test_edit_text_updates_existing_telegram_message() -> None:
         "reply_markup": None,
         "parse_mode": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_card_is_sent_with_caption_and_can_replace_a_text_message() -> None:
+    bot = CardBot()
+    client = AiogramTelegramClient(cast(Bot, bot))
+
+    sent = await client.send_availability_card(
+        chat_id=-100123, message_thread_id=7, image=b"png", caption="Availability"
+    )
+    assert sent.message_id == 71
+    assert isinstance(bot.kwargs["photo"], BufferedInputFile)
+    assert bot.kwargs["caption"] == "Availability"
+    assert bot.kwargs["parse_mode"] == "HTML"
+
+    assert await client.edit_availability_card(
+        chat_id=-100123, message_id=71, image=b"new png", caption="Updated"
+    )
+    media = cast(InputMediaPhoto, bot.kwargs["media"])
+    assert isinstance(media.media, BufferedInputFile)
+    assert media.caption == "Updated"
+
+
+@pytest.mark.parametrize(
+    "error_text, expected",
+    [
+        ("Bad Request: message is not modified", True),
+        ("Bad Request: message to edit not found", False),
+    ],
+)
+async def test_card_edit_distinguishes_noop_from_deleted_message(
+    error_text: str, expected: bool
+) -> None:
+    bot = CardBot(error_text)
+    client = AiogramTelegramClient(cast(Bot, bot))
+    assert (
+        await client.edit_availability_card(
+            chat_id=-100123, message_id=71, image=b"png", caption="Availability"
+        )
+        is expected
+    )
 
 
 @pytest.mark.asyncio

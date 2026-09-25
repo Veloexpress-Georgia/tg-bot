@@ -45,6 +45,22 @@ class RecordingTelegramClient:
         self.next_message_id += 1
         return SentTextMessage(message_id=self.next_message_id)
 
+    async def send_availability_card(
+        self,
+        *,
+        chat_id: int,
+        message_thread_id: int | None,
+        image: bytes,
+        caption: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> SentTextMessage:
+        return await self.send_text(
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
+            text=caption,
+            reply_markup=reply_markup,
+        )
+
     async def send_poll(
         self,
         *,
@@ -67,6 +83,17 @@ class RecordingTelegramClient:
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
         parse_mode: str | None = None,
+    ) -> bool:
+        return True
+
+    async def edit_availability_card(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        image: bytes,
+        caption: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
     ) -> bool:
         return True
 
