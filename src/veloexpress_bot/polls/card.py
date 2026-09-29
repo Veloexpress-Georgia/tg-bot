@@ -31,10 +31,15 @@ GREEN = "#61D6A3"
 QUIET_GOLD = "#C8B68D"
 BLUE = "#75BAF9"
 PURPLE = "#C5A6FF"
+# State colours stay apart from the seat-source colours: a blue FULL read as
+# "external seats", a purple WAITLIST as "guests".
+ORANGE = "#FFA46E"
 QUIET_RED = "#AF858C"
 QUIET_VOTE = "#7EAE98"
 QUIET_GUEST = "#A594BA"
 QUIET_OFFLINE = "#7D9FBE"
+SEAT_GAP = 6
+THRESHOLD_GAP = 20
 
 
 def _font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -82,9 +87,9 @@ def _state(lift: LiftAvailability, *, deadline_passed: bool) -> tuple[str, str, 
     if lift.cancelled:
         return "CANCELLED", QUIET_RED, PAST_DEADLINE_PANEL
     if lift.seat_count > lift.capacity:
-        return f"WAITLIST +{lift.seat_count - lift.capacity}", PURPLE, PANEL
+        return f"WAITLIST +{lift.seat_count - lift.capacity}", ORANGE, PANEL
     if lift.seat_count >= lift.capacity:
-        return "FULL", BLUE, PANEL
+        return "FULL", INK, PANEL
     if lift.seat_count < MINIMUM_RIDERS:
         if deadline_passed:
             return "BELOW MINIMUM", MUTED, PAST_DEADLINE_PANEL
@@ -106,7 +111,8 @@ def _notes(lift: LiftAvailability) -> list[str]:
 
 
 def _breakdown(lift: LiftAvailability) -> tuple[tuple[str, str], ...]:
-    if lift.cancelled or (not lift.off_poll_count and not lift.waitlist):
+    # With votes only, the count beside the time already says it all.
+    if lift.cancelled or not lift.off_poll_count:
         return ()
     segments = _seat_segments(lift)
     external_seats, guest_seats, seated_votes = (segments[0][0], segments[1][0], segments[2][0])
@@ -162,27 +168,32 @@ def _draw_bar(
     height: int,
     quiet: bool,
 ) -> None:
-    draw.rounded_rectangle((left, top, right, top + height), radius=height // 2, fill=TRACK)
-    if lift.cancelled or lift.capacity <= 0:
+    """One cell per seat, so a glance counts seats; a wider gap marks the minimum."""
+    if lift.capacity <= 0:
+        draw.rounded_rectangle((left, top, right, top + height), radius=height // 2, fill=TRACK)
         return
     muted = {GREEN: QUIET_VOTE, PURPLE: QUIET_GUEST, BLUE: QUIET_OFFLINE}
-    width = right - left
-    occupied = 0
-    for count, color in _seat_segments(lift):
-        if count <= 0:
-            continue
-        start = left + round(width * occupied / lift.capacity)
-        occupied += count
-        end = left + round(width * occupied / lift.capacity)
-        if end - start > 3:
-            draw.rounded_rectangle(
-                (start + 2, top, end - 2, top + height),
-                radius=height // 2,
-                fill=muted[color] if quiet else color,
-            )
-    threshold = left + round(width * MINIMUM_RIDERS / lift.capacity)
-    if left < threshold < right:
-        draw.line((threshold, top - 4, threshold, top + height + 4), fill=INK, width=3)
+    colors: list[str] = []
+    if not lift.cancelled:
+        for count, color in _seat_segments(lift):
+            colors += [muted[color] if quiet else color] * count
+    colors += [TRACK] * (lift.capacity - len(colors))
+    threshold = MINIMUM_RIDERS if 0 < MINIMUM_RIDERS < lift.capacity else 0
+    gaps = (lift.capacity - 1) * SEAT_GAP + (THRESHOLD_GAP - SEAT_GAP if threshold else 0)
+    cell = (right - left - gaps) / lift.capacity
+    x = float(left)
+    for index, color in enumerate(colors):
+        if index:
+            x += THRESHOLD_GAP if index == threshold else SEAT_GAP
+        if threshold and index == threshold and not lift.cancelled:
+            tick = round(x - THRESHOLD_GAP / 2)
+            draw.line((tick, top - 6, tick, top + height + 6), fill=INK, width=3)
+        draw.rounded_rectangle(
+            (round(x), top, round(x + cell), top + height),
+            radius=min(5, height // 2),
+            fill=color,
+        )
+        x += cell
 
 
 def _draw_full_row(
@@ -249,19 +260,18 @@ def _draw_short_row(draw: ImageDraw.ImageDraw, lift: LiftAvailability, *, y: int
         fill=MUTED,
     )
     _draw_bar(draw, lift, left=left + 26, right=right - 26, top=y + 75, height=13, quiet=True)
-    segments = _seat_segments(lift)
+    draw.text((left + 26, y + 99), _short_summary(lift), font=note_font, fill=MUTED)
+
+
+def _short_summary(lift: LiftAvailability) -> str:
+    names = (("external", "external"), ("guest", "guests"), ("TG vote", "TG votes"))
     source_labels = [
-        f"{count} {name}"
-        for (count, _), name in zip(segments, ("external", "guest", "TG vote"), strict=True)
+        f"{count} {one if count == 1 else many}"
+        for (count, _), (one, many) in zip(_seat_segments(lift), names, strict=True)
         if count
     ]
     sources = " · ".join(source_labels) if source_labels else "No bookings"
-    draw.text(
-        (left + 26, y + 99),
-        f"{sources}  ·  needs {MINIMUM_RIDERS - lift.seat_count} more",
-        font=note_font,
-        fill=MUTED,
-    )
+    return f"{sources}  ·  needs {MINIMUM_RIDERS - lift.seat_count} more"
 
 
 def _draw_cancelled_row(draw: ImageDraw.ImageDraw, lift: LiftAvailability, *, y: int) -> None:
@@ -328,12 +338,11 @@ def render_availability_card(
         f"{service_date.day} {EN_SHORT_MONTHS[service_date.month]}"
     )
     draw.text((42, 83), date_label, font=title, fill=INK)
-    draw.text(
-        (44, 171),
-        f"{MINIMUM_RIDERS} seats to run  ·  seats per lift",
-        font=subtitle,
-        fill=MUTED,
-    )
+    capacities = {lift.capacity for lift in lifts}
+    subtitle_text = f"Runs from {MINIMUM_RIDERS} seats"
+    if len(capacities) == 1:
+        subtitle_text += f"  ·  {capacities.pop()} per lift"
+    draw.text((44, 171), subtitle_text, font=subtitle, fill=MUTED)
     _draw_legend(draw, _font(30, bold=True), 219)
 
     y = 270

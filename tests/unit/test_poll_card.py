@@ -4,8 +4,11 @@ from io import BytesIO
 from PIL import Image
 
 from veloexpress_bot.polls.card import (
+    BLUE,
+    PURPLE,
     _breakdown,
     _seat_segments,
+    _short_summary,
     _state,
     availability_caption,
     render_availability_card,
@@ -77,6 +80,10 @@ def test_bar_colors_show_reserved_external_and_guest_seats_before_telegram_votes
         assert image.getpixel((280, 378)) == (197, 166, 255)
         assert image.getpixel((415, 378)) == (97, 214, 163)
         assert image.getpixel((700, 378)) == (53, 70, 91)
+        # Seats are separate cells, and the minimum sits in a wider gap with a tick.
+        assert image.getpixel((155, 378)) == (29, 43, 62)
+        assert image.getpixel((500, 378)) == (243, 247, 255)
+        assert image.getpixel((495, 378)) == (29, 43, 62)
 
     waiting = LiftAvailability(
         time="15:30",
@@ -87,6 +94,28 @@ def test_bar_colors_show_reserved_external_and_guest_seats_before_telegram_votes
     # The 2 waiting Telegram votes do not fill seats or change the source bar.
     assert _seat_segments(waiting) == ((2, "#75BAF9"), (1, "#C5A6FF"), (7, "#61D6A3"))
     assert _breakdown(waiting)[-1][0] == "VOTES 7"
+
+
+def test_lift_states_do_not_borrow_seat_source_colors() -> None:
+    full = LiftAvailability(time="13:30", seat_count=10)
+    waitlisted = LiftAvailability(
+        time="15:30", seat_count=12, waitlist=(WaitlistRider(2, "@a"), WaitlistRider(3, "@b"))
+    )
+    for lift in (full, waitlisted):
+        assert _state(lift, deadline_passed=True)[1] not in {BLUE, PURPLE}
+    # Votes alone need no pill: the count beside the time already says it.
+    assert _breakdown(waitlisted) == ()
+
+
+def test_below_minimum_summary_counts_sources_in_plain_english() -> None:
+    lift = LiftAvailability(time="11:45", seat_count=3, guests=(GuestParty(1, "@rider", 1),))
+    assert _short_summary(lift) == "1 guest · 2 TG votes  ·  needs 2 more"
+    assert _short_summary(LiftAvailability(time="8:30", seat_count=1)) == (
+        "1 TG vote  ·  needs 4 more"
+    )
+    assert _short_summary(LiftAvailability(time="8:30", seat_count=0)) == (
+        "No bookings  ·  needs 5 more"
+    )
 
 
 def test_caption_preserves_clickable_names_when_possible_and_caps_long_boards() -> None:
