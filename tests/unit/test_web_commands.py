@@ -119,3 +119,189 @@ async def test_worker_revoked_admin_and_uncertain_outcomes_are_not_replayed() ->
     existing = await queue.existing(spec, actor_user_id=1)
     assert existing is not None and existing["id"] == command["id"]
     await db.dispose()
+
+
+@pytest.mark.parametrize("guests, expected_refund", [(0, 15), (1, 30)])
+async def test_cancel_lift_worker_reports_the_paid_seat_after_cancellation(
+    guests: int, expected_refund: int
+) -> None:
+    from sqlalchemy import select
+    from tests.unit.test_payments_service import _fill, _setup
+
+    from veloexpress_bot.db.models import PaymentEntry, RefundReport
+    from veloexpress_core.commands import Operations
+    from veloexpress_core.runtime import build_runtime
+
+    db = SharedDatabase()
+    await db.create()
+    try:
+        lifts, payments, client, poll_id, day = await _setup(db)
+        await _fill(lifts, poll_id, 0)
+        if guests:
+            await payments.adjust_guest_seats(
+                service_date=day, telegram_user_id=100, lift_times=("8:30",), delta=1
+            )
+        await payments.claim(
+            service_date=day, telegram_user_id=100, username="alice", full_name="Alice"
+        )
+        config = settings()
+        runtime = build_runtime(settings=config, session_factory=db.session, telegram_client=client)
+        operations = Operations(settings=config, runtime=runtime)
+        queue = CommandQueue(settings=config, session_factory=db.session)
+        spec = CommandInput(
+            request_id=uuid4(), action="cancel_lift", service_date=day, lift_time="8:30"
+        )
+        preview = await operations.preview(spec)
+        assert f"Total to return: {expected_refund} GEL" in preview["details"]
+        assert (
+            not next(d for d in await lifts.status_days() if d.service_date == day)
+            .lifts[0]
+            .cancelled
+        )
+        assert await payments.recent_refund_reports() == ()
+        spec = spec.model_copy(update={"expected_digest": preview["digest"]})
+        command = await queue.enqueue(spec, actor_user_id=1)
+        assert await queue.process_one(operations)
+        result = await queue.get(command["id"], actor_user_id=1)
+        assert result is not None and result["status"] == "complete"
+        assert result["result"]["report"] == preview["details"]
+        assert f"Paid {expected_refund} · rides 0 GEL" in result["result"]["report"]
+        assert (
+            next(d for d in await lifts.status_days() if d.service_date == day).lifts[0].cancelled
+        )
+        assert (await queue.enqueue(spec, actor_user_id=1))["id"] == command["id"]
+        assert not await queue.process_one(operations)
+        assert (
+            await payments.cancellation_report(service_date=day, cancelled_lift_time="8:30")
+            == preview["details"]
+        )
+        async with db.session() as session:
+            assert len(list(await session.scalars(select(RefundReport)))) == 1
+            entries = list(await session.scalars(select(PaymentEntry)))
+        assert [(entry.kind, entry.amount_gel) for entry in entries] == [
+            ("received", expected_refund)
+        ]
+    finally:
+        await db.dispose()
+
+
+@pytest.mark.parametrize("cancel_whole_day", [False, True])
+async def test_worker_refunds_stay_cumulative_and_keep_remaining_rides(
+    cancel_whole_day: bool,
+) -> None:
+    from sqlalchemy import select
+    from tests.unit.test_payments_service import _fill, _setup
+
+    from veloexpress_bot.db.models import PaymentClaim, PaymentEntry, RefundReport
+    from veloexpress_core.commands import Operations
+    from veloexpress_core.runtime import build_runtime
+
+    db = SharedDatabase()
+    await db.create()
+    try:
+        lifts, payments, client, poll_id, day = await _setup(db)
+        await _fill(lifts, poll_id, 0, 1)
+        await payments.adjust_guest_seats(
+            service_date=day, telegram_user_id=100, lift_times=("8:30",), delta=1
+        )
+        await payments.claim(
+            service_date=day, telegram_user_id=100, username="alice", full_name="Alice"
+        )
+        config = settings()
+        runtime = build_runtime(settings=config, session_factory=db.session, telegram_client=client)
+        operations = Operations(settings=config, runtime=runtime)
+        queue = CommandQueue(settings=config, session_factory=db.session)
+        for action, lift_time, expected_return, expected_rides in (
+            ("cancel_lift", "10:00", 15, 30),
+            (
+                "cancel_day" if cancel_whole_day else "cancel_lift",
+                None if cancel_whole_day else "8:30",
+                45,
+                0,
+            ),
+        ):
+            spec = CommandInput.model_validate(
+                {
+                    "request_id": uuid4(),
+                    "action": action,
+                    "service_date": day,
+                    "lift_time": lift_time,
+                }
+            )
+            preview = await operations.preview(spec)
+            assert f"Total to return: {expected_return} GEL" in preview["details"]
+            spec = spec.model_copy(update={"expected_digest": preview["digest"]})
+            command = await queue.enqueue(spec, actor_user_id=1)
+            assert await queue.process_one(operations)
+            result = await queue.get(command["id"], actor_user_id=1)
+            assert result is not None and result["status"] == "complete"
+            assert result["result"]["report"] == preview["details"]
+            assert f"Paid 45 · rides {expected_rides} GEL" in result["result"]["report"]
+            assert (await queue.enqueue(spec, actor_user_id=1))["id"] == command["id"]
+            assert not await queue.process_one(operations)
+        reports = await payments.recent_refund_reports()
+        assert len(reports) == 2
+        assert "Total to return: 45 GEL" in reports[0].text
+        async with db.session() as session:
+            assert len(list(await session.scalars(select(RefundReport)))) == 2
+            entries = list(await session.scalars(select(PaymentEntry)))
+            claim = await session.scalar(select(PaymentClaim))
+        assert [(entry.kind, entry.amount_gel) for entry in entries] == [("received", 45)]
+        assert (claim is None) == cancel_whole_day
+        if cancel_whole_day:
+            assert all(d.service_date != day for d in await lifts.status_days())
+        else:
+            assert (
+                await payments.cancellation_report(service_date=day, cancelled_lift_time="8:30")
+                == reports[0].text
+            )
+            assert len(await payments.recent_refund_reports()) == 2
+    finally:
+        await db.dispose()
+
+
+@pytest.mark.parametrize("action", ["cancel_lift", "cancel_day"])
+async def test_failed_cancellation_does_not_file_a_refund_report(
+    action: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from tests.unit.test_payments_service import _fill, _setup
+
+    from veloexpress_core.commands import Operations
+    from veloexpress_core.runtime import build_runtime
+
+    db = SharedDatabase()
+    await db.create()
+    try:
+        lifts, payments, client, poll_id, day = await _setup(db)
+        await _fill(lifts, poll_id, 0)
+        await payments.claim(
+            service_date=day, telegram_user_id=100, username="alice", full_name="Alice"
+        )
+        config = settings()
+        runtime = build_runtime(settings=config, session_factory=db.session, telegram_client=client)
+        operations = Operations(settings=config, runtime=runtime)
+        queue = CommandQueue(settings=config, session_factory=db.session)
+        spec = CommandInput.model_validate(
+            {
+                "request_id": uuid4(),
+                "action": action,
+                "service_date": day,
+                "lift_time": "8:30" if action == "cancel_lift" else None,
+            }
+        )
+        preview = await operations.preview(spec)
+        spec = spec.model_copy(update={"expected_digest": preview["digest"]})
+        monkeypatch.setattr(
+            runtime.lifts, action, AsyncMock(side_effect=RuntimeError("DB unavailable"))
+        )
+        command = await queue.enqueue(spec, actor_user_id=1)
+        assert await queue.process_one(operations)
+        result = await queue.get(command["id"], actor_user_id=1)
+        assert result is not None and result["status"] == "review"
+        assert not await queue.process_one(operations)
+        assert await payments.recent_refund_reports() == ()
+        assert await operations.preview(spec) == preview
+    finally:
+        await db.dispose()

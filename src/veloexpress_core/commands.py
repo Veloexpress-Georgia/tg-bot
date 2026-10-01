@@ -166,9 +166,16 @@ class Operations:
                 cancelled_lift_time=spec.lift_time if spec.action == "cancel_lift" else None,
             )
             state = {"day": asdict(day), "report": report}
+            target = f"lift {spec.lift_time}" if spec.action == "cancel_lift" else "all lifts"
+            no_report = (
+                "No payments have been reported for this day."
+                if self.runtime.payments.enabled
+                else "Payment tracking is disabled; refund estimates are unavailable."
+            )
             return {
                 "digest": _fingerprint(state),
-                "details": report,
+                "details": report
+                or f"Cancel {target} on {day.service_date.isoformat()}. {no_report}",
                 "affected": day.booked_rider_count,
                 "service_date": day.service_date,
             }
@@ -248,16 +255,19 @@ class Operations:
                 service_date=day, lift_time=lift_time, admin_user_id=actor_user_id
             )
         elif spec.action in {"cancel_lift", "cancel_day"}:
-            report = await rt.payments.cancellation_report(
-                service_date=day,
-                cancelled_lift_time=lift_time if spec.action == "cancel_lift" else None,
-            )
             if spec.action == "cancel_lift":
                 await rt.lifts.cancel_lift(
                     service_date=day, lift_time=lift_time, admin_user_id=actor_user_id
                 )
             else:
                 await rt.lifts.cancel_day(service_date=day, admin_user_id=actor_user_id)
+            # The estimate reads committed bookings, excluding the cancelled lift.
+            # Preserve it before a whole-day cancellation retires payment claims.
+            report = await rt.payments.cancellation_report(
+                service_date=day,
+                cancelled_lift_time=lift_time if spec.action == "cancel_lift" else None,
+            )
+            if spec.action == "cancel_day":
                 await rt.payments.forget_day(service_date=day)
             return {"message": "Cancelled", "report": report}
         elif spec.action == "payment":

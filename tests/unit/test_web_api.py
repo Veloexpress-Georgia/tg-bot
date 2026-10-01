@@ -2,6 +2,7 @@ from datetime import date
 from uuid import uuid4
 
 import httpx
+import pytest
 from tests.unit.test_payments_service import SharedDatabase, settings
 
 from veloexpress_api.app import create_app
@@ -15,6 +16,71 @@ def cookie(uid: int) -> str:
     return SessionSigner(SECRET).sign(
         {"uid": uid, "name": "Alice", "csrf": "csrf"}, purpose="session"
     )
+
+
+@pytest.mark.parametrize("action", ["cancel_lift", "cancel_day"])
+@pytest.mark.parametrize("payments_enabled", [True, False])
+async def test_unpaid_cancellation_preview_has_text_and_can_be_confirmed(
+    action: str, payments_enabled: bool
+) -> None:
+    from tests.unit.test_payments_service import _fill, _setup
+
+    from veloexpress_core.commands import CommandQueue, Operations
+    from veloexpress_core.runtime import build_runtime
+
+    db = SharedDatabase()
+    await db.create()
+    try:
+        lifts, payments, telegram, poll_id, day = await _setup(db)
+        await _fill(lifts, poll_id, 0)
+        config = settings(payments_thread=2 if payments_enabled else None).model_copy(
+            update={"telegram_bot_token": "123456:test-token"}
+        )
+        runtime = build_runtime(
+            settings=config, session_factory=db.session, telegram_client=telegram
+        )
+        operations = Operations(settings=config, runtime=runtime)
+        app = create_app(
+            settings=config,
+            web_settings=WebSettings(session_secret=SECRET, public_url="http://localhost:5173"),
+            session_factory=db.session,
+        )
+        spec = {
+            "request_id": str(uuid4()),
+            "action": action,
+            "service_date": day.isoformat(),
+            "lift_time": "8:30" if action == "cancel_lift" else None,
+        }
+        headers = {"X-CSRF-Token": "csrf"}
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://localhost:5173"
+        ) as client:
+            client.cookies.set("veloexpress_session", cookie(1))
+            response = await client.post("/api/admin/preview", json=spec, headers=headers)
+            assert response.status_code == 200
+            preview = response.json()
+            assert isinstance(preview["details"], str) and preview["details"]
+            assert day.isoformat() in preview["details"]
+            assert ("lift 8:30" if action == "cancel_lift" else "all lifts") in preview["details"]
+            assert (
+                "No payments have been reported"
+                if payments_enabled
+                else "Payment tracking is disabled"
+            ) in preview["details"]
+            assert await payments.recent_refund_reports() == ()
+            body = {"command": spec, "confirmation": preview["confirmation"]}
+            submitted = await client.post("/api/commands", json=body, headers=headers)
+            assert submitted.status_code == 202
+            queue = CommandQueue(settings=config, session_factory=db.session)
+            assert await queue.process_one(operations)
+            status = await client.get(f"/api/commands/{submitted.json()['id']}")
+            assert status.json()["status"] == "complete"
+            assert status.json()["result"]["report"] is None
+            repeated = await client.post("/api/commands", json=body, headers=headers)
+            assert repeated.json()["id"] == submitted.json()["id"]
+            assert not await queue.process_one(operations)
+    finally:
+        await db.dispose()
 
 
 async def test_api_access_control_csrf_and_command_retry() -> None:

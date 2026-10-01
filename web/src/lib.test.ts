@@ -21,4 +21,8 @@ describe('historical period boundaries', () => {
   it('renders Telegram HTML as text without injecting markup', () => {
     expect(plain('<b>Alice</b> &amp; &lt;script&gt;')).toBe('Alice & <script>');
   });
+  it('accepts absent report text', () => {
+    expect(plain(null)).toBe('');
+    expect(plain(undefined)).toBe('');
+  });
 });
