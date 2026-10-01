@@ -3,7 +3,7 @@ from typing import cast
 import pytest
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.methods import EditMessageMedia, SendPoll
+from aiogram.methods import EditMessageMedia, SendPoll, StopPoll
 from aiogram.types import BufferedInputFile, InputMediaPhoto
 
 from veloexpress_bot.polls.render import PollDraft
@@ -66,6 +66,48 @@ class UnpinningBot:
     async def unpin_chat_message(self, **kwargs: object) -> object:
         self.kwargs = kwargs
         return object()
+
+
+class StoppingBot:
+    def __init__(self, error: str | None = None) -> None:
+        self.kwargs: dict[str, object] = {}
+        self.error = error
+
+    async def stop_poll(self, **kwargs: object) -> object:
+        self.kwargs = kwargs
+        if self.error:
+            raise TelegramBadRequest(
+                method=StopPoll(chat_id=-100123, message_id=42), message=self.error
+            )
+        return object()
+
+
+@pytest.mark.parametrize(
+    "error_text, expected",
+    [
+        (None, True),
+        ("Bad Request: poll has already been closed", True),
+        ("Bad Request: message to stop poll not found", True),
+        ("Bad Request: not enough rights", False),
+    ],
+)
+async def test_stop_poll_is_safe_to_retry(error_text: str | None, expected: bool) -> None:
+    bot = StoppingBot(error_text)
+    client = AiogramTelegramClient(cast(Bot, bot))
+
+    assert await client.stop_poll(chat_id=-100123, message_id=42) is expected
+    assert bot.kwargs == {"chat_id": -100123, "message_id": 42}
+
+
+async def test_stop_poll_keeps_api_failure_retryable() -> None:
+    class ForbiddenStoppingBot:
+        async def stop_poll(self, **kwargs: object) -> object:
+            raise TelegramForbiddenError(
+                method=StopPoll(chat_id=-100123, message_id=42), message="Forbidden"
+            )
+
+    client = AiogramTelegramClient(cast(Bot, ForbiddenStoppingBot()))
+    assert await client.stop_poll(chat_id=-100123, message_id=42) is False
 
 
 @pytest.mark.asyncio

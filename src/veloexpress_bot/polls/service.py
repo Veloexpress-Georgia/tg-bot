@@ -198,6 +198,8 @@ class TelegramPollClient(Protocol):
 
     async def unpin_message(self, *, chat_id: int, message_id: int) -> bool: ...
 
+    async def stop_poll(self, *, chat_id: int, message_id: int) -> bool: ...
+
     async def delete_message(self, *, chat_id: int, message_id: int) -> bool: ...
 
     async def clear_keyboard(self, *, chat_id: int, message_id: int) -> bool: ...
@@ -1385,17 +1387,6 @@ class PollPostingService:
             votes = (
                 await session.scalars(select(PollVote).where(PollVote.poll_id.in_(poll_ids)))
             ).all()
-            messages = (
-                await session.scalars(
-                    select(PollMessage).where(PollMessage.batch_id.in_(batch_ids))
-                )
-            ).all()
-            pinned_poll_message_ids = [
-                message.telegram_message_id
-                for message in messages
-                if message.message_kind == "poll" and message.pinned
-            ]
-
             mentions: dict[int, str] = {}
             for vote in votes:
                 if decode_option_ids(vote.option_ids):
@@ -1422,6 +1413,7 @@ class PollPostingService:
             )
             await session.commit()
 
+        await self._close_cancelled_polls(batch_ids=batch_ids)
         if notify:
             await self._send_tagged_notice(
                 f"❌ All lifts on {_service_day_label(service_date)} are cancelled.",
@@ -1430,22 +1422,49 @@ class PollPostingService:
             )
         for poll_id in poll_ids:
             await self._refresh_availability(poll_id, allow_recreate=False)
-        # The poll stays in the chat as history, but a cancelled day must not keep
-        # occupying the pin.
-        for message_id in pinned_poll_message_ids:
-            unpinned = await self._telegram_client.unpin_message(
-                chat_id=self._settings.telegram_target_chat_id,
-                message_id=message_id,
-            )
-            if unpinned:
-                async with self._session_factory() as session:
-                    await session.execute(
-                        update(PollMessage)
-                        .where(PollMessage.telegram_message_id == message_id)
-                        .values(pinned=False)
-                    )
-                    await session.commit()
         await self._refresh_booking_monitors()
+
+    async def _close_cancelled_polls(self, *, batch_ids: list[int] | None = None) -> None:
+        # Keep the closed poll as history. Persist success so retries survive a
+        # restart and also repair days cancelled before native polls were closed.
+        chat_id = self._settings.telegram_target_chat_id
+        if chat_id is None:
+            return
+        async with self._session_factory() as session:
+            messages = list(
+                await session.scalars(
+                    select(PollMessage)
+                    .join(PollBatch, PollBatch.id == PollMessage.batch_id)
+                    .where(PollBatch.environment == self._settings.app_env)
+                    .where(PollBatch.chat_id == self._settings.telegram_target_chat_id)
+                    .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
+                    .where(PollBatch.status == "cancelled")
+                    .where(PollBatch.id.in_(batch_ids) if batch_ids is not None else true())
+                    .where(PollMessage.message_kind == "poll")
+                    .where(
+                        or_(
+                            PollMessage.cleanup_status.not_in(
+                                ("stopped", "deleted", "telegram_deleted")
+                            ),
+                            PollMessage.pinned.is_(True),
+                        )
+                    )
+                    .with_for_update()
+                )
+            )
+            for message in messages:
+                if message.cleanup_status not in {"stopped", "deleted", "telegram_deleted"}:
+                    stopped = await self._telegram_client.stop_poll(
+                        chat_id=chat_id,
+                        message_id=message.telegram_message_id,
+                    )
+                    message.cleanup_status = "stopped" if stopped else "stop_failed"
+                if message.pinned and await self._telegram_client.unpin_message(
+                    chat_id=chat_id,
+                    message_id=message.telegram_message_id,
+                ):
+                    message.pinned = False
+            await session.commit()
 
     async def restore_lift(
         self,
@@ -2375,6 +2394,7 @@ class PollPostingService:
         return tuple(service_date for service_date, _ in missing)
 
     async def refresh_booking_statuses(self, *, now: datetime | None = None) -> None:
+        await self._close_cancelled_polls()
         today = (now or datetime.now(UTC)).astimezone(self._zone).date()
         async with self._session_factory() as session:
             poll_ids = list(

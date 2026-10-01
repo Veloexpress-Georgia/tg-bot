@@ -36,19 +36,13 @@ def test_render_poll_notice_explains_dynamic_first_lift_location() -> None:
     )
 
 
-def test_render_poll_notice_states_the_money_rules_in_order() -> None:
+def test_render_poll_notice_keeps_only_booking_essentials_and_links() -> None:
     assert render_poll_notice(StartLocation.VAKE, terms=TERMS).splitlines() == [
-        "📍 All lifts: opposite Vake Park "
-        '(<a href="https://maps.app.goo.gl/nSNiv7GnNiQt5J64A">meeting point</a>).',
-        "",
-        "💳 15 GEL per seat · 10 seats per lift.",
-        "A lift runs from 5 booked seats. Pay for each booked seat once its lift reaches 5.",
-        "Pay by 20:00 the evening before; if you book later, pay immediately.",
-        "Be at the meeting point 10 minutes before departure. Message the chat if late.",
-        "If leaving, remove your vote and post the day and time in the chat early.",
-        "A paid seat is not refunded if you miss your lift; find a replacement if possible.",
-        "💵 Can't transfer? Message Misho and tap 💵 Cash after paying him.",
-        '🔗 <a href="https://pay.example">Where to pay</a>',
+        '📍 <a href="https://maps.app.goo.gl/nSNiv7GnNiQt5J64A">Opposite Vake Park</a>',
+        "💳 <b>15 GEL / seat.</b> Pay once your lift reaches 5 booked seats, "
+        "by <b>20:00 the evening before</b>. Late bookings: pay immediately.",
+        '<a href="https://pay.example">Where to pay</a> · '
+        '<a href="https://t.me/c/2200954181/5">Rules &amp; bank details</a>',
     ]
 
 
@@ -58,8 +52,17 @@ def test_the_poll_notice_omits_the_link_when_none_is_configured() -> None:
         terms=PaymentTerms(price_gel=15, deadline_time="20:00"),
     )
 
-    assert "🔗" not in notice
-    assert "15 GEL per seat" in notice
+    assert "Where to pay" not in notice
+    assert "15 GEL / seat" in notice
+    assert notice.endswith('<a href="https://t.me/c/2200954181/5">Rules &amp; bank details</a>')
+
+
+def test_short_poll_notice_uses_the_service_days_price_and_deadline() -> None:
+    notice = render_poll_notice(
+        StartLocation.VAKE, terms=PaymentTerms(price_gel=20, deadline_time="19:30")
+    )
+    assert "<b>20 GEL / seat.</b>" in notice
+    assert "<b>19:30 the evening before</b>" in notice
 
 
 def test_availability_names_the_waitlist_where_the_seats_are_counted() -> None:

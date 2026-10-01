@@ -133,15 +133,24 @@ def render_poll(render_input: PollRenderInput) -> PollDraft:
 def render_poll_notice(first_lift_location: StartLocation, *, terms: PaymentTerms) -> str:
     if first_lift_location == StartLocation.VAKE:
         route_notice = (
-            "📍 All lifts: opposite Vake Park "
-            '(<a href="https://maps.app.goo.gl/nSNiv7GnNiQt5J64A">meeting point</a>).'
+            '📍 <a href="https://maps.app.goo.gl/nSNiv7GnNiQt5J64A">Opposite Vake Park</a>'
         )
     else:
         route_notice = (
             "📍 The day's first running lift departs from Justice Hall. "
             "All later lifts depart from Vake Park."
         )
-    return "\n".join((route_notice, "", *terms.rules()))
+    payment_notice = (
+        f"💳 <b>{terms.price_gel} GEL / seat.</b> "
+        f"Pay once your lift reaches {MINIMUM_RIDERS} booked seats, "
+        f"by <b>{terms.deadline_time} the evening before</b>. Late bookings: pay immediately."
+    )
+    links = [
+        '<a href="https://t.me/c/2200954181/5">Rules &amp; bank details</a>',
+    ]
+    if terms.link:
+        links.insert(0, terms.pay_link("Where to pay"))
+    return "\n".join((route_notice, payment_notice, " · ".join(links)))
 
 
 def render_availability_status(

@@ -29,6 +29,12 @@ never cancels a day. Telegram access/network failures are not deletion evidence.
 Background status refreshes only edit existing messages; they never recreate a
 deleted status card.
 
+Cancelling a whole day closes its native Telegram polls and releases their pins,
+keeping the closed polls as history. Failed closure or unpinning is retried on
+background refreshes, including after a restart. The same reconciliation closes
+polls from days cancelled by older bot versions without repeating cancellation
+notices or changing other days' polls.
+
 ## Stack
 
 - Python 3.14
@@ -123,7 +129,7 @@ A lift opens payment once it reaches the rider minimum — five, the point where
 
 One `PaymentTerms` object carries the money rules — price, deadline, link — so the notices and payments board state them consistently. The poll notice says payment opens at five riders. Instead of a separate tagged ✅ message or payment card in the lift topic, payment controls live under the existing booking statistics (`Availability`). `I paid` occupies a full keyboard row, with `Cash` and `Undo` underneath. The worker updates existing messages after deployment and removes controls after the service day. Previously posted standalone payment cards in the lift topic are unpinned and deleted automatically; failed cleanup is retried. Full transfer details, a small `Guests` text link, and detailed payment history remain in the payments topic and private rider card.
 
-The September 2026 group rules set 20 GEL per seat for newly published days. The poll notice links the Vake Park meeting point, asks riders to arrive ten minutes early, gives the 20:00 payment deadline and immediate payment rule for late bookings, and tells riders to announce withdrawals and delays in the lift chat. It states that a paid seat is not refunded when a rider misses the lift. The existing bank accounts already match the published details. A previously saved admin price overrides the bootstrap default; if it still reads 15 GEL in `⚙️ Settings`, an admin must set it to 20 before publishing the next day. No-show warnings, bans and chat moderation stay with human admins; a bot cannot infer from a missed poll vote whether somebody warned the group.
+The September 2026 group rules set 20 GEL per seat for newly published days. The poll notice stays short: the meeting-point link, the service day's price, payment once the lift reaches five booked seats, the evening-before deadline, and immediate payment for late bookings. It ends with `Where to pay` and a link to the rules and bank details topic. Arrival, withdrawal, missed-lift and cash-payment instructions live in that topic rather than repeating next to every poll; capacity remains visible in availability. The notice is text only. The existing bank accounts already match the published details. A previously saved admin price overrides the bootstrap default; if it still reads 15 GEL in `⚙️ Settings`, an admin must set it to 20 before publishing the next day. No-show warnings, bans and chat moderation stay with human admins; a bot cannot infer from a missed poll vote whether somebody warned the group.
 
 The public `Availability` message is a generated image card. Its occupancy bar is split by source, from left to right: external bookings, guest seats, then Telegram votes, with a mark at the five-seat minimum. External and guest seats are reserved before poll votes; votes on the waitlist do not color seats inside the van. Guest hosts and waitlisted riders appear directly below the relevant lift. After the snapshotted 20:00 deadline, lifts with at least five seats appear first and those below the minimum move to a separate compact section. The text caption follows the same grouping for accessibility and keeps rider mentions clickable. Payment buttons remain beneath the card. Vote and booking changes edit the card in place; older text availability messages become image cards on their next refresh. The image is generated with Pillow and DejaVu Sans in the container. Samples are in [before deadline](docs/design/availability-card-preview.png) and [after deadline](docs/design/availability-card-after-deadline.png).
 

@@ -54,6 +54,7 @@ class FakeTelegramClient:
         fail_pin_once: bool = False,
         fail_unpin_once: bool = False,
         fail_delete_once: bool = False,
+        fail_stop_once: bool = False,
         existing_message_ids: set[int] | None = None,
     ) -> None:
         self.sent: list[PollDraft] = []
@@ -63,6 +64,7 @@ class FakeTelegramClient:
         self.edited_markups: list[InlineKeyboardMarkup | None] = []
         self.pinned: list[int] = []
         self.unpinned: list[int] = []
+        self.stopped: list[int] = []
         self.deleted: list[int] = []
         self.operations: list[tuple[str, int]] = []
         self.fail_send_once = fail_send_once
@@ -72,6 +74,7 @@ class FakeTelegramClient:
         self.fail_pin_once = fail_pin_once
         self.fail_unpin_once = fail_unpin_once
         self.fail_delete_once = fail_delete_once
+        self.fail_stop_once = fail_stop_once
         self.existing_message_ids = existing_message_ids
         self.next_message_id = 42
 
@@ -190,6 +193,14 @@ class FakeTelegramClient:
             return False
         self.unpinned.append(message_id)
         self.operations.append(("unpin", message_id))
+        return True
+
+    async def stop_poll(self, *, chat_id: int, message_id: int) -> bool:
+        assert chat_id == -100123
+        if self.fail_stop_once:
+            self.fail_stop_once = False
+            return False
+        self.stopped.append(message_id)
         return True
 
     async def delete_message(self, *, chat_id: int, message_id: int) -> bool:
@@ -674,7 +685,7 @@ async def test_deleted_cancelled_day_board_is_not_restored_by_a_late_vote(
 
     await service.cancel_day(service_date=saturday, admin_user_id=1)
 
-    # The Telegram poll stays votable, so a late vote must not rebuild the live board.
+    # An answer queued before closure must not rebuild the live board.
     await service.track_poll_answer(
         poll_id=poll.poll_id or "",
         telegram_user_id=10,
@@ -714,6 +725,72 @@ async def test_cancel_day_releases_the_pin(db: SharedDatabase) -> None:
         )
     assert message is not None
     assert message.pinned is False
+
+
+async def test_cancel_day_closes_native_poll(db: SharedDatabase) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    saturday, sunday = _upcoming_weekend()
+    poll = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1), pin_after_send=False
+    )
+    sunday_poll = await service.create_poll(
+        PollSetup(service_date=sunday, created_by_user_id=1), pin_after_send=False
+    )
+
+    await service.cancel_day(service_date=saturday, admin_user_id=1)
+
+    assert client.stopped == [poll.message_id]
+    assert sunday_poll.message_id not in client.stopped
+    assert poll.message_id not in client.deleted
+    # Success is persisted: neither another cancel nor a background refresh
+    # closes the poll again or repeats the notice.
+    await service.cancel_day(service_date=saturday, admin_user_id=1)
+    await service.refresh_booking_statuses()
+    assert client.stopped == [poll.message_id]
+    assert sum("All lifts on" in text for text in client.sent_texts) == 1
+
+
+async def test_cancelled_poll_closure_retries_after_restart(db: SharedDatabase) -> None:
+    client = FakeTelegramClient(fail_stop_once=True, fail_unpin_once=True)
+    service = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    saturday, _ = _upcoming_weekend()
+    poll = await service.create_poll(PollSetup(service_date=saturday, created_by_user_id=1))
+    await service.cancel_day(service_date=saturday, admin_user_id=1)
+    assert client.stopped == []
+    assert poll.message_id not in client.unpinned
+
+    restarted = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    await restarted.refresh_booking_statuses()
+    await restarted.refresh_booking_statuses()
+    assert client.stopped == [poll.message_id]
+    assert client.unpinned.count(poll.message_id) == 1
+    assert sum("All lifts on" in text for text in client.sent_texts) == 1
+
+
+async def test_background_refresh_closes_previously_cancelled_poll(db: SharedDatabase) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    saturday, _ = _upcoming_weekend()
+    poll = await service.create_poll(PollSetup(service_date=saturday, created_by_user_id=1))
+    async with db.session() as session:
+        batch = await session.get(PollBatch, poll.batch_id)
+        assert batch is not None
+        batch.status = "cancelled"
+        await session.commit()
+
+    await service.refresh_booking_statuses()
+    assert client.stopped == [poll.message_id]
+    assert poll.message_id in client.unpinned
+    assert not any("All lifts on" in text for text in client.sent_texts)
 
 
 async def _fill_lift(service: PollPostingService, poll_id: str, *, riders: int) -> None:
@@ -982,7 +1059,7 @@ async def test_a_posted_notice_keeps_its_snapshotted_money_rules(db: SharedDatab
     edits = [
         text for message_id, text in client.edited_texts if message_id == result.notice_message_id
     ]
-    assert "15 GEL per seat" in edits[-1]
+    assert "15 GEL / seat" in edits[-1]
     # Once per day per process: a second pass would spend an API call to change
     # nothing, and Telegram edits are silent anyway.
     assert await service.refresh_poll_notices() == 0
@@ -1217,8 +1294,10 @@ async def test_poll_service_can_send_notice_before_poll_and_pin_poll(
     assert result.notice_message_id == 42
     assert result.availability_message_id == 43
     assert result.message_id == 44
-    assert client.sent_texts[0].startswith("📍 All lifts: opposite Vake Park")
-    assert "Pay for each booked seat once its lift reaches 5" in client.sent_texts[0]
+    assert client.sent_texts[0].startswith(
+        '📍 <a href="https://maps.app.goo.gl/nSNiv7GnNiQt5J64A">Opposite Vake Park</a>'
+    )
+    assert "Pay once your lift reaches 5 booked seats" in client.sent_texts[0]
     assert "🚐 Availability · Sat, 16 May" in client.sent_texts[1]
     assert client.sent[0].question == "🚐 Saturday · May 16"
 

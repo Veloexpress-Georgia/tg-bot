@@ -104,6 +104,9 @@ class RecordingTelegramClient:
     async def unpin_message(self, *, chat_id: int, message_id: int) -> bool:
         return True
 
+    async def stop_poll(self, *, chat_id: int, message_id: int) -> bool:
+        return True
+
     async def delete_message(self, *, chat_id: int, message_id: int) -> bool:
         self.deleted.append(message_id)
         return True

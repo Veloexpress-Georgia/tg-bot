@@ -219,6 +219,23 @@ class AiogramTelegramClient:
             return False
         return True
 
+    async def stop_poll(self, *, chat_id: int, message_id: int) -> bool:
+        try:
+            await self._bot.stop_poll(chat_id=chat_id, message_id=message_id)
+        except TelegramBadRequest as error:
+            error_text = error.message.lower()
+            if any(
+                text in error_text
+                for text in ("poll has already been closed", "message to stop poll not found")
+            ):
+                return True
+            logger.exception("Failed to stop poll", extra={"message_id": message_id})
+            return False
+        except TelegramAPIError:
+            logger.exception("Failed to stop poll", extra={"message_id": message_id})
+            return False
+        return True
+
     async def delete_message(self, *, chat_id: int, message_id: int) -> bool:
         try:
             await self._bot.delete_message(chat_id=chat_id, message_id=message_id)
