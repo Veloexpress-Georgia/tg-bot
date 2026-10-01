@@ -80,11 +80,14 @@ migrated database. API tests use synthetic identities and a fake Telegram adapte
    local automated checks cannot replace them.
 
 `CI` verifies Python (including Postgres concurrency), the frontend and Docker
-builds. `Deploy to Coolify` triggers only after successful push CI for the current
-`dev` or `main` commit. Set `COOLIFY_WEBHOOK` and `COOLIFY_TOKEN` in the GitHub
-`Development` and `Production` environments. Keep Coolify's independent automatic
-Git deployment off if CI is the release gate. No deployment is initiated by
-local development or visual preview.
+builds. Its production deployment job depends on both checks and triggers only
+for the current `main` commit after a push. Set `COOLIFY_WEBHOOK` and
+`COOLIFY_TOKEN` in the GitHub `Production` environment. Keeping deployment in
+the push workflow also works when the repository's default branch is `dev`;
+a separate `workflow_run` workflow would need to exist on the default branch.
+Keep Coolify's independent automatic Git deployment off if CI is the release
+gate. No deployment is initiated by pull requests, local development or visual
+preview. Development deployments retain their existing configuration.
 
 A bot outage leaves commands pending. An interrupted or ambiguous execution
 becomes **review**: inspect the day, ledger and Telegram before issuing a fresh
