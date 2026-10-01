@@ -18,6 +18,8 @@
   --green: #536c2c;
   --soft: #eef2e1;
   --danger: #ad4438;
+  --queue-text: #74501a;
+  --queue-background: #fff0cc;
   --chart-stroke: #739224;
   --chart-cash: #334638;
   --chart-unknown: #d0d1c6;
@@ -932,6 +934,7 @@ tbody tr:last-child td {
   background: var(--soft);
   border-radius: 9px;
   width: 49px;
+  flex-shrink: 0;
   padding: 9px 4px;
 }
 .date-tile b {
@@ -940,7 +943,7 @@ tbody tr:last-child td {
   line-height: 1.15;
 }
 .date-tile span {
-  font-size: 9px;
+  font-size: 12px;
   color: var(--muted);
 }
 .day-card-header h3 {
@@ -948,14 +951,15 @@ tbody tr:last-child td {
   font-size: 20px;
 }
 .day-card-header div > span {
-  font-size: 10px;
+  font-size: 12px;
+  line-height: 1.4;
   color: var(--muted);
   display: block;
   margin-top: 5px;
 }
 .mini-lifts {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   margin-top: 25px;
 }
@@ -963,35 +967,48 @@ tbody tr:last-child td {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
 .mini-lifts span {
-  font-size: 11px;
-  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
 }
 .mini-lifts b {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
   font-size: 24px;
-  font-weight: 600;
-  letter-spacing: -0.05em;
+  font-weight: 700;
+  letter-spacing: -0.025em;
 }
 .mini-lifts small {
-  font-size: 12px;
-  font-weight: 400;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: normal;
 }
 .mini-lifts i {
-  height: 5px;
-  background: linear-gradient(to right, #b9d552 var(--fill), #edf0e6 var(--fill));
+  height: 6px;
+  background: linear-gradient(to right, #b9d552 var(--fill), var(--line) var(--fill));
   border-radius: 5px;
 }
 .mini-lifts em {
   font-style: normal;
-  font-size: 8px;
-  color: #977447;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--queue-text);
+  background: var(--queue-background);
+  border-radius: 5px;
+  padding: 3px 6px;
+  align-self: flex-start;
 }
 .day-card-footer {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  font-size: 10px;
+  font-size: 12px;
+  font-weight: 500;
   margin-top: 25px;
   border-top: 1px solid var(--line);
   padding-top: 18px;
@@ -1002,11 +1019,12 @@ tbody tr:last-child td {
   gap: 7px;
 }
 .attention-strip {
-  background: #f5efd9;
-  color: #927649;
+  background: var(--queue-background);
+  color: var(--queue-text);
   border-radius: 6px;
   padding: 9px 11px;
-  font-size: 9px;
+  font-size: 12px;
+  font-weight: 600;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1770,6 +1788,9 @@ input[type='checkbox'] {
   .day-card {
     padding: 20px;
   }
+  .day-card-header {
+    gap: 12px;
+  }
   .day-card-footer {
     flex-wrap: wrap;
   }
@@ -2113,13 +2134,36 @@ input[type='checkbox'] {
     gap: 12px;
   }
   .day-card {
-    padding: 20px;
+    padding: 16px;
   }
   .day-card-header h3 {
     font-size: 20px;
   }
   .mini-lifts {
-    gap: 10px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 16px;
+    margin-top: 16px;
+  }
+  .mini-lifts > div {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-content: start;
+    align-items: baseline;
+    gap: 7px 8px;
+  }
+  .mini-lifts b {
+    font-size: 22px;
+  }
+  .mini-lifts i,
+  .mini-lifts em {
+    grid-column: 1 / -1;
+  }
+  .mini-lifts em {
+    justify-self: start;
+  }
+  .day-card-footer {
+    margin-top: 16px;
+    padding-top: 12px;
   }
   .planning-grid .panel {
     margin-bottom: 0;
@@ -2271,6 +2315,8 @@ input[type='checkbox'] {
   --chart-cash: #8eb9a5;
   --chart-unknown: #627962;
   --green: #bdd585;
+  --queue-text: #f3d797;
+  --queue-background: #45371f;
   background: var(--paper);
   color: var(--ink);
 }
@@ -2622,10 +2668,6 @@ input {
   font-size: 11px;
   line-height: 1.6;
   color: var(--muted);
-}
-[data-theme='dark'] .attention-strip {
-  background: #3e3524;
-  color: #e6cd8c;
 }
 [data-theme='dark'] .badge.muted-badge {
   background: #323c31;
