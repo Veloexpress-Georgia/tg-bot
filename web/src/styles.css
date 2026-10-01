@@ -12,9 +12,9 @@
   --muted: #68715e;
   --line: #e4e5dc;
   --lime: #d6ec78;
-  --on-accent: #26321d;
-  --on-accent-muted: #45592b;
-  --on-accent-detail: #354d23;
+  --on-accent: #1c2616;
+  --on-accent-muted: #29371f;
+  --on-accent-detail: #29371f;
   --green: #536c2c;
   --soft: #eef2e1;
   --danger: #ad4438;
@@ -497,33 +497,31 @@ main {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
   margin-bottom: 19px;
   gap: 8px;
 }
 .metric-label svg {
-  opacity: 0.6;
   flex-shrink: 0;
 }
 .metric strong {
   display: block;
   font-size: 31px;
-  letter-spacing: -0.07em;
-  font-weight: 600;
+  letter-spacing: -0.035em;
+  font-weight: 700;
   line-height: 1.25;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 .metric > span {
-  font-size: 9px;
+  font-size: 12px;
+  font-weight: 500;
   display: block;
   color: var(--muted);
   margin-top: 12px;
-  line-height: 1.7;
-}
-.metric-accent > span {
-  color: var(--muted);
+  line-height: 1.4;
 }
 .panel {
   background: var(--surface);
@@ -1829,7 +1827,7 @@ input[type='checkbox'] {
     display: none;
   }
   .metrics-grid .metric-label {
-    font-size: 11px;
+    font-size: 12px;
   }
   .metric strong {
     font-size: 31px;
@@ -1987,18 +1985,18 @@ input[type='checkbox'] {
     margin-bottom: 14px;
   }
   .metrics-grid .metric-label {
-    font-size: 9px;
+    font-size: 12px;
   }
   .metric-label svg {
-    width: 15px;
+    width: 18px;
   }
   .metric strong {
     font-size: 27px;
   }
   .metric > span {
-    font-size: 8px;
+    font-size: 12px;
     margin-top: 9px;
-    line-height: 1.8;
+    line-height: 1.4;
   }
   .panel {
     padding: 19px 17px;
@@ -2275,9 +2273,6 @@ input[type='checkbox'] {
   --green: #bdd585;
   background: var(--paper);
   color: var(--ink);
-}
-[data-theme='dark'] .metric-accent {
-  color: #28331d;
 }
 [data-theme='dark'] .button-primary {
   background: var(--lime);
@@ -2641,12 +2636,6 @@ input {
 }
 [data-theme='dark'] .warning-text {
   color: #e1bd7f;
-}
-[data-theme='dark'] .metric-accent strong {
-  color: #26321d;
-}
-[data-theme='dark'] .metric-accent .metric-label {
-  color: #314023;
 }
 [data-theme='dark'] .empty-state svg {
   color: #9bb680;
