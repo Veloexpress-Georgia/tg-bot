@@ -6,8 +6,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from veloexpress_bot.db.base import Base
 from veloexpress_bot.db.models import TelegramOutbox
-from veloexpress_bot.polls.service import SentTextMessage
 from veloexpress_bot.telegram.outbox import TelegramOutboxDispatcher
+from veloexpress_core.lifts import SentTextMessage
 
 
 class FailingOnceSender:

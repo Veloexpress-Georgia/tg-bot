@@ -5,8 +5,8 @@ from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramFor
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, InputMediaPhoto
 
 from veloexpress_bot.polls.render import PollDraft
-from veloexpress_bot.polls.service import SentPollMessage, SentTextMessage
 from veloexpress_bot.telegram.errors import TelegramPollPostError, TelegramTargetForbiddenError
+from veloexpress_core.lifts import SentPollMessage, SentTextMessage
 
 logger = logging.getLogger(__name__)
 

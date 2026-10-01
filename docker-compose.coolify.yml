@@ -1,42 +1,95 @@
-# Intended for a Coolify Git-based Docker Compose application.
-# The build context assumes Coolify has checked out this repository.
+# Coolify Git-based Compose. Public domain belongs to web (container port 80).
+# The existing postgres-data volume is retained. Migrations run once before bot/API.
+x-app-env: &app-env
+    APP_ENV: production
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    DATABASE_URL: ${DATABASE_URL:-}
+    POSTGRES_DB: ${POSTGRES_DB:-veloexpress}
+    POSTGRES_USER: ${POSTGRES_USER:-veloexpress}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    POSTGRES_HOST: ${POSTGRES_HOST:-db}
+    APP_HEALTH_HEARTBEAT_FILE: ${APP_HEALTH_HEARTBEAT_FILE:-/tmp/veloexpress-bot-heartbeat.json}
+    APP_HEALTH_HEARTBEAT_INTERVAL_SECONDS: ${APP_HEALTH_HEARTBEAT_INTERVAL_SECONDS:-15}
+    APP_HEALTH_MAX_AGE_SECONDS: ${APP_HEALTH_MAX_AGE_SECONDS:-90}
+    APP_HEALTH_REQUIRE_WORKER: ${APP_HEALTH_REQUIRE_WORKER:-true}
+    APP_HEALTH_WORKER_MAX_AGE_SECONDS: ${APP_HEALTH_WORKER_MAX_AGE_SECONDS:-120}
+    TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
+    TELEGRAM_ADMIN_IDS: ${TELEGRAM_ADMIN_IDS:?TELEGRAM_ADMIN_IDS is required}
+    TELEGRAM_TARGET_CHAT_ID: ${TELEGRAM_TARGET_CHAT_ID:?TELEGRAM_TARGET_CHAT_ID is required}
+    TELEGRAM_TARGET_THREAD_ID: ${TELEGRAM_TARGET_THREAD_ID:-}
+    TELEGRAM_PAYMENTS_THREAD_ID: ${TELEGRAM_PAYMENTS_THREAD_ID:-}
+    TELEGRAM_PIN_POLL: ${TELEGRAM_PIN_POLL:-true}
+    SCHEDULE_TIMEZONE: ${SCHEDULE_TIMEZONE:-Asia/Tbilisi}
+    PAYMENT_PRICE_GEL: ${PAYMENT_PRICE_GEL:-20}
+    BOOKING_DEADLINE_TIME: ${BOOKING_DEADLINE_TIME:-20:00}
+    PAYMENTS_VIA_PRIVATE_CHAT: ${PAYMENTS_VIA_PRIVATE_CHAT:-false}
+
 services:
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment: *app-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: "no"
+
   bot:
     build:
       context: .
       dockerfile: Dockerfile
     environment:
-      APP_ENV: production
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      DATABASE_URL: ${DATABASE_URL:-}
-      POSTGRES_DB: ${POSTGRES_DB:-veloexpress}
-      POSTGRES_USER: ${POSTGRES_USER:-veloexpress}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      POSTGRES_HOST: ${POSTGRES_HOST:-db}
-      APP_HEALTH_HEARTBEAT_FILE: ${APP_HEALTH_HEARTBEAT_FILE:-/tmp/veloexpress-bot-heartbeat.json}
-      APP_HEALTH_HEARTBEAT_INTERVAL_SECONDS: ${APP_HEALTH_HEARTBEAT_INTERVAL_SECONDS:-15}
-      APP_HEALTH_MAX_AGE_SECONDS: ${APP_HEALTH_MAX_AGE_SECONDS:-90}
-      APP_HEALTH_REQUIRE_WORKER: ${APP_HEALTH_REQUIRE_WORKER:-true}
-      APP_HEALTH_WORKER_MAX_AGE_SECONDS: ${APP_HEALTH_WORKER_MAX_AGE_SECONDS:-120}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
-      TELEGRAM_ADMIN_IDS: ${TELEGRAM_ADMIN_IDS:?TELEGRAM_ADMIN_IDS is required}
-      TELEGRAM_TARGET_CHAT_ID: ${TELEGRAM_TARGET_CHAT_ID:?TELEGRAM_TARGET_CHAT_ID is required}
-      TELEGRAM_TARGET_THREAD_ID: ${TELEGRAM_TARGET_THREAD_ID:-}
-      TELEGRAM_PAYMENTS_THREAD_ID: ${TELEGRAM_PAYMENTS_THREAD_ID:-}
-      TELEGRAM_PIN_POLL: ${TELEGRAM_PIN_POLL:-true}
-      SCHEDULE_TIMEZONE: ${SCHEDULE_TIMEZONE:-Asia/Tbilisi}
-      PAYMENT_PRICE_GEL: ${PAYMENT_PRICE_GEL:-20}
-      BOOKING_DEADLINE_TIME: ${BOOKING_DEADLINE_TIME:-20:00}
-      PAYMENTS_VIA_PRIVATE_CHAT: ${PAYMENTS_VIA_PRIVATE_CHAT:-false}
+      <<: *app-env
+      WEB_APP_URL: ${WEB_APP_URL:-}
+    command: ["python", "-m", "veloexpress_bot"]
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-m", "veloexpress_bot.healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 90s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      <<: *app-env
+      WEB_PUBLIC_URL: ${WEB_PUBLIC_URL:?WEB_PUBLIC_URL is required}
+      WEB_SESSION_SECRET: ${WEB_SESSION_SECRET:?WEB_SESSION_SECRET is required}
+      WEB_TELEGRAM_CLIENT_ID: ${WEB_TELEGRAM_CLIENT_ID:-}
+      WEB_TELEGRAM_CLIENT_SECRET: ${WEB_TELEGRAM_CLIENT_SECRET:-}
+    command: ["uvicorn", "veloexpress_api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    expose:
+      - "8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    expose:
+      - "80"
+    depends_on:
+      api:
+        condition: service_healthy
     restart: unless-stopped
 
   db:

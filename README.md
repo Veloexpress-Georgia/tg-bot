@@ -4,7 +4,9 @@ Telegram bot for the Veloexpress shuttle group: it runs the weekend lift polls, 
 
 Admins work from a single private card — it opens on the day that needs attention and lifts open straight from it; `☰ Menu` holds `📋 Weekend` for planning what gets posted, `➕ Extra lift day` for midweek rides, and the history, statistics and settings. A background worker posts the polls on time, announces a lift once it reaches the rider minimum, reminds the group before the booking deadline, and pings the day's first lift before it leaves. Riders confirm payment with a button in the group or simply by writing in the payments topic.
 
-Still out of scope: balances across service days, fines, automatic removal of Telegram votes, miniapp, website, and template editing.
+The web cabinet adds admin analytics and operations plus a personal rider view. See [web setup and deployment](docs/operations/web-cabinet.md). Native Telegram polls remain the booking interface.
+
+Still out of scope: balances across service days, fines, automatic removal of Telegram votes, social login beyond Telegram, and template editing.
 
 ## Product Principle
 
@@ -37,7 +39,8 @@ notices or changing other days' polls.
 
 ## Stack
 
-- Python 3.14
+- Python 3.14 + FastAPI
+- React + TypeScript + Vite, Tailwind, Radix/shadcn-style controls and Recharts
 - aiogram 3
 - SQLAlchemy async + Alembic
 - Postgres
@@ -101,7 +104,7 @@ just down
 Use `just run` only when Postgres is already running and you want a one-shot bot
 process without hot reload.
 
-All admin controls live on one card in a private chat with the bot. `/start` opens it on the day that needs attention — today when today is a lift day, otherwise the nearest day still ahead — and on a quiet week the same card is the menu. There is no Close button: `/start` posts a fresh card and then deletes the command echo along with whatever card an earlier `/start` left behind, so exactly one card is ever live and the bot tidies up instead of asking.
+The Telegram admin controls live on one card in a private chat with the bot; the web cabinet offers another view of the same data and operations. `/start` opens it on the day that needs attention — today when today is a lift day, otherwise the nearest day still ahead — and on a quiet week the same card is the menu. There is no Close button: `/start` posts a fresh card and then deletes the command echo along with whatever card an earlier `/start` left behind, so exactly one card is ever live and the bot tidies up instead of asking.
 
 The card remembers which screen it is showing. Background work redraws it only while that screen is a live view of a day — the day itself, its riders, one lift — and leaves planning, settings, history, statistics and confirmations alone until the admin navigates away. The admin's registration is never dropped to achieve that, so opening settings still leaves them receiving tomorrow's monitor and the lift-day repost, and a restart picks the screen back up from the database.
 
@@ -303,7 +306,7 @@ By default the bot connects to the bundled `db` service. Later, if you move Post
 DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@HOST:5432/DATABASE
 ```
 
-`DATABASE_URL` must point to a Postgres host reachable from the bot container. Do not use `localhost` or `127.0.0.1` in Coolify unless Postgres runs inside the same container, which it does not. The Docker image runs `alembic upgrade head` before starting the bot.
+`DATABASE_URL` must point to a Postgres host reachable from the bot container. Do not use `localhost` or `127.0.0.1` in Coolify unless Postgres runs inside the same container, which it does not. The production Compose stack runs Alembic once in `migrate`, then starts the bot and API. The standalone bot image also retains its migration startup command.
 
 If `DATABASE_URL` is empty in production, the bot derives it from `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_HOST` with `POSTGRES_HOST=db` by default.
 

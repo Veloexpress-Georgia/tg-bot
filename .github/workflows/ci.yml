@@ -64,3 +64,23 @@ jobs:
 
       - name: Docker build
         run: docker compose -f docker-compose.local.yml build bot
+
+  web:
+    name: Web tests and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run format-check
+      - run: npm run test
+      - run: npm run build
+      - run: docker build -t veloexpress-web-review .

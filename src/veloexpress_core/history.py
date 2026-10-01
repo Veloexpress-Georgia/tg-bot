@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.models import LiftDayResult, LiftDaySeat, PaymentEntry
-from veloexpress_bot.polls.service import SessionFactory
+from veloexpress_core.lifts import SessionFactory
 
 Period = Literal["30d", "year", "all"]
 

@@ -33,15 +33,15 @@ from veloexpress_bot.db.models import (
 from veloexpress_bot.polls.defaults import StartLocation
 from veloexpress_bot.polls.liftsignals import booking_deadline_at, lift_departure_at
 from veloexpress_bot.polls.render import PollDraft
-from veloexpress_bot.polls.service import (
+from veloexpress_bot.telegram.errors import TelegramTargetForbiddenError
+from veloexpress_core.lifts import (
     DuplicatePollError,
     PollPostingService,
     PollSetup,
     SentPollMessage,
     SentTextMessage,
 )
-from veloexpress_bot.service_day_defaults import ServiceDayDefaultsStore
-from veloexpress_bot.telegram.errors import TelegramTargetForbiddenError
+from veloexpress_core.terms import ServiceDayDefaultsStore
 
 
 class FakeTelegramClient:
@@ -1792,7 +1792,7 @@ async def test_poll_service_clears_vote_selection_with_empty_answer(
     db: SharedDatabase,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="veloexpress_bot.polls.service")
+    caplog.set_level(logging.WARNING, logger="veloexpress_core.lifts")
     client = FakeTelegramClient()
     service = PollPostingService(
         settings=settings(),
@@ -2064,7 +2064,7 @@ async def test_recreate_cleanup_failure_keeps_old_batch_conflict_visible(
     db: SharedDatabase,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="veloexpress_bot.polls.service")
+    caplog.set_level(logging.WARNING, logger="veloexpress_core.lifts")
     client = FakeTelegramClient(fail_delete_once=True)
     service = PollPostingService(
         settings=settings(),

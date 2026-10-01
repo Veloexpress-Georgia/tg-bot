@@ -26,7 +26,15 @@ from veloexpress_bot.db.models import (
     ServiceDayTerms,
 )
 from veloexpress_bot.payments.myday import RiderSeason
-from veloexpress_bot.payments.service import (
+from veloexpress_bot.polls.liftsignals import booking_deadline_at
+from veloexpress_bot.polls.render import PollDraft
+from veloexpress_core.lifts import (
+    PollPostingService,
+    PollSetup,
+    SentPollMessage,
+    SentTextMessage,
+)
+from veloexpress_core.payments import (
     ALREADY_SETTLED_TEXT,
     CASH_METHOD,
     METHOD_VERIFIED_TEXT,
@@ -37,15 +45,7 @@ from veloexpress_bot.payments.service import (
     WAITLIST_WARNING_TEXT,
     PaymentsService,
 )
-from veloexpress_bot.polls.autoposter import PollAutoScheduler
-from veloexpress_bot.polls.liftsignals import booking_deadline_at
-from veloexpress_bot.polls.render import PollDraft
-from veloexpress_bot.polls.service import (
-    PollPostingService,
-    PollSetup,
-    SentPollMessage,
-    SentTextMessage,
-)
+from veloexpress_core.scheduler import PollAutoScheduler
 
 CHAT_ID = -100123
 LIFT_THREAD = 7

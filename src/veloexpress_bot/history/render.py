@@ -2,8 +2,8 @@ import html
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from veloexpress_bot.history.service import Statistics
 from veloexpress_bot.payments.myday import MyDayDraft
+from veloexpress_core.history import Statistics
 
 PAGE_SIZE = 8
 

@@ -48,3 +48,17 @@ test:
 
 typecheck:
     uv run pyright
+
+# Start beside `just dev`; API never starts the Telegram scheduler.
+api:
+    uv run uvicorn veloexpress_api.app:create_app --factory --reload --host 127.0.0.1 --port 8000
+
+web:
+    npm --prefix web run dev
+
+web-build:
+    npm --prefix web run build
+
+web-check:
+    npm --prefix web run test
+    npm --prefix web run build

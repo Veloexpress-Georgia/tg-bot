@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime
 from tests.unit.test_payments_service import SharedDatabase, settings
 
 from veloexpress_bot.db.models import LiftDayResult, LiftDaySeat, PaymentEntry
-from veloexpress_bot.history.service import HistoryStatistics
+from veloexpress_core.history import HistoryStatistics
 
 
 async def test_statistics_do_not_multiply_money_by_lifts_or_count_guests_as_riders() -> None:
@@ -119,7 +119,7 @@ async def test_statistic_rendering_escapes_names_and_keeps_admin_period_controls
     from dataclasses import replace
 
     from veloexpress_bot.history.render import render_statistics
-    from veloexpress_bot.history.service import RiderStatistics
+    from veloexpress_core.history import RiderStatistics
 
     db = SharedDatabase()
     await db.create()

@@ -21,11 +21,6 @@ from veloexpress_bot.polls.schedule import (
     lift_range_from_cancelled,
     select_lift_range_boundary,
 )
-from veloexpress_bot.polls.service import (
-    PollPostingService,
-    PollSetup,
-    SessionFactory,
-)
 from veloexpress_bot.polls.weekendplan import (
     DayPlanStatus,
     PlanCardDraft,
@@ -33,9 +28,14 @@ from veloexpress_bot.polls.weekendplan import (
     WeekendPlanView,
     render_weekend_plan_card,
 )
+from veloexpress_core.lifts import (
+    PollPostingService,
+    PollSetup,
+    SessionFactory,
+)
 
 if TYPE_CHECKING:
-    from veloexpress_bot.polls.autoposter import PollAutoScheduler
+    from veloexpress_core.scheduler import PollAutoScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +153,28 @@ class WeekendPlanner:
     ) -> PlanCardDraft:
         plan_view = replace(await self._plan_view(now=now), schedule_label=schedule_label)
         return render_weekend_plan_card(plan_view, view=view)
+
+    async def save_plan(
+        self,
+        *,
+        saturday_enabled: bool,
+        sunday_enabled: bool,
+        first_lift_time: str,
+        last_lift_time: str,
+        admin_user_id: int,
+    ) -> None:
+        if not saturday_enabled and not sunday_enabled:
+            raise ValueError("At least one day must remain")
+        cancelled = cancelled_lift_times_for_range(first_lift_time, last_lift_time)
+        await self._update_plan(
+            lambda plan: replace(
+                plan,
+                saturday_enabled=saturday_enabled,
+                sunday_enabled=sunday_enabled,
+                cancelled_lift_times=cancelled,
+            ),
+            admin_user_id=admin_user_id,
+        )
 
     async def toggle_day(
         self,

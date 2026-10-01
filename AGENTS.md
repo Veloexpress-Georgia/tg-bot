@@ -20,14 +20,18 @@ The current product includes:
 - booking, capacity and waitlist monitoring
 - service-day payment tracking and deadline rosters
 - automatic scheduling, notices and Telegram-message recovery
+- FastAPI/React cabinet: analytics, admin operations and private rider views
 
-Balances across service days, fines, a website, miniapp, and template editing remain out of scope unless explicitly approved.
+Balances across service days, fines, non-Telegram social login and template editing remain out of scope unless explicitly approved.
 
 ## Code Boundaries
 
 - Keep Telegram API calls in `src/veloexpress_bot/telegram/`.
 - Keep pure poll rendering in `src/veloexpress_bot/polls/`.
-- Keep aiogram handlers thin; call services for business work.
+- Keep aiogram handlers and FastAPI routes thin; call shared `veloexpress_core` modules for business work.
+- FastAPI must not start the Telegram scheduler or poller. Web writes use the durable command queue executed by the bot.
+- Keep personal views scoped to the verified user; derive admin rights on the server.
+- Label synthetic demo data and never connect demo actions to production writes.
 - Add tests for pure logic and service behavior before changing live Telegram behavior.
 
 ## Product Design

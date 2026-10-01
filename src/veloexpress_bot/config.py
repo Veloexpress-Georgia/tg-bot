@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     # Worth turning on once it has been watched on a test group — it is the only
     # thing that converts them, and personal notifications need that chat.
     payments_via_private_chat: bool = False
+    web_app_url: str = ""
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod

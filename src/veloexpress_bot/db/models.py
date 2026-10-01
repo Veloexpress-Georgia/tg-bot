@@ -911,3 +911,24 @@ Index(
     postgresql_where=PollBatch.status.in_(ACTIVE_POLL_BATCH_STATUSES),
     sqlite_where=PollBatch.status.in_(ACTIVE_POLL_BATCH_STATUSES),
 )
+
+
+class AdminCommand(Base):
+    """Durable web action and audit trail; uncertain executions are never replayed."""
+
+    __tablename__ = "admin_command"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    actor_user_id: Mapped[int] = mapped_column(BigInteger)
+    request_key: Mapped[str] = mapped_column(String(128), unique=True)
+    action: Mapped[str] = mapped_column(String(32))
+    payload: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    result: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

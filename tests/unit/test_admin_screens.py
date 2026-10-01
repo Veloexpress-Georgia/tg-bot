@@ -18,7 +18,7 @@ from tests.unit.test_poll_service import (
 )
 
 from veloexpress_bot.bookings.screens import AdminScreen, decode_screen
-from veloexpress_bot.polls.service import PollPostingService, PollSetup
+from veloexpress_core.lifts import PollPostingService, PollSetup
 
 
 @pytest.fixture

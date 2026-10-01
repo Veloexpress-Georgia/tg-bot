@@ -1,0 +1,42 @@
+name: Deploy to Coolify
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coolify-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.workflow_run.head_branch == 'main' && 'Production' || 'Development' }}
+    steps:
+      - name: Deploy the current tested branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          DEPLOY_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          set -eu
+          latest_sha=$(gh api "repos/${GITHUB_REPOSITORY}/branches/${DEPLOY_BRANCH}" --jq .commit.sha)
+          if [ "$latest_sha" != "$TESTED_SHA" ]; then
+            echo "A newer commit exists; its CI run will deploy it."
+            exit 0
+          fi
+          if [ -z "$COOLIFY_WEBHOOK" ] || [ -z "$COOLIFY_TOKEN" ]; then
+            echo "Configure COOLIFY_WEBHOOK and COOLIFY_TOKEN in this GitHub environment."
+            exit 1
+          fi
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer ${COOLIFY_TOKEN}" \
+            "$COOLIFY_WEBHOOK" > /dev/null

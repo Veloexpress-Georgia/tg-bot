@@ -9,9 +9,13 @@ dependencies = [
     "aiogram>=3.28,<4",
     "alembic>=1.17,<2",
     "asyncpg>=0.31,<1",
+    "fastapi>=0.115,<1",
+    "httpx>=0.28,<1",
     "pillow>=11,<13",
     "pydantic-settings>=2.12,<3",
+    "pyjwt[crypto]>=2.10,<3",
     "sqlalchemy[asyncio]>=2.0,<3",
+    "uvicorn>=0.30,<1",
 ]
 
 [build-system]
@@ -31,6 +35,9 @@ dev = [
 [project.scripts]
 veloexpress-bot = "veloexpress_bot.__main__:main"
 veloexpress-bot-healthcheck = "veloexpress_bot.healthcheck:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/veloexpress_bot", "src/veloexpress_core", "src/veloexpress_api"]
 
 [tool.uv]
 package = true
