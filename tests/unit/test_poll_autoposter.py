@@ -12,14 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.base import Base
 from veloexpress_bot.db.models import PollAutoSchedule, PollBatch, PollWeekendPlan
-from veloexpress_bot.polls.autoposter import PollAutoScheduler
 from veloexpress_bot.polls.render import PollDraft
-from veloexpress_bot.polls.service import (
+from veloexpress_core.lifts import (
     PollPostingService,
     PollSetup,
     SentPollMessage,
     SentTextMessage,
 )
+from veloexpress_core.scheduler import PollAutoScheduler
 
 TBILISI = ZoneInfo("Asia/Tbilisi")
 WEEK = date(2026, 7, 25)  # Saturday

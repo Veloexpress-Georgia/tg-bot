@@ -72,7 +72,7 @@ from veloexpress_bot.polls.liftsignals import (
     render_seat_promotions,
 )
 from veloexpress_bot.polls.seating import SeatCandidate, allocate_seats
-from veloexpress_bot.polls.service import (
+from veloexpress_core.lifts import (
     SessionFactory,
     TelegramPollClient,
     decode_option_ids,
@@ -253,6 +253,95 @@ class PaymentsService:
         await self._retire_boards(today=moment.date())
         for day in await self._active_days(today=moment.date()):
             await self._refresh_board(day)
+
+    async def rider_day(self, *, service_date: date, telegram_user_id: int) -> RiderDayView | None:
+        day = await self._day(service_date)
+        return self._rider_day_view(day, telegram_user_id) if day is not None else None
+
+    async def day_bookings(self, service_date: date) -> DayBookings | None:
+        """Structured view shared with HTTP; no Telegram rendering or sending."""
+        return await self._day(service_date)
+
+    async def record_admin_payment(
+        self,
+        *,
+        service_date: date,
+        telegram_user_id: int,
+        amount_gel: int,
+        method: str,
+        admin_user_id: int,
+        reference_key: str,
+    ) -> None:
+        """Append an administrator-reported payment, preserving the ledger."""
+        if admin_user_id not in self._settings.telegram_admin_ids:
+            raise PermissionError("Admins only")
+        if amount_gel <= 0 or amount_gel > 100000 or method not in {CASH_METHOD, TRANSFER_METHOD}:
+            raise ValueError("Specify a positive amount and cash or transfer")
+        day = await self._day(service_date)
+        if day is None or telegram_user_id not in day.labels_by_user:
+            raise ValueError("Rider is not booked for this day")
+        async with self._session_factory() as session:
+            await self._lock_day(session, service_date)
+            prior = await session.scalar(
+                select(PaymentEntry.id).where(
+                    PaymentEntry.environment == self._settings.app_env,
+                    PaymentEntry.chat_id == self._require_chat_id(),
+                    PaymentEntry.thread_id == self._settings.telegram_target_thread_id,
+                    PaymentEntry.reference_key == reference_key,
+                )
+            )
+            if prior is not None:
+                return
+            claim = await self._claim_row(
+                session=session, service_date=service_date, telegram_user_id=telegram_user_id
+            )
+            username, full_name = day.labels_by_user[telegram_user_id]
+            now = datetime.now(UTC)
+            if claim is None:
+                claim = PaymentClaim(
+                    environment=self._settings.app_env,
+                    chat_id=self._require_chat_id(),
+                    thread_id=self._settings.telegram_target_thread_id,
+                    service_date=service_date,
+                    telegram_user_id=telegram_user_id,
+                    username=username,
+                    full_name=full_name,
+                    amount_gel=0,
+                    cash_amount_gel=0,
+                )
+                session.add(claim)
+            claim.amount_gel = (claim.amount_gel or 0) + amount_gel
+            claim.cash_amount_gel = (claim.cash_amount_gel or 0) + (
+                amount_gel if method == CASH_METHOD else 0
+            )
+            claim.method = (
+                CASH_METHOD
+                if claim.cash_amount_gel == claim.amount_gel
+                else "mixed"
+                if claim.cash_amount_gel
+                else TRANSFER_METHOD
+            )
+            claim.seats = claim.amount_gel // day.price_gel
+            claim.verified_by_user_id = admin_user_id
+            claim.verified_at = now
+            claim.updated_at = now
+            session.add(
+                PaymentEntry(
+                    environment=self._settings.app_env,
+                    chat_id=self._require_chat_id(),
+                    thread_id=self._settings.telegram_target_thread_id,
+                    service_date=service_date,
+                    telegram_user_id=telegram_user_id,
+                    amount_gel=amount_gel,
+                    method=method,
+                    kind="received",
+                    reference_key=reference_key,
+                    recorded_at=now,
+                )
+            )
+            await session.commit()
+        await self._announce_claim(day, telegram_user_id)
+        await self._refresh_board(day)
 
     async def claim(
         self,
@@ -658,6 +747,13 @@ class PaymentsService:
 
         changed = 0
         async with self._session_factory() as session:
+            await self._lock_day(session, service_date)
+            # Another guest/manual mutation may have consumed the last seat while
+            # this request waited for the day lock. Read capacity after acquiring it.
+            latest = await self._day(service_date)
+            if latest is None or latest.cancelled:
+                return BOARD_GONE_TEXT
+            day = latest
             for lift_time in lift_times:
                 if lift_time not in day.booked_lift_times_by_user.get(telegram_user_id, ()):
                     # Booked, not necessarily running: a guest is one of the five a

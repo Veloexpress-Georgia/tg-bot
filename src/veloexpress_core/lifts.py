@@ -116,8 +116,8 @@ from veloexpress_bot.polls.schedule import (
     suggested_cancelled_lift_times,
 )
 from veloexpress_bot.polls.seating import SeatCandidate, allocate_seats
-from veloexpress_bot.service_day_defaults import ServiceDayDefaultsStore
 from veloexpress_bot.telegram.outbox import TelegramOutboxDispatcher
+from veloexpress_core.terms import ServiceDayDefaultsStore
 
 
 class DuplicatePollError(RuntimeError):
@@ -997,6 +997,10 @@ class PollPostingService:
         now = datetime.now(UTC)
         poll_id: str | None = None
         async with self._session_factory() as session:
+            await transaction_lock(
+                session,
+                f"payment-day:{self._settings.app_env}:{self._settings.telegram_target_chat_id}:{service_date}",
+            )
             snapshot = await self._active_snapshot_for_lift(
                 session=session,
                 service_date=service_date,

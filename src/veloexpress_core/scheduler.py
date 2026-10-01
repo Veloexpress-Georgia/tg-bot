@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.models import PollAutoSchedule, WorkerCheckpoint
-from veloexpress_bot.payments.service import PaymentsService
 from veloexpress_bot.polls.autoschedule import (
     SHORT_WEEKDAY_LABELS,
     AutoScheduleState,
@@ -28,15 +27,16 @@ from veloexpress_bot.polls.autoschedule import (
     skip_target_week,
     state_from_row,
 )
-from veloexpress_bot.polls.planner import resolve_week_plan
 from veloexpress_bot.polls.schedule import enabled_lift_count, lift_range_from_cancelled
-from veloexpress_bot.polls.service import (
+from veloexpress_core.lifts import (
     DuplicatePollError,
     PollPostingService,
     PollSetup,
     SessionFactory,
     TelegramPollClient,
 )
+from veloexpress_core.payments import PaymentsService
+from veloexpress_core.planning import resolve_week_plan
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +266,29 @@ class PollAutoScheduler:
         lift_count = enabled_lift_count(cancelled_lift_times)
         lift_label = "lift" if lift_count == 1 else "lifts"
         return f"{first_time} → {last_time} · {lift_count} {lift_label}"
+
+    async def set_schedule(
+        self,
+        *,
+        enabled: bool,
+        weekday: int,
+        creation_time: str,
+        announce_lead_minutes: int,
+        admin_user_id: int,
+    ) -> None:
+        if weekday not in range(6) or announce_lead_minutes not in {0, 60, 120, 180}:
+            raise ValueError("Invalid publication schedule")
+        normalized = Settings.validate_booking_deadline(creation_time)
+        await self._update_state(
+            lambda state: replace(
+                state,
+                enabled=enabled,
+                creation_weekday=weekday,
+                creation_time=normalized,
+                announce_lead_minutes=announce_lead_minutes,
+            ),
+            admin_user_id=admin_user_id,
+        )
 
     async def toggle_enabled(self, *, admin_user_id: int) -> None:
         await self._update_state(

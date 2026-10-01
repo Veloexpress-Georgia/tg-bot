@@ -23,3 +23,10 @@ build/
 .idea/
 .vscode/
 *.log
+
+# Web builds and browser review artifacts
+web/node_modules/
+web/dist/
+*.tsbuildinfo
+output/playwright/
+.playwright-cli/

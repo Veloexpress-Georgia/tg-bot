@@ -13,9 +13,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from tests.unit import test_payments_service as helpers
 
 from veloexpress_bot.db.models import PaymentClaim, PaymentEntry, TelegramOutbox
-from veloexpress_bot.payments.service import PaymentsService
-from veloexpress_bot.polls.service import SentTextMessage
 from veloexpress_bot.telegram.outbox import TelegramOutboxDispatcher
+from veloexpress_core.lifts import SentTextMessage
+from veloexpress_core.payments import PaymentsService
 
 
 @pytest.fixture
@@ -223,3 +223,79 @@ async def test_concurrent_board_sync_creates_only_one_payments_board(
     cards = [record for record in client.sent if "Payment open:" in record.text]
     assert len(cards) == 1
     assert cards[0].thread_id == helpers.PAYMENTS_THREAD
+
+
+async def test_concurrent_web_requests_keep_one_command(pg: helpers.SharedDatabase) -> None:
+    from veloexpress_bot.db.models import AdminCommand
+    from veloexpress_core.commands import CommandInput, CommandQueue
+
+    config = helpers.settings()
+    first = CommandQueue(settings=config, session_factory=pg.session)
+    second = CommandQueue(settings=config, session_factory=pg.session)
+    spec = CommandInput(request_id=uuid4(), action="terms", price_gel=20, deadline_time="20:00")
+    results = await asyncio.wait_for(
+        asyncio.gather(first.enqueue(spec, actor_user_id=1), second.enqueue(spec, actor_user_id=1)),
+        5,
+    )
+    assert results[0]["id"] == results[1]["id"]
+    async with pg.session() as session:
+        assert (
+            await session.scalar(
+                select(func.count(AdminCommand.id)).where(
+                    AdminCommand.environment == config.app_env
+                )
+            )
+            == 1
+        )
+
+
+async def test_two_guest_requests_cannot_take_the_same_last_seat(
+    pg: helpers.SharedDatabase,
+) -> None:
+    polls, payments, client, poll_id, day = await helpers._setup(pg)
+    await helpers._fill(polls, poll_id, 0, riders=9)
+    other = PaymentsService(
+        settings=payments._settings, session_factory=pg.session, telegram_client=client
+    )
+    for service in (payments, other):
+        service._announce_claim = AsyncMock()
+        service._refresh_board = AsyncMock()
+    results = await asyncio.wait_for(
+        asyncio.gather(
+            payments.adjust_guest_seats(
+                service_date=day, telegram_user_id=100, lift_times=("8:30",), delta=1
+            ),
+            other.adjust_guest_seats(
+                service_date=day, telegram_user_id=101, lift_times=("8:30",), delta=1
+            ),
+        ),
+        5,
+    )
+    assert results.count("Guests updated.") == 1
+    bookings = await payments.day_bookings(day)
+    assert bookings is not None and bookings.seats_left("8:30") == 0
+    assert sum(bookings.guests_by_user_lift.values()) == 1
+
+
+async def test_concurrent_first_manual_seats_stay_within_capacity(
+    pg: helpers.SharedDatabase,
+) -> None:
+    polls, _, _, poll_id, day = await helpers._setup(pg)
+    await helpers._fill(polls, poll_id, 0, riders=9)
+    polls._refresh_availability = AsyncMock()
+    polls._refresh_booking_monitors = AsyncMock()
+    results = await asyncio.wait_for(
+        asyncio.gather(
+            polls.adjust_manual_booking(
+                service_date=day, lift_time="8:30", delta=1, admin_user_id=1
+            ),
+            polls.adjust_manual_booking(
+                service_date=day, lift_time="8:30", delta=1, admin_user_id=1
+            ),
+            return_exceptions=True,
+        ),
+        5,
+    )
+    assert sum(isinstance(result, ValueError) for result in results) == 1
+    detail = await polls.lift_detail(service_date=day, lift_time="8:30")
+    assert detail is not None and detail[0].manual_count == 1 and detail[0].seat_count == 10

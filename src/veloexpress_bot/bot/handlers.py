@@ -28,7 +28,6 @@ from veloexpress_bot.bot.permissions import is_admin
 from veloexpress_bot.bot.states import ExtraDayStates
 from veloexpress_bot.config import Settings
 from veloexpress_bot.history.render import render_statistics
-from veloexpress_bot.history.service import HistoryStatistics, Period
 from veloexpress_bot.payments.myday import (
     MY_DAY_PARSE_MODE,
     decode_guest_date,
@@ -36,37 +35,38 @@ from veloexpress_bot.payments.myday import (
     parse_deep_link,
 )
 from veloexpress_bot.payments.render import decode_board_date
-from veloexpress_bot.payments.service import (
-    CASH_METHOD,
-    TRANSFER_METHOD,
-    PaymentsService,
-    StoredRefundReport,
-)
-from veloexpress_bot.polls.autoposter import PollAutoScheduler
 from veloexpress_bot.polls.autoschedule import CardView
 from veloexpress_bot.polls.extraday import (
     ExtraDayDraftState,
     ExtraDayView,
     render_extra_day_card,
 )
-from veloexpress_bot.polls.planner import WeekendPlanner
 from veloexpress_bot.polls.schedule import (
     RangeBoundary,
     normalize_cancelled_lift_times,
     select_lift_range_boundary,
 )
-from veloexpress_bot.polls.service import (
+from veloexpress_bot.polls.weekendplan import PlanCardView
+from veloexpress_bot.telegram.errors import TelegramPollPostError, TelegramTargetForbiddenError
+from veloexpress_core.history import HistoryStatistics, Period
+from veloexpress_core.lifts import (
     DuplicatePollError,
     PollPostingService,
     PollSetup,
 )
-from veloexpress_bot.polls.weekendplan import PlanCardView
-from veloexpress_bot.service_day_defaults import (
+from veloexpress_core.payments import (
+    CASH_METHOD,
+    TRANSFER_METHOD,
+    PaymentsService,
+    StoredRefundReport,
+)
+from veloexpress_core.planning import WeekendPlanner
+from veloexpress_core.scheduler import PollAutoScheduler
+from veloexpress_core.terms import (
     DEADLINE_STEP_MINUTES,
     PRICE_STEP_GEL,
     ServiceDayDefaultsStore,
 )
-from veloexpress_bot.telegram.errors import TelegramPollPostError, TelegramTargetForbiddenError
 
 router = Router(name="admin_poll_setup")
 logger = logging.getLogger(__name__)

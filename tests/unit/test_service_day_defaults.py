@@ -1,4 +1,4 @@
-from veloexpress_bot.service_day_defaults import (
+from veloexpress_core.terms import (
     ServiceDayDefaultValues,
     render_service_day_defaults,
 )

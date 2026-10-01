@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from veloexpress_bot.config import Settings
+from veloexpress_bot.db.locking import transaction_lock
 from veloexpress_bot.db.models import ServiceDayDefaults
 
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
@@ -82,6 +83,15 @@ class ServiceDayDefaultsStore:
         )
         return ServiceDayDefaultValues(current.price_gel, deadline, current.timezone)
 
+    async def set_values(
+        self, *, price_gel: int, deadline_time: str, admin_user_id: int
+    ) -> ServiceDayDefaultValues:
+        if price_gel <= 0 or price_gel > 10000:
+            raise ValueError("Price must be between 1 and 10000 GEL")
+        normalized = Settings.validate_booking_deadline(deadline_time)
+        await self._save(price_gel=price_gel, deadline_time=normalized, admin_user_id=admin_user_id)
+        return await self.values()
+
     async def card(self) -> ServiceDayDefaultsCard:
         values = await self.values()
         return render_service_day_defaults(values)
@@ -109,6 +119,10 @@ class ServiceDayDefaultsStore:
             msg = "TELEGRAM_TARGET_CHAT_ID is required to edit service-day defaults."
             raise ValueError(msg)
         async with self._session_factory() as session:
+            await transaction_lock(
+                session,
+                f"day-defaults:{self._settings.app_env}:{chat_id}:{self._settings.telegram_target_thread_id}",
+            )
             row = await session.scalar(
                 select(ServiceDayDefaults)
                 .where(ServiceDayDefaults.environment == self._settings.app_env)
