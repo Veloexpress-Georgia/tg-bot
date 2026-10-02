@@ -1,6 +1,6 @@
 """Shared bank details and cash instructions for payment cards."""
 
-from veloexpress_bot.payment_copy import CASH_ON_SITE_TEXT, CASH_REPORT_TEXT
+from veloexpress_bot.payment_copy import CASH_BUTTON, CASH_ON_SITE_TEXT, CASH_REPORT_TEXT
 
 PAYMENT_RECIPIENT = "Mikheil Nozadze"
 PAYMENT_ACCOUNTS = (
@@ -17,6 +17,7 @@ def bank_details_text() -> str:
             "",
             "Transfer to either account, then mark the completed payment.",
             CASH_ON_SITE_TEXT,
+            f"Choose {CASH_BUTTON} if you will pay on site.",
             CASH_REPORT_TEXT,
             "Paid for another rider? They tap I paid for their day, or ask Misho to record "
             "the actual amount. Do not also report it as your payment.",

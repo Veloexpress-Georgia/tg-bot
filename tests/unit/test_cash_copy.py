@@ -62,6 +62,7 @@ def test_payment_messages_separate_cash_on_site_from_transfer_deadline(text: str
     assert "book and pay by" not in text.lower()
 
 
-def test_cash_report_is_explicitly_after_money_is_handed_over() -> None:
+def test_cash_choice_is_a_promise_and_misho_records_actual_receipt() -> None:
     text = bank_details_text().lower()
-    assert "after handing" in text
+    assert "promise" in text
+    assert "misho records cash after collecting" in text

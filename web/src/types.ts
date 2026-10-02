@@ -85,6 +85,7 @@ export interface LiftRider {
   cash: boolean;
   guests: number;
   waitlisted: boolean;
+  cash_on_site?: boolean;
 }
 export interface Lift {
   time: string;
@@ -107,6 +108,7 @@ export interface RiderBooking {
   due_now_gel: number;
   due_all_gel: number;
   payment_method: string | null;
+  cash_on_site?: boolean;
   pending_lift_times: string[];
   rows: {
     lift_time: string;

@@ -26,12 +26,18 @@ export function MyRides({ data, act, busy }: { data: MyDays; act: Act; busy: boo
     });
   const paymentButtons = (
     <div className="payment-buttons">
-      <Button disabled={busy} onClick={() => recordPayment('transfer')}>
+      <Button disabled={busy || day?.past} onClick={() => recordPayment('transfer')}>
         <Check size={16} />Я перевёл
       </Button>
-      <Button variant="secondary" disabled={busy} onClick={() => recordPayment('cash')}>
-        Передал наличные
-      </Button>
+      {booking && !booking.cash_on_site && booking.due_all_gel > booking.paid_gel && (
+        <Button
+          variant="secondary"
+          disabled={busy || day?.past}
+          onClick={() => recordPayment('cash')}
+        >
+          Заплачу наличными
+        </Button>
+      )}
     </div>
   );
   return (
@@ -152,12 +158,26 @@ export function MyRides({ data, act, busy }: { data: MyDays; act: Act; busy: boo
                   Ждём минимум: {booking.pending_lift_times.join(', ')}.
                 </p>
               )}
+              {booking.cash_on_site && (
+                <div className="ride-cash-choice">
+                  <Wallet size={17} />
+                  <span>Выбрана оплата наличными на месте</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy || day.past}
+                    aria-label="Отменить выбор оплаты наличными"
+                    onClick={() => act({ action: 'undo_payment', service_date: day.service_date })}
+                  >
+                    Отменить
+                  </Button>
+                </div>
+              )}
               {remaining > 0 ? (
                 <div className="payment-actions">
                   {paymentButtons}
                   <p className="caption">
-                    Наличными — Мишо на месте в день поездки. Отмечай оплату только после передачи
-                    денег.
+                    Деньги передашь Мишо на месте в день поездки. Он отметит получение.
                   </p>
                 </div>
               ) : (
@@ -179,7 +199,7 @@ export function MyRides({ data, act, busy }: { data: MyDays; act: Act; busy: boo
                   </p>
                   <pre className="report-text">{plain(data.bank_details)}</pre>
                   {remaining === 0 && <div className="payment-actions">{paymentButtons}</div>}
-                  {booking.paid_gel > 0 && (
+                  {booking.paid_gel > 0 && !booking.cash_on_site && (
                     <Button
                       variant="ghost"
                       size="sm"

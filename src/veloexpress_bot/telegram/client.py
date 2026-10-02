@@ -226,7 +226,11 @@ class AiogramTelegramClient:
             error_text = error.message.lower()
             if any(
                 text in error_text
-                for text in ("poll has already been closed", "message to stop poll not found")
+                for text in (
+                    "poll has already been closed",
+                    "message to stop poll not found",
+                    "message with poll to stop not found",
+                )
             ):
                 return True
             logger.exception("Failed to stop poll", extra={"message_id": message_id})

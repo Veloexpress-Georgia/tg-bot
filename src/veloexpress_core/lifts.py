@@ -49,6 +49,7 @@ from veloexpress_bot.db.models import (
     ACTIVE_POLL_BATCH_STATUSES,
     AdminBookingMonitor,
     CancelledLift,
+    CashPromise,
     DeadlineRoster,
     GuestSeat,
     LiftDayResult,
@@ -1229,6 +1230,16 @@ class PollPostingService:
                 )
             ).all()
             claim_by_user = {claim.telegram_user_id: claim for claim in claims}
+            cash_on_site_ids = set(
+                await session.scalars(
+                    select(CashPromise.telegram_user_id).where(
+                        CashPromise.environment == self._settings.app_env,
+                        CashPromise.chat_id == self._settings.telegram_target_chat_id,
+                        CashPromise.thread_id == self._settings.telegram_target_thread_id,
+                        CashPromise.service_date == service_date,
+                    )
+                )
+            )
             day_guest_rows = (
                 await session.scalars(
                     select(GuestSeat)
@@ -1315,6 +1326,7 @@ class PollPostingService:
                             and claim.verified_by_user_id is None,
                             guests=guests_by_host.get(vote.telegram_user_id, 0),
                             waitlisted=vote.telegram_user_id in waitlisted_ids,
+                            cash_on_site=vote.telegram_user_id in cash_on_site_ids,
                         )
                         for vote in lift_votes
                     ),
@@ -1352,7 +1364,7 @@ class PollPostingService:
         notify: bool = True,
         expected_batch_ids: tuple[int, ...] | None = None,
     ) -> None:
-        """Retire the whole day: the polls close and the day leaves the monitor.
+        """Retire the whole day: delete its polls and leave the cancellation notice.
 
         Unlike a single-lift cancel this is not reversible in place — the date is
         freed so an admin can post a fresh poll if the day comes back.
@@ -1430,8 +1442,10 @@ class PollPostingService:
         await self._refresh_booking_monitors()
 
     async def _close_cancelled_polls(self, *, batch_ids: list[int] | None = None) -> None:
-        # Keep the closed poll as history. Persist success so retries survive a
-        # restart and also repair days cancelled before native polls were closed.
+        # A closed poll still looks like an event in the group. Remove cancelled
+        # polls, including ones the old implementation deliberately kept stopped.
+        # Older-than-48h messages cannot be deleted through the Bot API: close and
+        # unpin them once, retaining an explicit terminal status instead of retrying.
         chat_id = self._settings.telegram_target_chat_id
         if chat_id is None:
             return
@@ -1449,7 +1463,7 @@ class PollPostingService:
                     .where(
                         or_(
                             PollMessage.cleanup_status.not_in(
-                                ("stopped", "deleted", "telegram_deleted")
+                                ("deleted", "telegram_deleted", "delete_expired")
                             ),
                             PollMessage.pinned.is_(True),
                         )
@@ -1458,7 +1472,13 @@ class PollPostingService:
                 )
             )
             for message in messages:
-                if message.cleanup_status not in {"stopped", "deleted", "telegram_deleted"}:
+                if message.cleanup_status not in {
+                    "stopped",
+                    "stopped_delete_failed",
+                    "deleted",
+                    "telegram_deleted",
+                    "delete_expired",
+                }:
                     stopped = await self._telegram_client.stop_poll(
                         chat_id=chat_id,
                         message_id=message.telegram_message_id,
@@ -1469,6 +1489,29 @@ class PollPostingService:
                     message_id=message.telegram_message_id,
                 ):
                     message.pinned = False
+                if message.cleanup_status in {"deleted", "telegram_deleted"}:
+                    continue
+                created_at = message.created_at
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=UTC)
+                age = datetime.now(UTC) - created_at
+                if age >= timedelta(hours=48):
+                    if message.cleanup_status in {
+                        "stopped",
+                        "stopped_delete_failed",
+                        "delete_expired",
+                    }:
+                        message.cleanup_status = "delete_expired"
+                    continue
+                deleted = await self._telegram_client.delete_message(
+                    chat_id=chat_id, message_id=message.telegram_message_id
+                )
+                if deleted:
+                    message.cleanup_status = "deleted"
+                    message.pinned = False
+                    logger.info("cancelled_poll_deleted message_id=%s", message.telegram_message_id)
+                elif message.cleanup_status == "stopped":
+                    message.cleanup_status = "stopped_delete_failed"
             await session.commit()
 
     async def restore_lift(
@@ -3215,6 +3258,16 @@ class PollPostingService:
                     .where(PaymentClaim.service_date.in_(selected_dates))
                 )
             ).all()
+            cash_promises = list(
+                await session.scalars(
+                    select(CashPromise).where(
+                        CashPromise.environment == self._settings.app_env,
+                        CashPromise.chat_id == self._settings.telegram_target_chat_id,
+                        CashPromise.thread_id == self._settings.telegram_target_thread_id,
+                        CashPromise.service_date.in_(selected_dates),
+                    )
+                )
+            )
             guest_seats = (
                 await session.scalars(
                     select(GuestSeat)
@@ -3271,6 +3324,11 @@ class PollPostingService:
                 votes_by_poll.get(batch_snapshots[0].poll_id, []) if batch_snapshots else []
             )
             day_claims = [claim for claim in claims if claim.service_date == batch.service_date]
+            cash_on_site_ids = {
+                promise.telegram_user_id
+                for promise in cash_promises
+                if promise.service_date == batch.service_date
+            }
             claim_by_user = {claim.telegram_user_id: claim for claim in day_claims}
             day_guests = [row for row in guest_seats if row.service_date == batch.service_date]
             day_deadline_rows = [
@@ -3365,47 +3423,75 @@ class PollPostingService:
             covered_by_lift: dict[str, int] = {
                 lift.time: lift.manual_count for lift in lifts if not lift.cancelled
             }
-            if day_deadline_rows:
-                for row in day_deadline_rows:
-                    covered_by_lift[row.lift_time] = (
-                        covered_by_lift.get(row.lift_time, 0) + row.covered_seats
+            locked_by_user_lift: dict[tuple[int, str], int] = {}
+            locked_by_user: dict[int, int] = {}
+            for row in day_deadline_rows:
+                if row.telegram_user_id == 0:
+                    covered_by_lift[row.lift_time] = max(
+                        covered_by_lift.get(row.lift_time, 0), row.covered_seats
                     )
-            else:
-                guests_by_host_lift = {
-                    (guest.host_user_id, guest.lift_time): guest.count
-                    for guest in day_guests
-                    if guest.count > 0
-                }
-                # Same order the deadline freeze uses: movable money covers the
-                # lifts that are actually leaving before the ones that are not.
-                live_times = {lift.time for lift in lifts if lift.running}
-                for user_id, held_lifts in held_lifts_by_user.items():
-                    claim = claim_by_user.get(user_id)
-                    coverage = reconcile_coverage(
-                        received_gel=claim.amount_gel if claim is not None else 0,
-                        price_gel=day_price,
-                        targets=tuple(
-                            CoverageTarget(
-                                lift_time,
-                                1 + guests_by_host_lift.get((user_id, lift_time), 0),
-                            )
-                            for lift_time in sorted(
-                                held_lifts,
-                                key=lambda time_: (
-                                    time_ not in live_times,
-                                    lift_minutes(time_),
-                                ),
-                            )
-                        ),
-                    )
-                    for target in coverage.targets:
-                        covered_by_lift[target.lift_time] = (
-                            covered_by_lift.get(target.lift_time, 0) + target.covered_seats
+                    continue
+                covered_by_lift[row.lift_time] = (
+                    covered_by_lift.get(row.lift_time, 0) + row.covered_seats
+                )
+                key = (row.telegram_user_id, row.lift_time)
+                locked_by_user_lift[key] = locked_by_user_lift.get(key, 0) + row.covered_seats
+                locked_by_user[row.telegram_user_id] = (
+                    locked_by_user.get(row.telegram_user_id, 0) + row.covered_seats
+                )
+            guests_by_host_lift = {
+                (guest.host_user_id, guest.lift_time): guest.count
+                for guest in day_guests
+                if guest.count > 0
+            }
+            live_times = {lift.time for lift in lifts if lift.running}
+            # The deadline freezes money already spent, not the receipt of later
+            # transfers or on-site cash. Assign only the newly received seat-units
+            # on top of that immutable baseline, without counting promises.
+            for user_id, held_lifts in held_lifts_by_user.items():
+                claim = claim_by_user.get(user_id)
+                received = claim.amount_gel if claim is not None else 0
+                coverage = reconcile_coverage(
+                    received_gel=max(received - locked_by_user.get(user_id, 0) * day_price, 0),
+                    price_gel=day_price,
+                    targets=tuple(
+                        CoverageTarget(
+                            lift_time,
+                            max(
+                                1
+                                + guests_by_host_lift.get((user_id, lift_time), 0)
+                                - locked_by_user_lift.get((user_id, lift_time), 0),
+                                0,
+                            ),
                         )
+                        for lift_time in sorted(
+                            held_lifts,
+                            key=lambda time_: (time_ not in live_times, lift_minutes(time_)),
+                        )
+                    ),
+                )
+                for target in coverage.targets:
+                    covered_by_lift[target.lift_time] = (
+                        covered_by_lift.get(target.lift_time, 0) + target.covered_seats
+                    )
+                    key = (user_id, target.lift_time)
+                    locked_by_user_lift[key] = (
+                        locked_by_user_lift.get(key, 0) + target.covered_seats
+                    )
             lifts = [
                 replace(
                     lift,
                     covered_count=covered_by_lift.get(lift.time, 0),
+                    cash_on_site_count=sum(
+                        max(
+                            1
+                            + guests_by_host_lift.get((user_id, lift.time), 0)
+                            - locked_by_user_lift.get((user_id, lift.time), 0),
+                            0,
+                        )
+                        for user_id in cash_on_site_ids
+                        if lift.time in held_lifts_by_user.get(user_id, ())
+                    ),
                     deadline_closed=bool(day_deadline_rows),
                 )
                 for lift in lifts
@@ -3424,8 +3510,11 @@ class PollPostingService:
                             lift_times=tuple(held_lifts_by_user.get(user_id, ())),
                         )
                         for user_id, owed in owed_seats_by_user.items()
-                        if (claim := claim_by_user.get(user_id)) is None
-                        or claim.amount_gel < owed * day_price
+                        if user_id not in cash_on_site_ids
+                        and (
+                            (claim := claim_by_user.get(user_id)) is None
+                            or claim.amount_gel < owed * day_price
+                        )
                     ),
                     key=lambda rider: rider.label,
                 )
@@ -3487,6 +3576,11 @@ class PollPostingService:
                     past=batch.service_date < today,
                     unpaid_riders=unpaid_riders,
                     cash_pending=cash_pending,
+                    cash_promised=tuple(
+                        MonitorRider(telegram_user_id=user_id, label=label_by_user[user_id])
+                        for user_id in sorted(cash_on_site_ids)
+                        if user_id in label_by_user
+                    ),
                     guests=monitor_guests,
                     waitlist=tuple(waitlist),
                     late_exits=late_exits,
@@ -3977,6 +4071,7 @@ def _day_signals(day: BookingMonitorDay) -> tuple[LiftSignal, ...]:
             seats=lift.total_count,
             cancelled=lift.cancelled,
             covered_seats=lift.covered_count,
+            cash_on_site_seats=lift.cash_on_site_count,
         )
         for lift in day.lifts
     )

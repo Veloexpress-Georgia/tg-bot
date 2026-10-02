@@ -44,6 +44,7 @@ export function DayWorkspace({
   const focusPayment = (uid: number, unpaidOnly = false) => {
     setUserId(uid);
     setAmount('');
+    setMethod(detail.riders?.find((r) => r.user_id === uid)?.cash_on_site ? 'cash' : 'transfer');
     setSection('payments');
     if (unpaidOnly) setPaymentFilter('unpaid');
     resetScroll();
@@ -56,10 +57,10 @@ export function DayWorkspace({
             Райдеров<strong>{detail.booked_rider_count}</strong>
           </span>
           <span>
-            Ожидаемо<strong>{money(detail.expected_gel)}</strong>
+            Отмечено<strong>{money(detail.expected_gel)}</strong>
           </span>
           <span>
-            Не отмечено<strong>{money(detail.owed_gel)}</strong>
+            По местам<strong>{money(detail.owed_gel)}</strong>
           </span>
         </div>
       )}
@@ -157,6 +158,25 @@ export function DayWorkspace({
                   Все участники без отметки · {attention.unpaid.length}
                 </Button>
               )}
+            </section>
+          )}
+          {attention.cashOnSite.length > 0 && (
+            <section className="attention-group">
+              <h3>Наличными на месте · {attention.cashOnSite.length}</h3>
+              {attention.cashOnSite.map((r) => (
+                <button
+                  className="attention-item"
+                  key={r.user_id}
+                  onClick={() => focusPayment(r.user_id)}
+                >
+                  <Wallet size={20} />
+                  <span>
+                    <strong>{r.label}</strong>
+                    <small>Обещал оплатить на месте. Получение денег ещё не подтверждено.</small>
+                  </span>
+                  <ArrowUpRight size={18} />
+                </button>
+              ))}
             </section>
           )}
           {attention.lateExits.length > 0 && (
@@ -378,6 +398,11 @@ export function DayWorkspace({
                 </label>
                 {selectedRider && (
                   <div className="payment-context">
+                    {selectedRider.cash_on_site && (
+                      <p>
+                        Выбрана оплата наличными на месте. Отмечай получение после передачи денег.
+                      </p>
+                    )}
                     <span>
                       Уже отмечено <strong>{money(selectedRider.paid_gel)}</strong>
                     </span>
@@ -464,6 +489,7 @@ export function DayWorkspace({
                   <span>
                     <strong>{r.label}</strong>
                     <small>Отмечено {money(r.paid_gel)}</small>
+                    {r.cash_on_site && <small>Заплатит наличными на месте</small>}
                   </span>
                   <span>
                     {r.due_now_gel > r.paid_gel ? (

@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from tests.unit import test_payments_service as helpers
 
-from veloexpress_bot.db.models import PaymentClaim, PaymentEntry, TelegramOutbox
+from veloexpress_bot.db.models import CashPromise, PaymentClaim, PaymentEntry, TelegramOutbox
 from veloexpress_bot.telegram.outbox import TelegramOutboxDispatcher
 from veloexpress_core.lifts import SentTextMessage
 from veloexpress_core.payments import PaymentsService
@@ -92,6 +92,46 @@ async def test_concurrent_claims_record_only_one_amount(
         )
     assert total == 30
     assert len(claims) == 1 and claims[0].amount_gel == 30
+
+
+async def test_concurrent_cash_choices_store_one_intention_and_no_money(
+    pg: helpers.SharedDatabase,
+) -> None:
+    polls, payments, client, poll_id, day = await helpers._setup(pg)
+    await helpers._fill(polls, poll_id, 0)
+    other = PaymentsService(
+        settings=payments._settings, session_factory=pg.session, telegram_client=client
+    )
+    for service in (payments, other):
+        service._refresh_board = AsyncMock()
+    async with pg.session() as holder:
+        await payments._lock_day(holder, day)
+        tasks = [
+            asyncio.create_task(service.promise_cash(service_date=day, telegram_user_id=100))
+            for service in (payments, other)
+        ]
+        await asyncio.sleep(0.1)
+        assert not any(task.done() for task in tasks)
+        await holder.commit()
+    await asyncio.wait_for(asyncio.gather(*tasks), 5)
+    scope = payments._settings.app_env
+    async with pg.session() as session:
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(CashPromise)
+                .where(CashPromise.environment == scope)
+            )
+            == 1
+        )
+        assert (
+            await session.scalar(select(PaymentClaim).where(PaymentClaim.environment == scope))
+            is None
+        )
+        assert (
+            await session.scalar(select(PaymentEntry).where(PaymentEntry.environment == scope))
+            is None
+        )
 
 
 async def test_concurrent_undo_and_claim_keep_projection_equal_to_ledger(

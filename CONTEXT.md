@@ -39,3 +39,6 @@ _Avoid_: Current terms, global price
 **Funded lift**:
 A lift whose minimum required seats are covered by received payments or offline bookings.
 _Avoid_: Running lift, full lift
+
+**Cash promise**:
+A rider's choice to pay Misho on site on a service day. It is not received money, paid coverage, a refund entitlement, or a seat reservation. Only an admin records actual cash received.

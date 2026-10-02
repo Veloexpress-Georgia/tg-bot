@@ -61,6 +61,7 @@ class PaymentsBoardView:
     cash_url: str = ""
     deadline_time: str = "20:00"
     cancelled: bool = False
+    cash_promised: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -137,6 +138,9 @@ def render_payments_board(view: PaymentsBoardView) -> PaymentsBoardDraft:
     if view.payments:
         lines.extend(("", "Paid:"))
         lines.extend(_payment_line(payment) for payment in view.payments)
+    if view.cash_promised:
+        lines.extend(("", "Cash on site (promised, not received):"))
+        lines.append(", ".join(html.escape(label) for label in view.cash_promised))
     if view.outstanding:
         # Tags rather than a bare count. The board is edited in place, and a Telegram
         # edit sends no notification, so this shows who still owes without nagging.
@@ -183,7 +187,7 @@ def render_unpaid_deadline_notice(
             f"Fewer than {minimum} seats have payments recorded on these lifts. "
             "Misho decides whether they go ahead.",
             f"💵 {CASH_ON_SITE_TEXT}",
-            f"{CASH_REPORT_TEXT} Already handed it over? Tap {CASH_BUTTON} on the board.",
+            f"{CASH_REPORT_TEXT} Use {CASH_BUTTON} to choose payment on site.",
         )
     )
     if riders:
