@@ -2160,6 +2160,40 @@ async def test_a_day_caught_up_late_is_marked_as_reconstructed(db: SharedDatabas
     async with db.session() as session:
         rows = (await session.scalars(select(LiftDayResult))).all()
     assert all(row.source == "backfilled" for row in rows)
+    assert all(row.waiting_count is None for row in rows)
+
+
+async def test_frozen_queue_survives_later_vote_changes(db: SharedDatabase) -> None:
+    saturday = _future_saturday()
+    poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(poll_service, poll_id, 0, riders=12)
+    await payments.freeze_day_results(now=_morning_after(saturday))
+    async with db.session() as session:
+        row = await session.scalar(select(LiftDayResult).where(LiftDayResult.lift_time == "8:30"))
+        assert row is not None
+        assert row.waiting_count == 2
+    await _vote(poll_service, poll_id, 111)
+    await payments.freeze_day_results(now=_morning_after(saturday) + timedelta(hours=1))
+    async with db.session() as session:
+        row = await session.scalar(select(LiftDayResult).where(LiftDayResult.lift_time == "8:30"))
+        assert row is not None
+        assert row.waiting_count == 2
+
+
+async def test_frozen_queue_ignores_paid_late_exit_money_obligations(db: SharedDatabase) -> None:
+    saturday = _future_saturday()
+    polls, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
+    await _fill(polls, poll_id, 0, riders=11)
+    await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="rider100", full_name="Rider 100"
+    )
+    await payments.capture_deadline_rosters(now=_after_deadline(saturday))
+    await _vote(polls, poll_id, 100)
+    await payments.freeze_day_results(now=_morning_after(saturday))
+    async with db.session() as session:
+        row = await session.scalar(select(LiftDayResult).where(LiftDayResult.lift_time == "8:30"))
+        assert row is not None
+        assert row.waiting_count == 0
 
 
 async def test_my_past_rides_counts_the_vans_that_went_and_nothing_else(

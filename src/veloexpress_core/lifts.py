@@ -848,6 +848,7 @@ class PollPostingService:
                     covered_seats=row.covered_seats,
                     manual_seats=row.manual_seats,
                     guest_seats=row.guest_seats,
+                    waiting_count=row.waiting_count if row.source == "closed" else None,
                     riders=tuple(
                         LiftDayAuditSeat(
                             label=seat.label,

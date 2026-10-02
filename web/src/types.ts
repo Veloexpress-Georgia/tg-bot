@@ -46,8 +46,37 @@ export interface Analytics {
   previous: Summary;
   series: (Summary & { date: string })[];
   by_time: (Summary & { time: string })[];
+  demand: Demand | null;
   riders: Rider[];
   days: (Summary & { date: string })[];
+}
+export interface DemandCounts {
+  offered_lifts: number;
+  ran_lifts: number;
+  not_run_lifts: number;
+  booked_seats: number;
+  capacity: number;
+  occupancy_pct: number;
+  full_lifts: number;
+  free_seats: number;
+  queue_recorded_lifts: number;
+  queue_unknown_lifts: number;
+  queued_lifts: number;
+  waiting_total: number | null;
+}
+export interface Demand {
+  summary: DemandCounts;
+  by_time: (DemandCounts & {
+    time: string;
+    days: {
+      date: string;
+      seats: number;
+      capacity: number;
+      ran: boolean;
+      waiting_count: number | null;
+      reconstructed: boolean;
+    }[];
+  })[];
 }
 export interface LiftRider {
   telegram_user_id: number;
@@ -106,6 +135,7 @@ export interface LiveDay {
   late_exits: { telegram_user_id: number; label: string; lift_time: string }[];
   historical?: false;
   riders?: (RiderBooking & { user_id: number; label: string })[];
+  commands?: CommandResult[];
 }
 export interface HistoricalDay {
   historical: true;
@@ -118,6 +148,7 @@ export interface HistoricalDay {
   lifts: {
     lift_time: string;
     ran: boolean;
+    waiting_count: number | null;
     seats: number;
     capacity: number;
     covered_seats: number;
@@ -189,6 +220,8 @@ export interface CommandSpec {
 export interface CommandResult {
   id: number;
   action: string;
+  service_date?: string | null;
+  lift_time?: string | null;
   actor_user_id: number;
   actor_name?: string;
   status: 'pending' | 'running' | 'complete' | 'failed' | 'review';

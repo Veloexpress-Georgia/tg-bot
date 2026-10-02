@@ -102,6 +102,23 @@ rollback so its audit survives. Do not run `docker compose down -v` on the exist
 resource. The previous bot will not execute queued web commands; inspect pending
 requests before re-enabling the new executor.
 
+Migration 0030 only adds a nullable waitlist snapshot column. Keep it in place
+when rolling back application images. Existing historical prices, seats and
+payment entries are preserved. Queue analytics start filling as new days close;
+old and reconstructed records display missing observations explicitly.
+
+## Day workspace and demand (2026-10-02)
+
+- The live admin day has attention, departures, payments and request tabs.
+  Attention opens the relevant lift or participant. The payment amount starts
+  blank; choosing a rider does not create an automatic payment.
+- Demand compares all offered lifts, run rates and full-lift frequency, with
+  date drill-down. Current queues for upcoming days are displayed separately
+  from historical close-of-day snapshots.
+- Mobile labels and supporting text use at least 12px; compact navigation and
+  decorative brand captions use 11px. Dialog headers remain visible while the
+  body scrolls. The selected mobile analytics section mounts its content only.
+
 ## Initial implementation verification (2026-10-01)
 
 - 447 Python tests passed, including ten Postgres concurrency checks, plus four

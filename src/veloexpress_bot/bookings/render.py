@@ -193,6 +193,7 @@ class LiftDayAuditLift:
     manual_seats: int
     guest_seats: int
     riders: tuple[LiftDayAuditSeat, ...] = ()
+    waiting_count: int | None = None
 
 
 @dataclass(frozen=True)

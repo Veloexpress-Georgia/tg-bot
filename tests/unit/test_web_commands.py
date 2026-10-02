@@ -28,6 +28,61 @@ async def test_command_retries_are_idempotent_and_scope_is_private() -> None:
     await db.dispose()
 
 
+async def test_day_activity_keeps_older_pending_requests_and_excludes_other_scopes() -> None:
+    from sqlalchemy import select
+
+    from veloexpress_bot.db.models import AdminCommand
+
+    db = SharedDatabase()
+    await db.create()
+    queue = CommandQueue(settings=settings(), session_factory=db.session)
+    day = date(2026, 10, 3)
+    first = await queue.enqueue(
+        CommandInput(
+            request_id=uuid4(), action="manual", service_date=day, lift_time="8:30", delta=1
+        ),
+        actor_user_id=42,
+    )
+    for _ in range(35):
+        await queue.enqueue(
+            CommandInput(
+                request_id=uuid4(), action="manual", service_date=day, lift_time="8:30", delta=1
+            ),
+            actor_user_id=42,
+        )
+    async with db.session() as session:
+        for row in await session.scalars(
+            select(AdminCommand).where(AdminCommand.id != first["id"])
+        ):
+            row.status = "complete"
+        await session.commit()
+    await queue.enqueue(
+        CommandInput(
+            request_id=uuid4(),
+            action="manual",
+            service_date=date(2026, 10, 4),
+            lift_time="8:30",
+            delta=1,
+        ),
+        actor_user_id=42,
+    )
+    other = CommandQueue(
+        settings=settings().model_copy(update={"app_env": "other"}), session_factory=db.session
+    )
+    await other.enqueue(
+        CommandInput(
+            request_id=uuid4(), action="manual", service_date=day, lift_time="8:30", delta=1
+        ),
+        actor_user_id=99,
+    )
+    entries = await queue.recent(service_date=day)
+    assert entries[0]["id"] == first["id"]
+    assert entries[0]["lift_time"] == "8:30"
+    assert len(entries) == 30
+    assert all(e["service_date"] == day.isoformat() and e["actor_user_id"] == 42 for e in entries)
+    await db.dispose()
+
+
 def test_command_validation_rejects_invalid_operations() -> None:
     for fields in (
         {"action": "manual", "service_date": "2026-10-03", "lift_time": "8:30", "delta": 8},

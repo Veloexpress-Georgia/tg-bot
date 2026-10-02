@@ -11,7 +11,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import select, update
+from sqlalchemy import case, select, update
 
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.locking import transaction_lock
@@ -416,22 +416,33 @@ class CommandQueue:
             )
             return self.view(row) if row else None
 
-    async def recent(self, *, limit: int = 30) -> list[dict[str, Any]]:
+    async def recent(
+        self, *, limit: int = 30, service_date: date | None = None
+    ) -> list[dict[str, Any]]:
         async with self.sessions() as session:
-            rows = await session.scalars(
-                self.scope(select(AdminCommand)).order_by(AdminCommand.id.desc()).limit(limit)
-            )
+            query = self.scope(select(AdminCommand))
+            if service_date is not None:
+                # Payload contains the validated date; filter before limiting so
+                # busy unrelated days cannot hide this day's pending operations.
+                query = query.where(
+                    AdminCommand.payload.contains(f'"service_date": "{service_date.isoformat()}"')
+                )
+                query = query.order_by(
+                    case((AdminCommand.status.in_(("pending", "running", "review")), 0), else_=1)
+                )
+            rows = await session.scalars(query.order_by(AdminCommand.id.desc()).limit(limit))
             return [self.view(row) for row in rows]
 
     @staticmethod
     def view(row: AdminCommand) -> dict[str, Any]:
+        payload = json.loads(row.payload)
         return {
             "id": row.id,
             "action": row.action,
+            "service_date": payload.get("spec", {}).get("service_date"),
+            "lift_time": payload.get("spec", {}).get("lift_time"),
             "actor_user_id": row.actor_user_id,
-            "actor_name": json.loads(row.payload)
-            .get("identity", {})
-            .get("name", str(row.actor_user_id)),
+            "actor_name": payload.get("identity", {}).get("name", str(row.actor_user_id)),
             "status": row.status,
             "result": json.loads(row.result) if row.result else None,
             "created_at": row.created_at,

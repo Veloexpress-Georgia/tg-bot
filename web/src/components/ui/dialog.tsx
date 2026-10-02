@@ -32,7 +32,7 @@ export function Dialog({
               <X size={20} />
             </Primitive.Close>
           </div>
-          {children}
+          <div className="dialog-body">{children}</div>
         </Primitive.Content>
       </Primitive.Portal>
     </Primitive.Root>

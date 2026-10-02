@@ -499,6 +499,8 @@ class LiftDayResult(Base):
     guest_seats: Mapped[int] = mapped_column(Integer, default=0)
     manual_seats: Mapped[int] = mapped_column(Integer, default=0)
     covered_seats: Mapped[int] = mapped_column(Integer, default=0)
+    # Unknown for old or reconstructed results, rather than a fabricated zero.
+    waiting_count: Mapped[int | None] = mapped_column(Integer)
     # Both copied rather than looked up: lift templates get edited and the
     # fallback price lives in settings, so neither can be trusted to still
     # describe a day months later.

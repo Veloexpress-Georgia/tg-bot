@@ -5,7 +5,6 @@ import {
   CalendarDays,
   Check,
   Clock3,
-  Minus,
   Plus,
   Send,
   Settings2,
@@ -16,18 +15,13 @@ import {
 } from 'lucide-react';
 import { request } from '../api';
 import { dateLabel, money, plain } from '../lib';
-import type {
-  CommandSpec,
-  DayDetail,
-  LiveDay,
-  Planning,
-  CommandResult,
-  RefundReport,
-} from '../types';
+import type { CommandSpec, DayDetail, LiveDay, Planning, RefundReport } from '../types';
 import { Button } from './ui/button';
 import { Dialog } from './ui/dialog';
 import { Select } from './ui/select';
 import { Empty } from './Shared';
+import { DayWorkspace } from './DayWorkspace';
+export { AuditView } from './Audit';
 export type Act = (spec: CommandSpec) => void;
 export function Departures({ days, openDay }: { days: LiveDay[]; openDay(day: string): void }) {
   return (
@@ -103,11 +97,13 @@ export function Departures({ days, openDay }: { days: LiveDay[]; openDay(day: st
 }
 export function DayDialog({
   day,
+  timezone,
   onClose,
   act,
   busy,
 }: {
   day: string | null;
+  timezone: string;
   onClose(): void;
   act: Act;
   busy: boolean;
@@ -130,11 +126,11 @@ export function DayDialog({
               weekday: 'long',
               day: 'numeric',
               month: 'long',
-              year: 'numeric',
-            })
+              ...(detail.data?.historical ? { year: 'numeric' as const } : {}),
+            }).replace(/^./, (char) => char.toUpperCase())
           : 'День выездов'
       }
-      description="Места, участники и зарегистрированные оплаты."
+      description="Выезды, участники и оплаты."
     >
       {detail.isPending ? (
         <div className="skeleton tall" />
@@ -148,7 +144,9 @@ export function DayDialog({
       ) : detail.data?.historical ? (
         <HistoricalDetail detail={detail.data} />
       ) : (
-        detail.data && <LiveDetail key={day} detail={detail.data} act={act} busy={busy} />
+        detail.data && (
+          <DayWorkspace key={day} detail={detail.data} act={act} busy={busy} timezone={timezone} />
+        )
       )}
     </Dialog>
   );
@@ -182,6 +180,10 @@ function HistoricalDetail({ detail }: { detail: Extract<DayDetail, { historical:
               {lift.ran ? 'Состоялся' : 'Не состоялся'}
             </span>
           </summary>
+          <p className="caption">
+            Очередь при закрытии:{' '}
+            {lift.waiting_count === null ? 'не сохранялась' : `${lift.waiting_count} мест`}.
+          </p>
           <div className="lift-riders">
             {lift.riders.map((rider, i) => (
               <div key={i}>
@@ -195,203 +197,6 @@ function HistoricalDetail({ detail }: { detail: Extract<DayDetail, { historical:
           </div>
         </details>
       ))}
-    </>
-  );
-}
-function LiveDetail({ detail, act, busy }: { detail: LiveDay; act: Act; busy: boolean }) {
-  const [userId, setUserId] = useState(detail.riders?.[0]?.user_id ?? 0),
-    [amount, setAmount] = useState('20'),
-    [method, setMethod] = useState<'cash' | 'transfer'>('transfer');
-  return (
-    <>
-      <div className="detail-metrics">
-        <span>
-          Райдеров<strong>{detail.booked_rider_count}</strong>
-        </span>
-        <span>
-          Ожидаемо<strong>{money(detail.expected_gel)}</strong>
-        </span>
-        <span>
-          Не отмечено<strong>{money(detail.owed_gel)}</strong>
-        </span>
-      </div>
-      {detail.lifts.map((lift) => (
-        <section className={`lift-detail ${lift.cancelled ? 'cancelled' : ''}`} key={lift.time}>
-          <div className="lift-detail-heading">
-            <strong>{lift.time}</strong>
-            <span>
-              {lift.seat_count} / {lift.capacity} мест
-            </span>
-            <span
-              className={`badge ${lift.cancelled ? 'muted-badge' : lift.running ? '' : 'warning-badge'}`}
-            >
-              {lift.cancelled ? 'Отменён' : lift.running ? 'Набрал минимум' : 'Нужны райдеры'}
-            </span>
-          </div>
-          {lift.waiting_count > 0 && <p className="caption">В очереди: {lift.waiting_count}</p>}
-          <div className="lift-riders">
-            {lift.riders?.map((rider) => (
-              <div key={rider.telegram_user_id}>
-                <span>
-                  {rider.label}
-                  {rider.guests > 0 && <small> +{rider.guests} гостей</small>}
-                </span>
-                <span
-                  className={
-                    rider.waitlisted ? 'warning-text' : rider.paid ? 'paid-text' : 'muted-text'
-                  }
-                >
-                  {rider.waitlisted ? (
-                    'В очереди'
-                  ) : rider.paid ? (
-                    <>
-                      <Check size={14} />
-                      {rider.cash ? 'Наличные' : 'Отмечено'}
-                    </>
-                  ) : (
-                    'Не отмечено'
-                  )}
-                </span>
-              </div>
-            ))}
-          </div>
-          {!detail.past && (
-            <div className="lift-actions">
-              <span>Ручные места</span>
-              <Button
-                variant="secondary"
-                size="icon"
-                aria-label={`Убрать ручное место ${lift.time}`}
-                disabled={busy || lift.manual_count === 0}
-                onClick={() =>
-                  act({
-                    action: 'manual',
-                    service_date: detail.service_date,
-                    lift_time: lift.time,
-                    delta: -1,
-                  })
-                }
-              >
-                <Minus size={15} />
-              </Button>
-              <b>{lift.manual_count}</b>
-              <Button
-                variant="secondary"
-                size="icon"
-                aria-label={`Добавить ручное место ${lift.time}`}
-                disabled={busy || lift.cancelled || lift.seat_count >= lift.capacity}
-                onClick={() =>
-                  act({
-                    action: 'manual',
-                    service_date: detail.service_date,
-                    lift_time: lift.time,
-                    delta: 1,
-                  })
-                }
-              >
-                <Plus size={15} />
-              </Button>
-              <Button
-                variant={lift.cancelled ? 'secondary' : 'ghost'}
-                size="sm"
-                disabled={busy}
-                onClick={() =>
-                  act({
-                    action: lift.cancelled ? 'restore_lift' : 'cancel_lift',
-                    service_date: detail.service_date,
-                    lift_time: lift.time,
-                  })
-                }
-              >
-                {lift.cancelled ? 'Восстановить' : 'Отменить выезд'}
-              </Button>
-            </div>
-          )}
-        </section>
-      ))}
-      {!!detail.riders?.length && (
-        <section className="payment-form">
-          <h3>
-            <Wallet size={18} /> Отметить полученную оплату
-          </h3>
-          <p className="caption">
-            Укажи сумму, которую уже получил. Она добавится к текущей оплате участника.
-          </p>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              act({
-                action: 'payment',
-                service_date: detail.service_date,
-                user_id: userId,
-                amount_gel: Number(amount),
-                method,
-              });
-            }}
-          >
-            <label>
-              Участник
-              <Select<number>
-                label="Участник"
-                value={userId}
-                onValueChange={setUserId}
-                options={detail.riders.map((r) => ({
-                  value: r.user_id,
-                  label: `${r.label} · отмечено ${r.paid_gel} ₾ / ${r.due_now_gel} ₾`,
-                }))}
-              />
-            </label>
-            <div className="form-row">
-              <label>
-                Получено, GEL
-                <input
-                  type="number"
-                  min="1"
-                  max="100000"
-                  step="1"
-                  required
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                />
-              </label>
-              <label>
-                Способ
-                <Select<'cash' | 'transfer'>
-                  label="Способ"
-                  value={method}
-                  onValueChange={setMethod}
-                  options={[
-                    { value: 'transfer', label: 'Перевод' },
-                    { value: 'cash', label: 'Наличные' },
-                  ]}
-                />
-              </label>
-            </div>
-            <Button disabled={busy || !userId || Number(amount) <= 0}>
-              <Plus size={16} />
-              Добавить оплату
-            </Button>
-          </form>
-        </section>
-      )}
-      {!!detail.late_exits.length && (
-        <div className="inline-notice">
-          Поздние отмены: {detail.late_exits.map((r) => `${r.label} · ${r.lift_time}`).join(', ')}.
-          Требуют решения администратора.
-        </div>
-      )}
-      {!detail.past && (
-        <div className="danger-zone">
-          <p>Отмена дня закрывает опросы и сохраняет оценку возвратов.</p>
-          <Button
-            variant="destructive"
-            disabled={busy}
-            onClick={() => act({ action: 'cancel_day', service_date: detail.service_date })}
-          >
-            Отменить весь день
-          </Button>
-        </div>
-      )}
     </>
   );
 }
@@ -722,71 +527,6 @@ export function PlanningView({
         </section>
       </div>
     </div>
-  );
-}
-const actions: Record<string, string> = {
-  manual: 'Ручные места',
-  payment: 'Отметка оплаты',
-  cancel_lift: 'Отмена выезда',
-  restore_lift: 'Восстановление выезда',
-  cancel_day: 'Отмена дня',
-  terms: 'Цена и дедлайн',
-  plan: 'План выходных',
-  post: 'Публикация опросов',
-  extra: 'Дополнительный день',
-  schedule: 'Расписание публикации',
-  skip: 'Пропуск автопубликации',
-  claim_payment: 'Сообщение об оплате',
-  guest: 'Гостевые места',
-  undo_payment: 'Отмена сообщения об оплате',
-};
-const statuses = {
-  pending: 'Ожидает бота',
-  running: 'Выполняется',
-  complete: 'Готово',
-  failed: 'Отклонено',
-  review: 'Проверь результат',
-};
-export function AuditView({ entries, timezone }: { entries: CommandResult[]; timezone: string }) {
-  return (
-    <section className="panel">
-      <div className="panel-heading">
-        <div>
-          <span className="eyebrow">ПРОЗРАЧНОСТЬ ДЕЙСТВИЙ</span>
-          <h2>Журнал кабинета</h2>
-        </div>
-        <ShieldCheck size={22} />
-      </div>
-      <p className="caption">
-        Запросы из кабинета, их авторы и результаты. Операции с неопределённым результатом требуют
-        проверки.
-      </p>
-      <div className="audit-list">
-        {entries.map((entry) => (
-          <div key={entry.id}>
-            <span className={`audit-icon ${entry.status === 'complete' ? '' : 'audit-pending'}`}>
-              {entry.status === 'complete' ? <Check size={18} /> : <Clock3 size={18} />}
-            </span>
-            <div>
-              <strong>{actions[entry.action] ?? entry.action}</strong>
-              <p>{entry.result ? plain(entry.result.message) : `Запрос #${entry.id}`}</p>
-              <small>
-                {new Date(entry.created_at).toLocaleString('ru-RU', {
-                  timeZone: timezone,
-                })}{' '}
-                · {entry.actor_name ?? `Telegram ID ${entry.actor_user_id}`}
-              </small>
-            </div>
-            <span
-              className={`badge ${entry.status === 'failed' || entry.status === 'review' ? 'warning-badge' : ''}`}
-            >
-              {statuses[entry.status]}
-            </span>
-          </div>
-        ))}
-      </div>
-      {!entries.length && <Empty text="Здесь появятся действия, выполненные через кабинет." />}
-    </section>
   );
 }
 export function RefundsView({ reports }: { reports: RefundReport[] }) {

@@ -192,9 +192,55 @@ class DashboardAnalytics:
             "previous": previous,
             "series": series,
             "by_time": by_time,
+            "demand": _demand(current_results) if user_id is None else None,
             "riders": sorted(riders, key=lambda r: (-r["days"], -r["lifts"], r["user_id"])),
             "days": days,
         }
+
+
+def _demand(results: list[LiftDayResult]) -> dict[str, Any]:
+    """Offered lifts, including ones that did not run; never infer missing queues."""
+    offered = [r for r in results if not r.cancelled]
+
+    def counts(rows: list[LiftDayResult]) -> dict[str, Any]:
+        known = [r for r in rows if r.waiting_count is not None and r.source == "closed"]
+        seats, capacity = sum(r.seats for r in rows), sum(r.capacity for r in rows)
+        return {
+            "offered_lifts": len(rows),
+            "ran_lifts": sum(r.ran for r in rows),
+            "not_run_lifts": sum(not r.ran for r in rows),
+            "booked_seats": seats,
+            "capacity": capacity,
+            "occupancy_pct": round(seats / capacity * 100, 1) if capacity else 0,
+            "full_lifts": sum(r.capacity > 0 and r.seats >= r.capacity for r in rows),
+            "free_seats": sum(max(r.capacity - r.seats, 0) for r in rows),
+            "queue_recorded_lifts": len(known),
+            "queue_unknown_lifts": len(rows) - len(known),
+            "queued_lifts": sum((r.waiting_count or 0) > 0 for r in known),
+            "waiting_total": sum(r.waiting_count or 0 for r in known) if known else None,
+        }
+
+    by_time = []
+    for time in sorted({r.lift_time for r in offered}, key=lambda t: tuple(map(int, t.split(":")))):
+        rows = [r for r in offered if r.lift_time == time]
+        by_time.append(
+            {
+                "time": time,
+                **counts(rows),
+                "days": [
+                    {
+                        "date": r.service_date.isoformat(),
+                        "seats": r.seats,
+                        "capacity": r.capacity,
+                        "ran": r.ran,
+                        "waiting_count": r.waiting_count if r.source == "closed" else None,
+                        "reconstructed": r.source == "backfilled",
+                    }
+                    for r in sorted(rows, key=lambda r: r.service_date, reverse=True)
+                ],
+            }
+        )
+    return {"summary": counts(offered), "by_time": by_time}
 
 
 def _summary(

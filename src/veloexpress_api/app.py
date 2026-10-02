@@ -381,7 +381,13 @@ def create_app(
                 )
                 if view:
                     riders.append({"user_id": uid, "label": label, **asdict(view)})
-        return {"historical": False, **asdict(day), "lifts": details, "riders": riders}
+        return {
+            "historical": False,
+            **asdict(day),
+            "lifts": details,
+            "riders": riders,
+            "commands": await queue.recent(service_date=service_date),
+        }
 
     @app.get("/api/admin/planning")
     async def planning(_: Annotated[dict[str, Any], Depends(admin)]):
