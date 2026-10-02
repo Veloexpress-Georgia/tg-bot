@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta, tzinfo
 from html import escape
 from typing import Literal
 
-from veloexpress_bot.payments.copy import CASH_ON_SITE_TEXT
+from veloexpress_bot.payment_copy import CASH_ON_SITE_TEXT
 from veloexpress_bot.polls.defaults import MINIMUM_RIDERS, PaymentTerms
 from veloexpress_bot.polls.render import EN_SHORT_MONTHS, SHORT_DAY_LABELS
 

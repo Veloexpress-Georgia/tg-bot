@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
-from veloexpress_bot.payments.copy import CASH_BUTTON, CASH_ON_SITE_TEXT, CASH_REPORT_TEXT
+from veloexpress_bot.payment_copy import CASH_BUTTON, CASH_ON_SITE_TEXT, CASH_REPORT_TEXT
 
 
 class StartLocation(StrEnum):

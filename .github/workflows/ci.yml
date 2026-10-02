@@ -63,7 +63,10 @@ jobs:
         run: uv run pytest
 
       - name: Docker build
-        run: docker compose -f docker-compose.local.yml build bot
+        run: docker compose -p veloexpress-ci -f docker-compose.local.yml build bot
+
+      - name: Import the real bot entrypoint in the built image
+        run: docker run --rm --entrypoint python veloexpress-ci-bot -c 'import veloexpress_bot.__main__'
 
   web:
     name: Web tests and build

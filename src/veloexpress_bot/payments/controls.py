@@ -2,7 +2,7 @@ from datetime import date
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from veloexpress_bot.payments.copy import CASH_BUTTON, PAID_BUTTON, UNDO_BUTTON
+from veloexpress_bot.payment_copy import CASH_BUTTON, PAID_BUTTON, UNDO_BUTTON
 
 
 def payment_keyboard(
