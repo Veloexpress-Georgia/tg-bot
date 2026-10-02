@@ -7,6 +7,10 @@ from datetime import date, datetime, timedelta
 from aiogram.types import InlineKeyboardMarkup
 
 from veloexpress_bot.payments.controls import payment_keyboard
+from veloexpress_bot.payments.copy import CASH_BUTTON as CASH_BUTTON
+from veloexpress_bot.payments.copy import CASH_ON_SITE_TEXT, CASH_REPORT_TEXT
+from veloexpress_bot.payments.copy import PAID_BUTTON as PAID_BUTTON
+from veloexpress_bot.payments.copy import UNDO_BUTTON as UNDO_BUTTON
 from veloexpress_bot.payments.details import bank_details_text
 from veloexpress_bot.polls.render import EN_SHORT_MONTHS, SHORT_DAY_LABELS
 
@@ -14,12 +18,9 @@ PAYMENTS_PARSE_MODE = "HTML"
 
 # Riders tap these in the group, so the labels cannot be personal: one shared
 # keyboard serves everyone and the bot answers each tap with a private toast.
-PAID_BUTTON = "💸 I paid"
 # Cash gets its own button rather than a rule telling riders to press the transfer
 # one anyway. It also tells Misho which lines to look for in his bank statement and
 # which not to, which he cannot otherwise know.
-CASH_BUTTON = "💵 Cash"
-UNDO_BUTTON = "↩️ Undo"
 
 
 @dataclass(frozen=True)
@@ -130,7 +131,7 @@ def render_payments_board(view: PaymentsBoardView) -> PaymentsBoardDraft:
         header,
         "",
         f"Payment open: {', '.join(view.running_lift_times)}",
-        f"{view.price_gel} GEL per seat · pay by {view.deadline_time}"
+        f"{view.price_gel} GEL per seat · transfer by {view.deadline_time}"
         f" ({_long_day_label(view.service_date - timedelta(days=1))})",
     ]
     if view.payments:
@@ -172,17 +173,17 @@ def render_unpaid_deadline_notice(
     lift actually runs is Misho's decision, and the bot does not pre-empt it.
     """
     lines = [
-        f"⏳ {_long_day_label(service_date)} — booking is closed and these lifts "
-        "are not paid up yet:",
+        f"⏳ {_long_day_label(service_date)} — booking is closed. Payments reported so far:",
         "",
     ]
     lines.extend(f"{lift.lift_time} — {lift.paid_seats}/{minimum} paid" for lift in lifts)
     lines.extend(
         (
             "",
-            f"A lift is settled once {minimum} seats are paid for, so these are still "
-            "open questions — Misho decides.",
-            "💵 Already paid in cash? Tap 💵 Cash on the board so it counts.",
+            f"Fewer than {minimum} seats have payments recorded on these lifts. "
+            "Misho decides whether they go ahead.",
+            f"💵 {CASH_ON_SITE_TEXT}",
+            f"{CASH_REPORT_TEXT} Already handed it over? Tap {CASH_BUTTON} on the board.",
         )
     )
     if riders:

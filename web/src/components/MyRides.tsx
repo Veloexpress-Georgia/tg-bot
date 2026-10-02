@@ -155,7 +155,10 @@ export function MyRides({ data, act, busy }: { data: MyDays; act: Act; busy: boo
               {remaining > 0 ? (
                 <div className="payment-actions">
                   {paymentButtons}
-                  <p className="caption">Отмечай оплату после передачи денег.</p>
+                  <p className="caption">
+                    Наличными — Мишо на месте в день поездки. Отмечай оплату только после передачи
+                    денег.
+                  </p>
                 </div>
               ) : (
                 <div className="ride-payment-status">

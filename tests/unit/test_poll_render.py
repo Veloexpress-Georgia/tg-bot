@@ -39,8 +39,9 @@ def test_render_poll_notice_explains_dynamic_first_lift_location() -> None:
 def test_render_poll_notice_keeps_only_booking_essentials_and_links() -> None:
     assert render_poll_notice(StartLocation.VAKE, terms=TERMS).splitlines() == [
         '📍 <a href="https://maps.app.goo.gl/nSNiv7GnNiQt5J64A">Opposite Vake Park</a>',
-        "💳 <b>15 GEL / seat.</b> Pay once your lift reaches 5 booked seats, "
-        "by <b>20:00 the evening before</b>. Late bookings: pay immediately.",
+        "💳 <b>15 GEL / seat.</b> Bank transfer once your lift reaches 5 booked seats, "
+        "by <b>20:00 the evening before</b>. Late bookings: transfer immediately.",
+        "💵 Cash is paid to Misho on site on the lift day.",
         '<a href="https://pay.example">Where to pay</a> · '
         '<a href="https://t.me/c/2200954181/5">Rules &amp; bank details</a>',
     ]

@@ -182,8 +182,9 @@ def test_notices_read_naturally_for_one_lift_and_for_many() -> None:
     # "pay to lock it in", not "is running": the group's rule is that five
     # prepayments by the deadline settle a lift, and five bookings are not that.
     assert confirmed == (
-        "✅ 8:30 · Sat, 18 Jul has 5 riders — pay to lock it in. "
-        '<a href="https://pay.example">💸 Pay</a>'
+        "✅ 8:30 · Sat, 18 Jul has 5 riders — payment details are ready.\n"
+        "💵 Cash is paid to Misho on site on the lift day.\n"
+        '<a href="https://pay.example">💸 Payment details</a>'
     )
 
     batched = render_lift_signal_notice(
@@ -194,7 +195,9 @@ def test_notices_read_naturally_for_one_lift_and_for_many() -> None:
             LiftEvent("confirmed", SATURDAY, "8:30", 5),
         ),
     )
-    assert batched.splitlines()[0] == "✅ These lifts have enough riders — pay to lock them in:"
+    assert (
+        batched.splitlines()[0] == "✅ These lifts have enough riders — payment details are ready:"
+    )
     # Batched into one message, earliest first, so a busy tick is not a burst.
     assert batched.splitlines()[2].startswith("8:30 · Sat, 18 Jul — 5 riders")
     assert "10:00 · Sat, 18 Jul — 6 riders" in batched
@@ -299,11 +302,13 @@ def test_the_reminder_states_the_deadline_and_what_each_lift_needs() -> None:
     )
 
     assert text.splitlines() == [
-        "⏳ Tomorrow · Sat, 18 Jul — book and pay by 20:00.",
+        "⏳ Tomorrow · Sat, 18 Jul — book and transfer by 20:00.",
         "",
         "8:30 — 3/5 · needs 2 more",
         "10:00 — 6 riders · 0/5 paid · needs 5 more paid seats",
         "11:45 — ❌ cancelled",
+        "",
+        "💵 Cash is paid to Misho on site on the lift day.",
         "",
         '🔗 <a href="https://pay.example">Where to pay</a>',
     ]

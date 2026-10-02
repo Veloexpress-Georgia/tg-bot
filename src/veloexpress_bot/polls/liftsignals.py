@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, tzinfo
 from html import escape
 from typing import Literal
 
+from veloexpress_bot.payments.copy import CASH_ON_SITE_TEXT
 from veloexpress_bot.polls.defaults import MINIMUM_RIDERS, PaymentTerms
 from veloexpress_bot.polls.render import EN_SHORT_MONTHS, SHORT_DAY_LABELS
 
@@ -229,11 +230,12 @@ def render_deadline_reminder(
     else:
         headline = (
             f"⏳ Tomorrow · {day}, {service_date.day} {month} — "
-            f"book and pay by {terms.deadline_time}."
+            f"book and transfer by {terms.deadline_time}."
         )
     lines = [headline, ""]
     ordered = sorted(signals, key=lambda signal: lift_minutes(signal.lift_time))
     lines.extend(_reminder_line(signal) for signal in ordered)
+    lines.extend(("", f"💵 {CASH_ON_SITE_TEXT}"))
     if terms.link:
         lines.extend(("", terms.rules()[-1]))
     return "\n".join(lines)
@@ -296,16 +298,15 @@ def render_lift_signal_notice(
 
 
 def _confirmed_notice(events: list[LiftEvent], *, terms: PaymentTerms) -> str:
-    # Not "is running": five bookings only mean the money is now due. What the
-    # group agreed actually settles a lift is five prepayments by the deadline,
-    # so this asks for them instead of promising a van that nobody has paid for.
+    # Reaching the booking minimum opens payment details; it is not a promise
+    # that the lift is funded. Cash remains payable on site on the lift day.
     if len(events) == 1:
         event = events[0]
-        headline = f"✅ {_lift_label(event)} has {event.seats} riders — pay to lock it in."
+        headline = f"✅ {_lift_label(event)} has {event.seats} riders — payment details are ready."
     else:
         headline = "\n".join(
             (
-                "✅ These lifts have enough riders — pay to lock them in:",
+                "✅ These lifts have enough riders — payment details are ready:",
                 "",
                 *(f"{_lift_label(event)} — {event.seats} riders" for event in events),
             )
@@ -313,9 +314,10 @@ def _confirmed_notice(events: list[LiftEvent], *, terms: PaymentTerms) -> str:
     # One line, not the whole rulebook: the rules live in the pinned notice and the
     # amount lives on the board this links to. Three lines of money talk per confirmed
     # lift read as spam in the lift topic, which is what admins said.
+    lines = [headline, f"💵 {CASH_ON_SITE_TEXT}"]
     if terms.link:
-        return f"{headline} {terms.pay_link('💸 Pay')}"
-    return headline
+        lines.append(terms.pay_link("💸 Payment details"))
+    return "\n".join(lines)
 
 
 def _undershoot_notice(events: list[LiftEvent]) -> str:

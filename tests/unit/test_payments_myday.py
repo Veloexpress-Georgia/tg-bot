@@ -71,7 +71,7 @@ def test_several_lifts_offer_one_tap_for_a_guest_riding_along() -> None:
     rows = _buttons(draft.reply_markup)
     assert rows[0] == [
         ("💸 I paid · 60", "guest:pay:20260801"),
-        ("💵 Cash 60", "guest:cash:20260801"),
+        ("💵 Paid cash 60", "guest:cash:20260801"),
     ]
     assert rows[1] == [
         ("− Guest from all lifts", "guest:allsub:20260801"),
@@ -99,7 +99,7 @@ def test_an_unfilled_lift_offers_settling_the_whole_day() -> None:
     assert "Due now 15 GEL · whole day 45 GEL." in draft.text
     assert _buttons(draft.reply_markup)[1] == [
         ("💸 I paid all · 45", "guest:payall:20260801"),
-        ("💵 Cash all · 45", "guest:cashall:20260801"),
+        ("💵 Paid cash all · 45", "guest:cashall:20260801"),
     ]
 
 
@@ -180,7 +180,7 @@ def test_paid_cash_can_be_changed_to_a_transfer_from_the_rider_card() -> None:
         )
     )
 
-    assert ("💸 Change to I paid", "guest:pay:20260801") in _buttons(draft.reply_markup)[0]
+    assert ("💸 Correct to transfer", "guest:pay:20260801") in _buttons(draft.reply_markup)[0]
 
 
 def test_the_weekend_is_one_card_with_day_tabs() -> None:
@@ -365,7 +365,7 @@ def test_topup_buttons_show_only_the_unpaid_amount() -> None:
     )
     buttons = dict((data, text) for row in _buttons(draft.reply_markup) for text, data in row)
     assert buttons["guest:pay:20260801"] == "💸 I paid · 15"
-    assert buttons["guest:cash:20260801"] == "💵 Cash 15"
+    assert buttons["guest:cash:20260801"] == "💵 Paid cash 15"
     assert buttons["guest:payall:20260801"] == "💸 I paid all · 30"
 
 

@@ -929,7 +929,7 @@ async def test_the_deadline_reminder_goes_out_once_and_names_no_one(db: SharedDa
     await service.evaluate_lift_signals(now=deadline - timedelta(hours=1))
     reminders = [text for text in client.sent_texts if "⏳ Tomorrow" in text]
     assert len(reminders) == 1
-    assert "book and pay by 20:00" in reminders[0]
+    assert "book and transfer by 20:00" in reminders[0]
     assert "8:30 — 3/5 · needs 2 more" in reminders[0]
     assert "tg://user?id=" not in reminders[0], "a nudge tags nobody"
 
@@ -1297,7 +1297,7 @@ async def test_poll_service_can_send_notice_before_poll_and_pin_poll(
     assert client.sent_texts[0].startswith(
         '📍 <a href="https://maps.app.goo.gl/nSNiv7GnNiQt5J64A">Opposite Vake Park</a>'
     )
-    assert "Pay once your lift reaches 5 booked seats" in client.sent_texts[0]
+    assert "Bank transfer once your lift reaches 5 booked seats" in client.sent_texts[0]
     assert "🚐 Availability · Sat, 16 May" in client.sent_texts[1]
     assert client.sent[0].question == "🚐 Saturday · May 16"
 

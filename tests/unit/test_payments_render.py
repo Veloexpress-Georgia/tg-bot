@@ -48,7 +48,7 @@ def test_board_lists_running_lifts_price_and_the_taps() -> None:
 
     assert "💸 Payments · Sat, 18 Jul" in draft.text
     assert "Payment open: 8:30, 10:00" in draft.text
-    assert "15 GEL per seat · pay by 20:00" in draft.text
+    assert "15 GEL per seat · transfer by 20:00" in draft.text
     assert "Waiting on:" in draft.text
     assert draft.reply_markup is not None
     # Cash has its own button rather than a rule telling riders to press the
@@ -56,7 +56,7 @@ def test_board_lists_running_lifts_price_and_the_taps() -> None:
     # seat is the phantom booking the group keeps tripping over.
     assert _buttons(draft.reply_markup) == {
         "pay:paid:20260718": "💸 I paid",
-        "pay:cash:20260718": "💵 Cash",
+        "pay:cash:20260718": "💵 Paid cash",
         "pay:undo:20260718": "↩️ Undo",
     }
     assert '<a href="https://t.me/bot?start=guests-20260718">Guests</a>' in draft.text
@@ -254,6 +254,6 @@ def test_primary_payment_button_uses_full_width_and_guests_are_a_text_link() -> 
     assert draft.reply_markup is not None
     assert [[b.text for b in row] for row in draft.reply_markup.inline_keyboard] == [
         ["💸 I paid"],
-        ["💵 Cash", "↩️ Undo"],
+        ["💵 Paid cash", "↩️ Undo"],
     ]
     assert '<a href="https://t.me/bot?start=guests-20260718">Guests</a>' in draft.text

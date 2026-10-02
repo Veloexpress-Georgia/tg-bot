@@ -22,6 +22,7 @@ from datetime import date, datetime
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from veloexpress_bot.payments.copy import CASH_BUTTON
 from veloexpress_bot.payments.details import bank_details_text
 from veloexpress_bot.polls.render import EN_SHORT_MONTHS, SHORT_DAY_LABELS
 
@@ -30,7 +31,7 @@ MY_DAY_PARSE_MODE = "HTML"
 # baked into board buttons already posted in the group, so they outlive the
 # rename from "guest form" to "rider card".
 DEEP_LINK_PREFIX = "guests-"
-# "I paid" and "Cash" carry their meaning through the link. Unlike "Pay", which
+# "I paid" and "Paid cash" carry their meaning through the link. Unlike "Pay", which
 # only invites somebody to go and pay, these are the rider asserting that money
 # has moved — so acting on arrival is the same promise the button already made.
 PAID_LINK_PREFIX = "paid-"
@@ -291,7 +292,7 @@ def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyb
                     callback_data=f"guest:pay:{encoded_date}",
                 ),
                 InlineKeyboardButton(
-                    text=f"💵 Cash {due_now}",
+                    text=f"{CASH_BUTTON} {due_now}",
                     callback_data=f"guest:cash:{encoded_date}",
                 ),
             ]
@@ -306,7 +307,7 @@ def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyb
                     callback_data=f"guest:payall:{encoded_date}",
                 ),
                 InlineKeyboardButton(
-                    text=f"💵 Cash all · {due_all}",
+                    text=f"{CASH_BUTTON} all · {due_all}",
                     callback_data=f"guest:cashall:{encoded_date}",
                 ),
             ]
@@ -317,7 +318,7 @@ def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyb
                 rows.append(
                     [
                         InlineKeyboardButton(
-                            text="💸 Change to I paid", callback_data=f"guest:pay:{encoded_date}"
+                            text="💸 Correct to transfer", callback_data=f"guest:pay:{encoded_date}"
                         )
                     ]
                 )
@@ -325,7 +326,7 @@ def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyb
                 rows.append(
                     [
                         InlineKeyboardButton(
-                            text="💵 Change to Cash", callback_data=f"guest:cash:{encoded_date}"
+                            text="💵 Correct to cash", callback_data=f"guest:cash:{encoded_date}"
                         )
                     ]
                 )
