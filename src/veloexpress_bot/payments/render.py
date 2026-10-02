@@ -6,11 +6,11 @@ from datetime import date, datetime, timedelta
 
 from aiogram.types import InlineKeyboardMarkup
 
+from veloexpress_bot.payment_copy import CASH_BUTTON as CASH_BUTTON
+from veloexpress_bot.payment_copy import CASH_ON_SITE_TEXT, CASH_REPORT_TEXT
+from veloexpress_bot.payment_copy import PAID_BUTTON as PAID_BUTTON
+from veloexpress_bot.payment_copy import UNDO_BUTTON as UNDO_BUTTON
 from veloexpress_bot.payments.controls import payment_keyboard
-from veloexpress_bot.payments.copy import CASH_BUTTON as CASH_BUTTON
-from veloexpress_bot.payments.copy import CASH_ON_SITE_TEXT, CASH_REPORT_TEXT
-from veloexpress_bot.payments.copy import PAID_BUTTON as PAID_BUTTON
-from veloexpress_bot.payments.copy import UNDO_BUTTON as UNDO_BUTTON
 from veloexpress_bot.payments.details import bank_details_text
 from veloexpress_bot.polls.render import EN_SHORT_MONTHS, SHORT_DAY_LABELS
 

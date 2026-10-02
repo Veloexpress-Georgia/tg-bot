@@ -2,7 +2,7 @@ import html
 from dataclasses import dataclass
 from datetime import date
 
-from veloexpress_bot.payments.copy import CASH_ON_SITE_TEXT
+from veloexpress_bot.payment_copy import CASH_ON_SITE_TEXT
 from veloexpress_bot.polls.defaults import (
     CHECK_ANSWERS_OPTION,
     DEFAULT_LIFTS,

@@ -1,6 +1,6 @@
 """Shared bank details and cash instructions for payment cards."""
 
-from veloexpress_bot.payments.copy import CASH_ON_SITE_TEXT, CASH_REPORT_TEXT
+from veloexpress_bot.payment_copy import CASH_ON_SITE_TEXT, CASH_REPORT_TEXT
 
 PAYMENT_RECIPIENT = "Mikheil Nozadze"
 PAYMENT_ACCOUNTS = (
