@@ -89,7 +89,7 @@ NOTHING_TO_UNDO_TEXT = "You have not marked a payment for this day."
 UNDO_VERIFIED_TEXT = "Misho recorded this payment. Ask him if it needs undoing."
 METHOD_VERIFIED_TEXT = "Misho recorded this payment. Ask him to correct its method."
 UNDO_AFTER_DEADLINE_TEXT = "Booking closed for this day. Ask Misho about a refund."
-NOT_CLAIMED_YET_TEXT = "Tap 💸 I paid or 💵 Cash first."
+NOT_CLAIMED_YET_TEXT = "After paying, report the transfer or the cash you handed to Misho."
 BOARD_GONE_TEXT = "This payments board is no longer active."
 PAYMENTS_DISABLED_TEXT = "Payments are not set up for this chat."
 
@@ -98,7 +98,8 @@ PAYMENTS_DISABLED_TEXT = "Payments are not set up for this chat."
 # the rider's money and their call, but never a silent charge.
 WAITLIST_WARNING_TEXT = (
     "⚠️ Your seats are past the 10-person capacity — you are on the waitlist. "
-    "Tap again to pay anyway; you get a refund if you do not ride."
+    "If you have already paid, tap again to report it; "
+    "you get a refund if you do not ride."
 )
 
 
@@ -2378,7 +2379,7 @@ def _partial_booking_warning(
     return (
         f"⚠️ Only {', '.join(confirmed)} filled — {due_now} GEL now. "
         f"{', '.join(pending)} still short (+{due_later} later). "
-        "Tap again to pay now, or wait and pay once."
+        "Already paid? Tap again to report it; otherwise wait."
     )
 
 

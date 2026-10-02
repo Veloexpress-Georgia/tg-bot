@@ -1,4 +1,6 @@
-"""Shared transfer details for public and private payment cards."""
+"""Shared bank details and cash instructions for payment cards."""
+
+from veloexpress_bot.payments.copy import CASH_ON_SITE_TEXT, CASH_REPORT_TEXT
 
 PAYMENT_RECIPIENT = "Mikheil Nozadze"
 PAYMENT_ACCOUNTS = (
@@ -10,5 +12,12 @@ PAYMENT_ACCOUNTS = (
 def bank_details_text() -> str:
     lines = ["🏦 Bank transfer", f"<code>{PAYMENT_RECIPIENT}</code>"]
     lines.extend(f"{bank}: <code>{account}</code>" for bank, account in PAYMENT_ACCOUNTS)
-    lines.extend(("", "Transfer to either account, then tap 💸 I paid. For cash, tap 💵 Cash."))
+    lines.extend(
+        (
+            "",
+            "Transfer to either account, then mark the completed payment.",
+            CASH_ON_SITE_TEXT,
+            CASH_REPORT_TEXT,
+        )
+    )
     return "\n".join(lines)

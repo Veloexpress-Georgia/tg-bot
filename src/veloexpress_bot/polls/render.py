@@ -2,6 +2,7 @@ import html
 from dataclasses import dataclass
 from datetime import date
 
+from veloexpress_bot.payments.copy import CASH_ON_SITE_TEXT
 from veloexpress_bot.polls.defaults import (
     CHECK_ANSWERS_OPTION,
     DEFAULT_LIFTS,
@@ -142,15 +143,15 @@ def render_poll_notice(first_lift_location: StartLocation, *, terms: PaymentTerm
         )
     payment_notice = (
         f"💳 <b>{terms.price_gel} GEL / seat.</b> "
-        f"Pay once your lift reaches {MINIMUM_RIDERS} booked seats, "
-        f"by <b>{terms.deadline_time} the evening before</b>. Late bookings: pay immediately."
+        f"Bank transfer once your lift reaches {MINIMUM_RIDERS} booked seats, "
+        f"by <b>{terms.deadline_time} the evening before</b>. Late bookings: transfer immediately."
     )
     links = [
         '<a href="https://t.me/c/2200954181/5">Rules &amp; bank details</a>',
     ]
     if terms.link:
         links.insert(0, terms.pay_link("Where to pay"))
-    return "\n".join((route_notice, payment_notice, " · ".join(links)))
+    return "\n".join((route_notice, payment_notice, f"💵 {CASH_ON_SITE_TEXT}", " · ".join(links)))
 
 
 def render_availability_status(

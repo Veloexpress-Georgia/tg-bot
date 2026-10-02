@@ -656,7 +656,7 @@ async def test_a_rider_can_correct_cash_to_transfer_without_changing_the_amount(
     card = await payments.my_day_card(service_date=saturday, telegram_user_id=100)
     assert card.reply_markup is not None
     assert any(
-        button.text == "💸 Change to I paid"
+        button.text == "💸 Correct to transfer"
         for row in card.reply_markup.inline_keyboard
         for button in row
     )
@@ -1326,7 +1326,7 @@ async def test_the_first_sight_of_a_lift_announces_nothing(db: SharedDatabase) -
 
 
 def _unpaid_notices(client: FakeTelegramClient) -> list[SentRecord]:
-    return [record for record in client.payments_sends() if "not paid up yet" in record.text]
+    return [record for record in client.payments_sends() if "booking is closed" in record.text]
 
 
 async def test_an_underfunded_lift_is_chased_not_cancelled(db: SharedDatabase) -> None:
@@ -1522,7 +1522,7 @@ async def test_the_board_pay_buttons_are_deep_links_when_the_username_is_known(
         button.url
         for row in board.markup.inline_keyboard
         for button in row
-        if button.text in {"💸 I paid", "💵 Cash"}
+        if button.text in {"💸 I paid", "💵 Paid cash"}
     ]
     assert urls == [
         f"https://t.me/veloexpress_bot?start=paid-{encoded}",
@@ -1546,7 +1546,7 @@ async def test_the_board_falls_back_to_callbacks_without_a_username(
         button.callback_data
         for row in board.markup.inline_keyboard
         for button in row
-        if button.text in {"💸 I paid", "💵 Cash"}
+        if button.text in {"💸 I paid", "💵 Paid cash"}
     ]
     assert data == [f"pay:paid:{encoded}", f"pay:cash:{encoded}"]
 
@@ -1660,7 +1660,7 @@ async def test_paying_stays_in_the_group_until_the_setting_is_turned_on(
         button
         for row in board.markup.inline_keyboard
         for button in row
-        if button.text in {"💸 I paid", "💵 Cash"}
+        if button.text in {"💸 I paid", "💵 Paid cash"}
     ]
     assert [button.callback_data for button in pay_row] == [
         f"pay:paid:{encoded}",
@@ -2479,7 +2479,7 @@ async def test_payment_buttons_are_under_existing_booking_status(db: SharedDatab
     assert markup is not None
     assert [[b.text for b in row] for row in markup.inline_keyboard] == [
         ["💸 I paid"],
-        ["💵 Cash", "↩️ Undo"],
+        ["💵 Paid cash", "↩️ Undo"],
     ]
 
 
