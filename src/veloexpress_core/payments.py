@@ -97,9 +97,9 @@ PAYMENTS_DISABLED_TEXT = "Payments are not set up for this chat."
 # place. The bot says so once and takes the same tap again as "yes, I know" — it is
 # the rider's money and their call, but never a silent charge.
 WAITLIST_WARNING_TEXT = (
-    "⚠️ Your seats are past the 10-person capacity — you are on the waitlist. "
-    "If you have already paid, tap again to report it; "
-    "you get a refund if you do not ride."
+    "⚠️ You are on the waitlist; payment does not secure a seat. "
+    "Already paid? Tap again to report it. "
+    "Arrange any refund with Misho; the bot does not return money."
 )
 
 
@@ -373,6 +373,7 @@ class PaymentsService:
             return ClaimOutcome(NOT_BOOKED_TEXT)
         pending = day.pending_lift_times(telegram_user_id)
         paying_for = (*lift_times, *pending) if include_pending else lift_times
+        received_delta = 0
 
         async with self._session_factory() as session:
             claim = await self._claim_row(
@@ -385,7 +386,10 @@ class PaymentsService:
             owed_amount = owed * day.price_gel
             if claim is not None and claim.amount_gel >= owed_amount:
                 if claim.method not in {CASH_METHOD, TRANSFER_METHOD} or claim.method == method:
-                    return ClaimOutcome(ALREADY_SETTLED_TEXT)
+                    return ClaimOutcome(
+                        f"{ALREADY_SETTLED_TEXT}\n{service_date.isoformat()} · "
+                        f"reported {claim.amount_gel} GEL. Nothing added."
+                    )
                 if claim.verified_by_user_id is not None:
                     return ClaimOutcome(METHOD_VERIFIED_TEXT)
                 # This corrects the reported method, not the money received. Keep
@@ -479,7 +483,9 @@ class PaymentsService:
         how = " in cash" if method == CASH_METHOD else ""
         guest_note = f" +{guests} guest(s)" if guests else ""
         return ClaimOutcome(
-            f"Thanks! {', '.join(paying_for)}{guest_note} · {owed_amount} GEL{how}."
+            f"{service_date.isoformat()} · recorded +{received_delta} GEL{how}.\n"
+            f"Total reported: {owed_amount} GEL.\n"
+            f"{', '.join(paying_for)}{guest_note}."
         )
 
     async def my_day_card(

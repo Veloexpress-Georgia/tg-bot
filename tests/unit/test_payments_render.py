@@ -92,7 +92,7 @@ def test_the_board_shows_what_is_still_due_after_a_re_vote() -> None:
     )
 
     assert "✓ @whekin — 30 GEL · 2 seats · +30 due" in draft.text
-    assert "✓ @anna — 30 GEL · 2 seats · 15 back" in draft.text
+    assert "✓ @anna — 30 GEL · 2 seats · 15 unallocated" in draft.text
     # Settled riders stay a plain line; no arithmetic to read where none is owed.
     assert "✓ @stas — 15 GEL" in draft.text
 

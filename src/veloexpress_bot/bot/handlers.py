@@ -323,7 +323,7 @@ async def _settle_from_card(
         include_pending=include_pending,
     )
     await _refresh_rider_card(callback, payments_service, service_date=service_date)
-    await callback.answer(outcome.text)
+    await callback.answer(outcome.text, show_alert=True)
 
 
 async def _refresh_rider_card(
@@ -1343,7 +1343,9 @@ async def handle_payment_button(
     else:
         notice = STALE_BOARD_ALERT
 
-    await callback.answer(notice, show_alert=False)
+    # Money needs an acknowledgement that stays until dismissed. A disappearing
+    # toast made a saved report look like a dead button, especially on repeat taps.
+    await callback.answer(notice, show_alert=True)
 
 
 @router.message(F.pinned_message)

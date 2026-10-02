@@ -337,7 +337,8 @@ async def test_a_claim_posts_the_rider_line_with_the_amount(db: SharedDatabase) 
 
     # The toast names the lifts so the amount explains itself; the posted receipt
     # does not, because re-voting would make a lift list stale.
-    assert "8:30, 10:00 · 30 GEL" in notice
+    assert "8:30, 10:00" in notice
+    assert "Total reported: 30 GEL" in notice
     posted = client.payments_sends()[-1]
     assert "30 GEL" in posted.text
     assert "8:30" not in posted.text
@@ -382,8 +383,30 @@ async def test_claiming_twice_says_so_instead_of_posting_again(db: SharedDatabas
         service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
     )
 
-    assert outcome.text == ALREADY_SETTLED_TEXT
+    assert outcome.text.startswith(ALREADY_SETTLED_TEXT)
     assert len(client.payments_sends()) == after_first
+
+
+async def test_payment_feedback_names_day_total_and_no_addition_on_repeat(
+    db: SharedDatabase,
+) -> None:
+    polls, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    first = await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="rider100", full_name="Rider"
+    )
+    second = await payments.claim(
+        service_date=saturday, telegram_user_id=100, username="rider100", full_name="Rider"
+    )
+    assert saturday.isoformat() in first.text
+    assert "recorded +15 GEL" in first.text
+    assert "Total reported: 15 GEL" in first.text
+    assert saturday.isoformat() in second.text
+    assert "reported 15 GEL" in second.text
+    assert "Nothing added" in second.text
+    async with db.session() as session:
+        entries = (await session.scalars(select(PaymentEntry))).all()
+    assert [(entry.amount_gel, entry.kind) for entry in entries] == [(15, "received")]
 
 
 async def test_the_bot_stays_quiet_when_the_rider_already_wrote_in_the_topic(
@@ -415,7 +438,11 @@ async def test_booking_status_keeps_payment_in_topic(db: SharedDatabase) -> None
     await payments.sync_boards()
     await polls.refresh_booking_statuses()
     before = len(client.sent)
-    await polls.evaluate_lift_signals()
+    # Keep the real Friday clock out of this payment-placement test.
+    midday = datetime(
+        saturday.year, saturday.month, saturday.day, 12, tzinfo=ZoneInfo("Asia/Tbilisi")
+    )
+    await polls.evaluate_lift_signals(now=midday - timedelta(days=1))
     assert len(client.sent) == before
     assert not any(r.thread_id == LIFT_THREAD and "Payment open:" in r.text for r in client.sent)
     status = next(r for r in client.sent if "Availability" in r.text)
@@ -476,7 +503,7 @@ async def test_paying_twice_without_changes_says_you_are_already_settled(
         service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
     )
 
-    assert outcome.text == ALREADY_SETTLED_TEXT
+    assert outcome.text.startswith(ALREADY_SETTLED_TEXT)
 
 
 async def test_the_waitlist_is_not_billed_and_is_warned_before_paying(
@@ -627,7 +654,7 @@ async def test_a_cash_tap_records_the_method_so_misho_can_reconcile(
         )
     ).text
 
-    assert notice.endswith("15 GEL in cash.")
+    assert "recorded +15 GEL in cash." in notice
     posted = client.payments_sends()[-1]
     assert posted.text.startswith("💵 ")
     assert posted.text.endswith("· cash")
@@ -695,7 +722,7 @@ async def test_a_rider_can_correct_cash_to_transfer_without_changing_the_amount(
         full_name="Konstantin",
         method="transfer",
     )
-    assert again.text == ALREADY_SETTLED_TEXT
+    assert again.text.startswith(ALREADY_SETTLED_TEXT)
 
 
 async def test_correcting_cash_after_the_deadline_does_not_undo_payment(
@@ -1122,7 +1149,7 @@ async def test_a_paid_seat_stays_paid_after_a_late_cancellation(db: SharedDataba
     notice = await payments.claim(
         service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
     )
-    assert notice.text == ALREADY_SETTLED_TEXT
+    assert notice.text.startswith(ALREADY_SETTLED_TEXT)
 
 
 async def test_leaving_unpaid_after_the_deadline_owes_nothing(db: SharedDatabase) -> None:
@@ -1209,7 +1236,8 @@ async def test_a_seat_booked_after_the_deadline_is_still_charged(db: SharedDatab
     notice = await payments.claim(
         service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
     )
-    assert "8:30, 10:00 · 30 GEL" in notice.text
+    assert "8:30, 10:00" in notice.text
+    assert "Total reported: 30 GEL" in notice.text
 
 
 async def test_cancelling_a_lift_after_the_deadline_still_refunds(db: SharedDatabase) -> None:
@@ -1232,7 +1260,7 @@ async def test_cancelling_a_lift_after_the_deadline_still_refunds(db: SharedData
     # The roster holds a rider to what they paid for; it cannot hold them to a
     # lift Misho called off. That is the one refund the group does recognise.
     board_text = [text for message_id, text in client.edits if message_id == board.message_id][-1]
-    assert "15 back" in board_text
+    assert "15 unallocated" in board_text
 
 
 async def test_the_roster_is_frozen_once_and_never_updated(db: SharedDatabase) -> None:
@@ -1616,7 +1644,7 @@ async def test_a_rider_who_stayed_still_owes_when_others_dropped_out(
     outcome = await payments.claim(
         service_date=saturday, telegram_user_id=102, username="rider102", full_name="Rider 102"
     )
-    assert outcome.text.endswith("15 GEL.")
+    assert "Total reported: 15 GEL." in outcome.text
 
 
 async def test_peeking_at_the_results_is_not_a_booking(db: SharedDatabase) -> None:
@@ -1945,7 +1973,7 @@ async def test_payment_follows_a_changed_lift_before_the_deadline(db: SharedData
         full_name="Rider 100",
     )
 
-    assert moved.text == ALREADY_SETTLED_TEXT
+    assert moved.text.startswith(ALREADY_SETTLED_TEXT)
     async with db.session() as session:
         entries = (await session.scalars(select(PaymentEntry))).all()
     assert [(entry.amount_gel, entry.kind) for entry in entries] == [(15, "received")]

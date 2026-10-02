@@ -147,6 +147,11 @@ def _money_lines(day: RiderDayView) -> list[str]:
         # Said plainly, because the board only shows it as a name in a list and a
         # rider who cannot see a seat should not be guessing whether they have one.
         lines.extend(("", "⏳ You hold no seat yet — nothing to pay until one frees up."))
+        if day.paid_gel:
+            lines.append(
+                f"Paid {day.paid_gel} GEL reported. Arrange any refund with Misho; "
+                "the bot does not return money."
+            )
         return lines
     if day.pending_lift_times:
         # Naming them is the point: one seat's price alone looks wrong to somebody who booked
@@ -176,8 +181,10 @@ def _money_lines(day: RiderDayView) -> list[str]:
             if prepaid:
                 parts.append(f"{prepaid} GEL prepaid")
             if surplus:
-                parts.append(f"{surplus} GEL to come back")
+                parts.append(f"{surplus} GEL above current bookings")
             lines.append(" · ".join(parts) + ".")
+            if surplus:
+                lines.append("Arrange any refund with Misho; the bot does not return money.")
         else:
             lines.append(f"Paid {day.paid_gel} GEL ✅")
     return lines
