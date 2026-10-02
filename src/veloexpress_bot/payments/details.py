@@ -18,6 +18,8 @@ def bank_details_text() -> str:
             "Transfer to either account, then mark the completed payment.",
             CASH_ON_SITE_TEXT,
             CASH_REPORT_TEXT,
+            "Paid for another rider? They tap I paid for their day, or ask Misho to record "
+            "the actual amount. Do not also report it as your payment.",
         )
     )
     return "\n".join(lines)

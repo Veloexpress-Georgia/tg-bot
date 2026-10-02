@@ -247,8 +247,8 @@ def _payment_line(payment: RiderPayment) -> str:
     if payment.gap_gel > 0:
         gap = f" · +{payment.gap_gel} due"
     elif payment.gap_gel < 0:
-        # "back" would call a deliberate prepayment a mistake.
-        gap = f" · {-payment.gap_gel} {'prepaid' if payment.prepaid else 'back'}"
+        # A free amount is an estimate, not a completed or promised bank payout.
+        gap = f" · {-payment.gap_gel} {'prepaid' if payment.prepaid else 'unallocated'}"
     return f"✓ {html.escape(payment.label)} — {payment.amount_gel} GEL{seats}{cash}{gap}"
 
 
