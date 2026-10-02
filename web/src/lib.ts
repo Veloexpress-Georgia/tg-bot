@@ -11,8 +11,8 @@ export function delta(current: number, previous: number): string {
   const change = ((current - previous) / Math.abs(previous)) * 100;
   return `${change > 0 ? '+' : ''}${number(change)}% к прошлому периоду`;
 }
-export function plain(text: string) {
-  return text
+export function plain(text: string | null | undefined) {
+  return (text ?? '')
     .replace(/<[^>]*>/g, '')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
