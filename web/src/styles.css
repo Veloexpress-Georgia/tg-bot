@@ -87,7 +87,7 @@ small {
 .eyebrow {
   display: block;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
   letter-spacing: 0.15em;
   font-weight: 700;
   margin-bottom: 10px;
@@ -148,7 +148,7 @@ small {
 .button-sm {
   min-height: 34px;
   padding: 7px 12px;
-  font-size: 11px;
+  font-size: 12px;
 }
 .button-icon {
   width: 36px;
@@ -190,7 +190,7 @@ small {
 }
 .brand b > span {
   display: block;
-  font-size: 8px;
+  font-size: 11px;
   letter-spacing: 0.23em;
   font-weight: 500;
   opacity: 0.6;
@@ -200,7 +200,7 @@ small {
   display: flex;
   gap: 8px;
   align-items: center;
-  font-size: 10px;
+  font-size: 12px;
   color: #939c8c;
   letter-spacing: 0.015em;
   padding: 25px 0 24px;
@@ -267,7 +267,7 @@ small {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 8px;
+  font-size: 11px;
   letter-spacing: 0.17em;
   color: #78846f;
   margin-top: 28px;
@@ -290,7 +290,7 @@ small {
   display: flex;
   align-items: center;
   gap: 14px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .breadcrumb b {
@@ -306,7 +306,7 @@ small {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
 }
 .demo-label {
@@ -319,13 +319,13 @@ small {
   background: none;
   border: 0;
   text-align: left;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--ink);
 }
 .profile small {
   display: block;
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 400;
   margin-top: 2px;
 }
@@ -364,7 +364,7 @@ main {
   border-radius: 9px;
   padding: 11px 14px;
   color: #5c6d3a;
-  font-size: 10px;
+  font-size: 12px;
   margin-bottom: 30px;
   line-height: 1.6;
 }
@@ -380,7 +380,7 @@ main {
   gap: 7px;
   background: none;
   border: 0;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
 }
@@ -410,7 +410,7 @@ main {
   color: #879377;
 }
 .season-stamp span {
-  font-size: 8px;
+  font-size: 11px;
   line-height: 1.7;
   letter-spacing: 0.13em;
 }
@@ -437,7 +437,7 @@ main {
   background: none;
   color: var(--muted);
   border-radius: 7px;
-  font-size: 11px;
+  font-size: 12px;
   padding: 9px 16px;
   white-space: nowrap;
 }
@@ -451,7 +451,7 @@ main {
   padding: 3px;
 }
 .segmented.compact button {
-  font-size: 10px;
+  font-size: 12px;
   padding: 7px 12px;
 }
 .period-switch {
@@ -466,7 +466,7 @@ main {
   text-transform: capitalize;
 }
 .period-caption {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .date-range {
@@ -541,7 +541,7 @@ main {
   margin-bottom: 20px;
 }
 .panel-heading .eyebrow {
-  font-size: 9px;
+  font-size: 12px;
   margin-bottom: 9px;
 }
 .panel-heading h2 {
@@ -573,7 +573,7 @@ main {
   align-items: center;
   gap: 4px;
   color: var(--green);
-  font-size: 9px;
+  font-size: 12px;
 }
 .chart-frame {
   height: 225px;
@@ -584,7 +584,7 @@ main {
   align-items: center;
   gap: 25px;
   justify-content: center;
-  font-size: 9px;
+  font-size: 12px;
   color: var(--muted);
   margin-top: 13px;
 }
@@ -611,7 +611,7 @@ main {
 }
 .chart-main > .caption {
   text-align: center;
-  font-size: 9px;
+  font-size: 12px;
   margin: 9px 0 0;
 }
 .load-list {
@@ -636,11 +636,11 @@ main {
   min-width: 38px;
 }
 .load-row span {
-  font-size: 9px;
+  font-size: 12px;
   color: var(--muted);
 }
 .load-row > b {
-  font-size: 11px;
+  font-size: 12px;
 }
 .load-track {
   height: 7px;
@@ -663,7 +663,7 @@ main {
   border-top: 1px solid var(--line);
 }
 .load-note p {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
   line-height: 1.7;
 }
@@ -701,7 +701,7 @@ main {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  font-size: 9px;
+  font-size: 12px;
   color: var(--muted);
 }
 .donut b {
@@ -715,7 +715,7 @@ main {
   display: flex;
   flex-direction: column;
   gap: 20px;
-  font-size: 10px;
+  font-size: 12px;
 }
 .money-methods > div {
   display: flex;
@@ -730,7 +730,7 @@ main {
   border-top: 1px solid var(--line);
   padding-top: 20px;
   margin-top: 20px;
-  font-size: 11px;
+  font-size: 12px;
 }
 .financial-lines > span {
   display: flex;
@@ -750,7 +750,7 @@ main {
 }
 .participation-number span {
   display: block;
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0;
   font-weight: 400;
   color: var(--muted);
@@ -764,12 +764,12 @@ table {
   width: 100%;
   white-space: nowrap;
   text-align: left;
-  font-size: 11px;
+  font-size: 12px;
 }
 th {
   color: var(--muted);
   font-weight: 500;
-  font-size: 9px;
+  font-size: 12px;
   padding: 0 12px 16px;
   border-bottom: 1px solid var(--line);
 }
@@ -796,7 +796,7 @@ tbody tr:last-child td {
   background: none;
   border: 0;
   color: var(--ink);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   padding: 0;
 }
@@ -835,7 +835,7 @@ tbody tr:last-child td {
   align-items: center;
   border-radius: 5px;
   padding: 4px 7px;
-  font-size: 8px;
+  font-size: 12px;
   font-weight: 600;
   background: #edf2df;
   color: #617a38;
@@ -851,7 +851,7 @@ tbody tr:last-child td {
   color: #927137;
 }
 .data-note {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
   line-height: 1.9;
   margin: 8px 0 20px;
@@ -872,7 +872,7 @@ tbody tr:last-child td {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  font-size: 10px;
+  font-size: 12px;
 }
 .upcoming-inline > div > span:last-child {
   color: var(--muted);
@@ -880,7 +880,7 @@ tbody tr:last-child td {
 .page-footer {
   display: flex;
   justify-content: space-between;
-  font-size: 9px;
+  font-size: 12px;
   color: #979d8f;
   border-top: 1px solid var(--line);
   margin-top: 36px;
@@ -1052,7 +1052,7 @@ label {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
 }
 input,
@@ -1135,7 +1135,7 @@ input[type='checkbox'] {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 13px 15px;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.8;
   color: var(--green);
   margin-bottom: 20px;
@@ -1146,7 +1146,7 @@ input[type='checkbox'] {
 }
 .planning-grid .inline-notice {
   margin: 0;
-  font-size: 10px;
+  font-size: 12px;
 }
 .search-input {
   max-width: 240px;
@@ -1161,7 +1161,7 @@ input[type='checkbox'] {
   background: none;
   border: 0;
   padding: 0;
-  font-size: 11px;
+  font-size: 12px;
 }
 .rider-summary {
   margin-top: 20px;
@@ -1223,7 +1223,9 @@ input[type='checkbox'] {
   transform: translate(-50%, -50%);
   width: min(650px, calc(100% - 32px));
   max-height: 88dvh;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -1231,19 +1233,392 @@ input[type='checkbox'] {
   z-index: 61;
   box-shadow: 0 25px 100px #111a1333;
 }
+.dialog-body {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding-right: 2px;
+}
+.day-workspace {
+  min-width: 0;
+}
+.workspace-tabs {
+  display: flex;
+  gap: 5px;
+  padding: 5px;
+  background: var(--soft);
+  border-radius: 10px;
+  margin-bottom: 18px;
+}
+.workspace-tabs button {
+  flex: 1;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+.workspace-tabs button[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 1px 4px #101c1610;
+}
+.workspace-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 16px 0 12px;
+}
+.workspace-heading > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.day-attention {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.day-attention > .workspace-heading {
+  margin: 0 0 6px;
+}
+.attention-group .attention-item {
+  padding: 10px 12px;
+}
+.attention-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  background: var(--surface);
+  text-align: left;
+}
+.attention-item > svg {
+  flex-shrink: 0;
+  color: var(--queue-text);
+}
+.attention-item > svg:last-child {
+  margin-left: auto;
+  color: var(--muted);
+}
+.attention-item > span {
+  min-width: 0;
+}
+.attention-item strong {
+  display: block;
+  font-size: 14px;
+  line-height: 1.4;
+}
+.attention-item small {
+  display: block;
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+.attention-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+.attention-group > h3 {
+  margin-bottom: 3px;
+}
+.lift-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.lift-picker button {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 10px;
+  text-align: left;
+}
+.lift-picker button[aria-pressed='true'] {
+  border-color: var(--green);
+  background: var(--soft);
+}
+.lift-picker strong {
+  display: block;
+  font-size: 16px;
+}
+.lift-picker span {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.small-tabs {
+  margin: 14px 0 4px;
+}
+.day-management {
+  margin-top: 18px;
+  font-size: 13px;
+}
+.day-management summary {
+  cursor: pointer;
+  padding: 12px 0;
+  font-weight: 600;
+}
+.day-workspace .payment-form {
+  margin-top: 0;
+}
+.payment-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 12px;
+  background: var(--soft);
+  border-radius: 9px;
+  width: 100%;
+}
+.payment-context p {
+  width: 100%;
+  color: var(--muted);
+  font-size: 12px;
+}
+.day-payment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.day-payment-list button {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+}
+.day-payment-list button.selected {
+  border-color: var(--green);
+}
+.day-payment-list strong,
+.day-payment-list b {
+  font-size: 13px;
+}
+.day-payment-list small {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+}
+.day-payment-list button > span:last-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.demand-panel {
+  min-width: 0;
+}
+.demand-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 18px 0;
+}
+.demand-summary > div {
+  padding: 14px;
+  background: var(--soft);
+  border-radius: 10px;
+  min-width: 0;
+}
+.demand-summary span,
+.demand-summary small {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.demand-summary strong {
+  display: block;
+  font-size: 27px;
+  margin: 7px 0;
+}
+.demand-times {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.demand-time {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 13px;
+  min-width: 0;
+}
+.demand-time-heading {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  gap: 14px;
+  padding: 0 0 12px;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  color: var(--ink);
+}
+.demand-time-heading > strong {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+.demand-time-heading > span {
+  flex: 1;
+  min-width: 0;
+}
+.demand-time-heading b {
+  font-size: 13px;
+  display: block;
+}
+.demand-time-heading small {
+  display: block;
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+.demand-time-heading > svg {
+  flex-shrink: 0;
+}
+.demand-time-heading[aria-expanded='true'] > svg {
+  transform: rotate(180deg);
+}
+.demand-time-detail {
+  padding-top: 14px;
+}
+.demand-time-detail dl {
+  margin: 0;
+  font-size: 13px;
+}
+.demand-time-detail dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+}
+.demand-time-detail dt {
+  color: var(--muted);
+}
+.demand-time-detail dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 600;
+}
+.demand-day-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.demand-day-list button {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px;
+  border: 0;
+  border-radius: 8px;
+  text-align: left;
+  color: var(--ink);
+  background: var(--soft);
+  font-size: 13px;
+}
+.demand-day-list small {
+  display: block;
+  font-size: 12px;
+  margin-top: 3px;
+}
+.demand-day-list svg {
+  flex-shrink: 0;
+}
+.live-demand {
+  border-top: 1px solid var(--line);
+  margin-top: 20px;
+  padding-top: 6px;
+}
+.live-demand .attention-item {
+  margin-bottom: 8px;
+}
+@media (max-width: 760px) {
+  .day-workspace .detail-metrics {
+    gap: 10px;
+    padding: 12px;
+  }
+  .day-workspace .detail-metrics strong {
+    font-size: 20px;
+    letter-spacing: -0.025em;
+  }
+  .workspace-tabs button {
+    font-size: 12px;
+    min-height: 40px;
+  }
+  .demand-summary {
+    gap: 7px;
+  }
+  .demand-summary > div {
+    padding: 10px;
+  }
+  .demand-summary strong {
+    font-size: 24px;
+  }
+  .demand-time-heading {
+    gap: 10px;
+  }
+  .demand-time-heading > strong {
+    font-size: 18px;
+  }
+  .day-workspace .lift-actions {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .day-workspace .lift-detail-heading {
+    flex-wrap: wrap;
+    gap: 8px 12px;
+  }
+  .day-workspace .lift-detail-heading .badge {
+    margin-left: 0;
+  }
+  .day-workspace .lift-riders > div {
+    align-items: flex-start;
+  }
+  .day-workspace .lift-riders > div > span:last-child {
+    text-align: right;
+  }
+}
 .dialog-heading {
   display: flex;
   justify-content: space-between;
   gap: 15px;
   align-items: flex-start;
   margin-bottom: 24px;
+  flex-shrink: 0;
 }
 .dialog-heading h2 {
   font-size: 20px;
-  text-transform: capitalize;
+  text-transform: none;
 }
 .dialog-heading p {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   line-height: 1.7;
   margin-top: 8px;
@@ -1264,7 +1639,7 @@ input[type='checkbox'] {
   margin-bottom: 22px;
 }
 .detail-metrics > span {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
 }
 .detail-metrics strong {
@@ -1286,7 +1661,7 @@ input[type='checkbox'] {
   display: flex;
   align-items: center;
   gap: 14px;
-  font-size: 11px;
+  font-size: 12px;
 }
 .lift-detail-heading strong,
 .lift-detail summary strong {
@@ -1310,7 +1685,7 @@ input[type='checkbox'] {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  font-size: 11px;
+  font-size: 12px;
 }
 .lift-riders > div > span:last-child {
   display: flex;
@@ -1318,13 +1693,13 @@ input[type='checkbox'] {
   gap: 3px;
 }
 .paid-text {
-  color: #719244;
+  color: #426020;
 }
 .muted-text {
   color: var(--muted);
 }
 .warning-text {
-  color: #a17b41;
+  color: var(--queue-text);
 }
 .lift-actions {
   display: flex;
@@ -1333,7 +1708,7 @@ input[type='checkbox'] {
   margin-top: 15px;
   border-top: 1px solid var(--line);
   padding-top: 14px;
-  font-size: 10px;
+  font-size: 12px;
   flex-wrap: wrap;
 }
 .lift-actions > span {
@@ -1375,7 +1750,7 @@ input[type='checkbox'] {
   border-top: 1px solid var(--line);
 }
 .danger-zone p {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
   line-height: 1.8;
 }
@@ -1421,13 +1796,13 @@ input[type='checkbox'] {
   font-size: 12px;
 }
 .audit-list p {
-  font-size: 11px;
+  font-size: 12px;
   margin-top: 7px;
   line-height: 1.7;
   overflow-wrap: anywhere;
 }
 .audit-list small {
-  font-size: 9px;
+  font-size: 12px;
   display: block;
   margin-top: 8px;
 }
@@ -1480,7 +1855,7 @@ input[type='checkbox'] {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 11px;
+  font-size: 12px;
   margin-top: 12px;
 }
 .guest-controls > span {
@@ -1515,7 +1890,7 @@ input[type='checkbox'] {
   gap: 15px;
   border-bottom: 1px solid var(--line);
   padding: 12px 0;
-  font-size: 11px;
+  font-size: 12px;
 }
 .available-lifts span {
   color: var(--muted);
@@ -1566,7 +1941,7 @@ input[type='checkbox'] {
   border: 1px solid var(--line);
   padding: 12px 15px;
   border-radius: 10px;
-  font-size: 11px;
+  font-size: 12px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1628,14 +2003,14 @@ input[type='checkbox'] {
   padding: 14px 20px;
 }
 .login-card .caption {
-  font-size: 10px;
+  font-size: 12px;
   margin: 16px 0;
 }
 .demo-login-link {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--green);
   margin-top: 25px;
   width: max-content;
@@ -1656,7 +2031,7 @@ input[type='checkbox'] {
   right: 30px;
   color: #c8df69;
   font-family: 'Unbounded', sans-serif;
-  font-size: 9px;
+  font-size: 11px;
   letter-spacing: 0.08em;
 }
 .mobile-menu,
@@ -1836,7 +2211,7 @@ input[type='checkbox'] {
     font-size: 30px;
   }
   .page-heading p {
-    font-size: 11px;
+    font-size: 12px;
   }
   .topbar-right {
     gap: 10px;
@@ -1910,7 +2285,7 @@ input[type='checkbox'] {
   }
   .breadcrumb {
     flex: 1;
-    font-size: 10px;
+    font-size: 12px;
   }
   .breadcrumb b,
   .breadcrumb svg {
@@ -1937,7 +2312,7 @@ input[type='checkbox'] {
     padding: 18px 18px calc(15px + var(--tg-safe-bottom));
   }
   .demo-banner {
-    font-size: 9px;
+    font-size: 12px;
     padding: 10px 12px;
     margin-bottom: 25px;
     flex-wrap: wrap;
@@ -1949,13 +2324,13 @@ input[type='checkbox'] {
   }
   .demo-banner button {
     margin-left: 25px;
-    font-size: 9px;
+    font-size: 12px;
   }
   .page-heading {
     margin-bottom: 23px;
   }
   .page-heading .eyebrow {
-    font-size: 9px;
+    font-size: 12px;
   }
   .page-heading h1 {
     font-size: 29px;
@@ -1963,7 +2338,7 @@ input[type='checkbox'] {
   }
   .page-heading p {
     max-width: 290px;
-    font-size: 11px;
+    font-size: 12px;
   }
   .period-toolbar {
     gap: 12px;
@@ -1975,7 +2350,7 @@ input[type='checkbox'] {
   }
   .segmented button {
     padding: 9px 11px;
-    font-size: 10px;
+    font-size: 12px;
     flex: 1;
   }
   .period-switch {
@@ -1983,10 +2358,10 @@ input[type='checkbox'] {
     justify-content: space-between;
   }
   .period-switch b {
-    font-size: 11px;
+    font-size: 12px;
   }
   .period-caption {
-    font-size: 10px;
+    font-size: 12px;
   }
   .date-range {
     width: 100%;
@@ -2032,7 +2407,7 @@ input[type='checkbox'] {
     font-size: 16px;
   }
   .panel-heading .eyebrow {
-    font-size: 8px;
+    font-size: 12px;
   }
   .dashboard-charts {
     gap: 0;
@@ -2055,13 +2430,13 @@ input[type='checkbox'] {
     font-size: 26px;
   }
   .chart-total > span {
-    font-size: 9px;
+    font-size: 12px;
   }
   .chart-frame {
     height: 220px;
   }
   .chart-legend {
-    font-size: 8px;
+    font-size: 12px;
     gap: 15px;
   }
   .load-list {
@@ -2072,7 +2447,7 @@ input[type='checkbox'] {
   }
   .load-row span {
     width: 100%;
-    font-size: 8px;
+    font-size: 12px;
   }
   .load-track {
     height: 6px;
@@ -2081,26 +2456,26 @@ input[type='checkbox'] {
     font-size: 12px;
   }
   .load-row > b {
-    font-size: 10px;
+    font-size: 12px;
   }
   .load-note p {
-    font-size: 9px;
+    font-size: 12px;
   }
   .table-scroll {
     margin-right: -17px;
     padding-right: 17px;
   }
   table {
-    font-size: 10px;
+    font-size: 12px;
   }
   th {
-    font-size: 8px;
+    font-size: 12px;
   }
   td {
     padding: 15px 10px;
   }
   .text-button {
-    font-size: 10px;
+    font-size: 12px;
     gap: 5px;
   }
   .table-load {
@@ -2111,7 +2486,7 @@ input[type='checkbox'] {
     display: none;
   }
   .data-note {
-    font-size: 9px;
+    font-size: 12px;
   }
   .upcoming-inline {
     padding: 16px;
@@ -2121,7 +2496,7 @@ input[type='checkbox'] {
   }
   .upcoming-inline > div {
     gap: 8px;
-    font-size: 10px;
+    font-size: 12px;
   }
   .upcoming-inline > div > span:last-child {
     width: 100%;
@@ -2130,7 +2505,7 @@ input[type='checkbox'] {
   }
   .page-footer {
     margin-top: 25px;
-    font-size: 8px;
+    font-size: 12px;
     gap: 12px;
   }
   .day-card {
@@ -2188,14 +2563,14 @@ input[type='checkbox'] {
     font-size: 18px;
   }
   .dialog-heading p {
-    font-size: 10px;
+    font-size: 12px;
   }
   .detail-metrics {
     padding: 14px;
     gap: 9px;
   }
   .detail-metrics > span {
-    font-size: 9px;
+    font-size: 12px;
   }
   .detail-metrics strong {
     font-size: 22px;
@@ -2206,16 +2581,16 @@ input[type='checkbox'] {
   .lift-detail-heading,
   .lift-detail summary {
     gap: 8px;
-    font-size: 10px;
+    font-size: 12px;
   }
   .lift-detail-heading strong {
     font-size: 20px;
   }
   .lift-detail-heading .badge {
-    font-size: 7px;
+    font-size: 12px;
   }
   .lift-riders > div {
-    font-size: 10px;
+    font-size: 12px;
   }
   .lift-actions {
     gap: 7px;
@@ -2232,7 +2607,7 @@ input[type='checkbox'] {
     left: 10px;
     bottom: calc(10px + var(--tg-safe-bottom));
     max-width: calc(100vw - 20px);
-    font-size: 10px;
+    font-size: 12px;
     flex-wrap: wrap;
     z-index: 90;
   }
@@ -2240,7 +2615,7 @@ input[type='checkbox'] {
     right: 10px;
     bottom: calc(70px + var(--tg-safe-bottom));
     max-width: calc(100% - 20px);
-    font-size: 11px;
+    font-size: 12px;
   }
   .rider-hero {
     padding: 25px;
@@ -2264,13 +2639,13 @@ input[type='checkbox'] {
   }
   .money-methods {
     min-width: 120px;
-    font-size: 9px;
+    font-size: 12px;
   }
   .money-methods > div {
     gap: 8px;
   }
   .financial-lines {
-    font-size: 10px;
+    font-size: 12px;
     gap: 14px;
   }
   .audit-list > div {
@@ -2300,7 +2675,7 @@ input[type='checkbox'] {
     bottom: -30px;
   }
   .login-art > span {
-    font-size: 8px;
+    font-size: 11px;
     bottom: 55px;
   }
 }
@@ -2516,7 +2891,7 @@ input {
   gap: 23px;
 }
 .topbar-role {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
   border-left: 1px solid var(--line);
   padding-left: 21px;
@@ -2565,7 +2940,7 @@ input {
   color: var(--green);
 }
 .brand-type > small {
-  font-size: 7px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.19em;
   color: var(--muted);
@@ -2665,7 +3040,7 @@ input {
   color: var(--ink);
 }
 .rider-hero .eyebrow {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.6;
   color: var(--muted);
 }
@@ -2773,7 +3148,7 @@ input {
     padding: 2px;
     background: transparent;
     color: var(--muted);
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 600;
   }
   .bottom-nav-icon {
@@ -2831,7 +3206,7 @@ input {
     padding: 11px 10px;
   }
   label {
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.5;
   }
   .form-row {
@@ -2887,7 +3262,7 @@ input {
     font-size: 22px;
   }
   .donut > span {
-    font-size: 11px;
+    font-size: 12px;
   }
   .command-status {
     bottom: calc(
@@ -2935,7 +3310,7 @@ input {
     padding-right: 4px;
   }
   .bottom-nav > button {
-    font-size: 8px;
+    font-size: 11px;
   }
 }
 /* SVG subpixel paint must not create a one-pixel horizontal page scroll. */
@@ -2963,7 +3338,7 @@ body {
 
 @media (min-width: 360px) and (max-width: 760px) {
   .bottom-nav > button {
-    font-size: 10px;
+    font-size: 11px;
   }
 }
 
@@ -3025,7 +3400,7 @@ body {
   margin-left: auto;
   min-height: 40px;
   padding: 7px;
-  font-size: 11px;
+  font-size: 12px;
   gap: 5px;
 }
 .compact-bookings .guest-controls {
@@ -3047,7 +3422,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .ride-money strong {
@@ -3064,7 +3439,7 @@ body {
   padding: 12px 0;
 }
 .ride-pending {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   line-height: 1.6;
   margin-top: 10px;
@@ -3133,7 +3508,7 @@ body {
     margin-bottom: 12px;
     min-height: 30px;
     flex-wrap: nowrap;
-    font-size: 9px;
+    font-size: 12px;
   }
   .demo-banner .demo-explanation,
   .demo-switch-long {
@@ -3218,7 +3593,7 @@ body {
     font-size: 23px;
   }
   .chart-total > span {
-    font-size: 8px;
+    font-size: 12px;
   }
   .chart-main > .caption {
     display: none;
@@ -3288,7 +3663,7 @@ body {
     min-width: 48px;
   }
   .ride-row-line .badge {
-    font-size: 8px;
+    font-size: 12px;
   }
   .ride-money {
     padding: 11px 12px;
@@ -3298,7 +3673,7 @@ body {
     font-size: 19px;
   }
   .ride-money > span {
-    font-size: 10px;
+    font-size: 12px;
   }
   .my-day .payment-buttons {
     display: grid;
@@ -3325,7 +3700,7 @@ body {
   .planning-tabs > button {
     padding: 9px 3px;
     min-height: 42px;
-    font-size: 10px;
+    font-size: 12px;
   }
   .planning-grid > .panel[data-planning-active='false'] {
     display: none;
@@ -3351,7 +3726,7 @@ body {
     border-radius: 8px;
     background: var(--surface);
     color: var(--muted);
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
   }
   .analysis-tabs > button[aria-pressed='true'] {

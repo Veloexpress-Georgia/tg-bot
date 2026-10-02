@@ -159,6 +159,8 @@ class DayBookings:
     # beyond this is on the waitlist.
     seat_holders_by_lift: dict[str, tuple[int, ...]] = field(default_factory=dict)
     waitlist_by_lift: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    # Observed before the deadline's money obligations are overlaid on bookings.
+    waiting_by_lift: dict[str, int] = field(default_factory=dict)
     paid_seats_by_user: dict[int, int] = field(default_factory=dict)
     paid_amount_by_user: dict[int, int] = field(default_factory=dict)
     payment_method_by_user: dict[int, str | None] = field(default_factory=dict)
@@ -1655,6 +1657,7 @@ class PaymentsService:
                 day.seats_by_lift[lift_time] = seats
                 day.capacity_by_lift[lift_time] = capacity
                 day.manual_by_lift[lift_time] = manual_total
+                day.waiting_by_lift[lift_time] = max(seats - capacity, 0)
                 allocation = allocate_seats(
                     (
                         SeatCandidate(
@@ -2070,6 +2073,11 @@ class PaymentsService:
                             row.seats for row in rows if row.telegram_user_id == MANUAL_USER_ID
                         ),
                         covered_seats=sum(row.covered_seats for row in rows),
+                        waiting_count=(
+                            day.waiting_by_lift.get(lift_time)
+                            if source == "closed" and not day.cancelled
+                            else None
+                        ),
                         capacity=day.capacity_by_lift.get(lift_time, 10),
                         price_gel=day.price_gel,
                         source=source,

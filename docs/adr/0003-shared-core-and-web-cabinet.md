@@ -38,6 +38,21 @@ cancellation reports remain estimates, not refund transactions. Reconstructed
 history is labelled; new riders mean first appearance in the available saved
 history, not proof that they never rode before tracking began.
 
+Demand analytics have a separate denominator: every offered, non-cancelled lift,
+including those that did not run. Full-lift frequency, vacant seats and run rates
+therefore do not silently exclude underfilled departures. Migration 0030 adds
+nullable `LiftDayResult.waiting_count`. It records the observed overflow at day
+close, before deadline payment obligations are overlaid on bookings. Old rows,
+cancelled days and late backfills retain an unknown queue, never an invented zero.
+Queue counts are per lift and are not peak demand, unique riders or lost sales.
+Global demand remains admin-only; personal analytics do not include it.
+
+The admin day workspace groups attention, one selected lift, payment entry and
+day-scoped command activity. Unfinished requests are ordered ahead of completed
+activity. The UI links attention items to the corresponding lift or rider and
+keeps the dialog header visible. Recording money still requires entering the
+amount actually received; no outstanding amount is silently submitted as payment.
+
 Telegram Mini App data are verified server-side with expiry and future-time
 checks. Browser login uses Telegram OIDC, PKCE, state, nonce and verified RS256
 ID tokens. Sessions are signed HttpOnly cookies. Mutations require a session CSRF

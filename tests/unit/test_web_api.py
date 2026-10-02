@@ -137,6 +137,55 @@ async def test_api_access_control_csrf_and_command_retry() -> None:
     await db.dispose()
 
 
+async def test_admin_day_includes_only_its_scoped_commands() -> None:
+    from tests.unit.test_payments_service import _fill, _setup
+
+    from veloexpress_core.commands import CommandInput, CommandQueue
+
+    db = SharedDatabase()
+    await db.create()
+    polls, _payments, _client, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=6)
+    config = settings().model_copy(
+        update={"telegram_admin_ids": (42,), "telegram_bot_token": "123456:test-token"}
+    )
+    queue = CommandQueue(settings=config, session_factory=db.session)
+    command = await queue.enqueue(
+        CommandInput(
+            request_id=uuid4(), action="manual", service_date=day, lift_time="8:30", delta=1
+        ),
+        actor_user_id=42,
+    )
+    await queue.enqueue(
+        CommandInput(
+            request_id=uuid4(),
+            action="manual",
+            service_date=date(2027, 1, 1),
+            lift_time="8:30",
+            delta=1,
+        ),
+        actor_user_id=42,
+    )
+    app = create_app(
+        settings=config,
+        web_settings=WebSettings(session_secret=SECRET, public_url="http://localhost:5173"),
+        session_factory=db.session,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://localhost:5173"
+    ) as client:
+        client.cookies.set("veloexpress_session", cookie(42))
+        response = await client.get(f"/api/admin/days/{day}")
+        assert response.status_code == 200
+        result = response.json()
+        assert result["historical"] is False
+        assert [c["id"] for c in result["commands"]] == [command["id"]]
+        assert result["riders"]
+        client.cookies.set("veloexpress_session", cookie(99))
+        assert (await client.get(f"/api/admin/days/{day}")).status_code == 403
+    await db.dispose()
+
+
 async def test_sensitive_actions_require_confirmation_and_login_state_is_checked() -> None:
     db = SharedDatabase()
     await db.create()

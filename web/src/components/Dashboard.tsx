@@ -25,7 +25,8 @@ import {
   Wallet,
   Gauge,
 } from 'lucide-react';
-import type { Analytics } from '../types';
+import type { Analytics, LiveDay } from '../types';
+import { DemandPanel } from './DemandPanel';
 import { chartDate, dateLabel, delta, money, number } from '../lib';
 import { Button } from './ui/button';
 
@@ -34,11 +35,15 @@ export function Dashboard({
   openDay,
   detailed = false,
   personal = false,
+  liveDays = [],
+  liveStatus = 'ready',
 }: {
   data: Analytics;
   openDay(day: string): void;
   detailed?: boolean;
   personal?: boolean;
+  liveDays?: LiveDay[];
+  liveStatus?: 'pending' | 'error' | 'ready';
 }) {
   const [section, setSection] = useState('trend');
   const [chart, setChart] = useState<'money' | 'seats'>('money');
@@ -76,7 +81,7 @@ export function Dashboard({
         <div className="analysis-tabs" role="group" aria-label="Раздел аналитики">
           {[
             ['trend', 'График'],
-            ['load', 'Загрузка'],
+            ['load', personal ? 'Выезды' : 'Спрос'],
             ['money', 'Деньги'],
             ['people', 'Люди'],
             ['days', 'Дни'],
@@ -87,41 +92,43 @@ export function Dashboard({
           ))}
         </div>
       )}
-      <div className="metrics-grid">
-        <Metric
-          title="Отмечено оплат"
-          value={money(summary.net_gel)}
-          note={delta(summary.net_gel, previous.net_gel)}
-          icon={Wallet}
-          accent
-        />
-        <Metric
-          title="Мест на выездах"
-          value={number(summary.seats)}
-          note={`${number(summary.lifts)} выездов · ${number(summary.days)} дней`}
-          icon={Bike}
-        />
-        <Metric
-          title={personal ? 'Дни поездок' : 'Уникальных райдеров'}
-          value={number(personal ? summary.days : summary.riders)}
-          note={
-            personal
-              ? 'По сохранённой истории'
-              : `${number(summary.new_riders ?? 0)} впервые в сохранённой истории`
-          }
-          icon={Users}
-        />
-        <Metric
-          title={personal ? 'Гостевых мест' : 'Загрузка'}
-          value={personal ? number(summary.guests) : `${number(summary.occupancy_pct)}%`}
-          note={
-            personal
-              ? 'В твоих сохранённых поездках'
-              : `${number(summary.seats)} из ${number(summary.capacity)} мест`
-          }
-          icon={Gauge}
-        />
-      </div>
+      {(!compact || !detailed || section === 'trend') && (
+        <div className="metrics-grid">
+          <Metric
+            title="Отмечено оплат"
+            value={money(summary.net_gel)}
+            note={delta(summary.net_gel, previous.net_gel)}
+            icon={Wallet}
+            accent
+          />
+          <Metric
+            title="Мест на выездах"
+            value={number(summary.seats)}
+            note={`${number(summary.lifts)} выездов · ${number(summary.days)} дней`}
+            icon={Bike}
+          />
+          <Metric
+            title={personal ? 'Дни поездок' : 'Уникальных райдеров'}
+            value={number(personal ? summary.days : summary.riders)}
+            note={
+              personal
+                ? 'По сохранённой истории'
+                : `${number(summary.new_riders ?? 0)} впервые в сохранённой истории`
+            }
+            icon={Users}
+          />
+          <Metric
+            title={personal ? 'Гостевых мест' : 'Загрузка'}
+            value={personal ? number(summary.guests) : `${number(summary.occupancy_pct)}%`}
+            note={
+              personal
+                ? 'В твоих сохранённых поездках'
+                : `${number(summary.seats)} из ${number(summary.capacity)} мест`
+            }
+            icon={Gauge}
+          />
+        </div>
+      )}
       {(showTrend || showLoad) && (
         <div className="dashboard-charts">
           {showTrend && (
@@ -182,13 +189,13 @@ export function Dashboard({
                       axisLine={false}
                       tickLine={false}
                       minTickGap={38}
-                      tick={{ fill: 'var(--muted)', fontSize: 11 }}
+                      tick={{ fill: 'var(--muted)', fontSize: 12 }}
                       tickFormatter={(value) => chartDate(value, data.granularity)}
                     />
                     <YAxis
                       axisLine={false}
                       tickLine={false}
-                      tick={{ fill: 'var(--muted)', fontSize: 11 }}
+                      tick={{ fill: 'var(--muted)', fontSize: 12 }}
                     />
                     <Tooltip
                       contentStyle={{
@@ -240,42 +247,51 @@ export function Dashboard({
               )}
             </section>
           )}
-          {showLoad && (
-            <section className="panel load-panel">
-              <div className="panel-heading">
-                <div>
-                  <span className="eyebrow">ПО ВРЕМЕНИ ВЫЕЗДА</span>
-                  <h2>{personal ? 'Твои любимые выезды' : 'Где больше спроса'}</h2>
+          {showLoad && detailed && !personal && data.demand ? (
+            <DemandPanel
+              data={data.demand}
+              liveDays={liveDays}
+              liveStatus={liveStatus}
+              openDay={openDay}
+            />
+          ) : (
+            showLoad && (
+              <section className="panel load-panel">
+                <div className="panel-heading">
+                  <div>
+                    <span className="eyebrow">ПО ВРЕМЕНИ ВЫЕЗДА</span>
+                    <h2>{personal ? 'Твои любимые выезды' : 'Где больше спроса'}</h2>
+                  </div>
+                  <Bike size={21} />
                 </div>
-                <Bike size={21} />
-              </div>
-              <div className="load-list">
-                {data.by_time.length ? (
-                  data.by_time.map((row) => (
-                    <div className="load-row" key={row.time}>
-                      <div>
-                        <strong>{row.time}</strong>
-                        <span>
-                          {number(row.seats)} мест · {row.lifts} выездов
-                        </span>
+                <div className="load-list">
+                  {data.by_time.length ? (
+                    data.by_time.map((row) => (
+                      <div className="load-row" key={row.time}>
+                        <div>
+                          <strong>{row.time}</strong>
+                          <span>
+                            {number(row.seats)} мест · {row.lifts} выездов
+                          </span>
+                        </div>
+                        <b>{number(row.occupancy_pct)}%</b>
+                        <div className="load-track">
+                          <div style={{ width: `${Math.min(row.occupancy_pct, 100)}%` }} />
+                        </div>
                       </div>
-                      <b>{number(row.occupancy_pct)}%</b>
-                      <div className="load-track">
-                        <div style={{ width: `${Math.min(row.occupancy_pct, 100)}%` }} />
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <Empty text="В этом периоде ещё нет выездов." />
-                )}
-              </div>
-              <div className="load-note">
-                <span className="small-icon">
-                  <ArrowUpRight size={18} />
-                </span>
-                <p>Загрузка считается по сохранённым результатам состоявшихся выездов.</p>
-              </div>
-            </section>
+                    ))
+                  ) : (
+                    <Empty text="В этом периоде ещё нет выездов." />
+                  )}
+                </div>
+                <div className="load-note">
+                  <span className="small-icon">
+                    <ArrowUpRight size={18} />
+                  </span>
+                  <p>Загрузка считается по сохранённым результатам состоявшихся выездов.</p>
+                </div>
+              </section>
+            )
           )}
         </div>
       )}

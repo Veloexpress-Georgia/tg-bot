@@ -576,6 +576,8 @@ export default function App() {
                       data={analytics.data}
                       detailed={effectiveTab === 'analytics'}
                       personal={isPersonal}
+                      liveDays={isPersonal ? [] : (days.data ?? [])}
+                      liveStatus={days.isError ? 'error' : days.data ? 'ready' : 'pending'}
                       openDay={(value) => (isPersonal ? setPersonalDay(value) : setDay(value))}
                     />
                   ))}
@@ -662,7 +664,15 @@ export default function App() {
           )}
         </div>
       )}
-      {!isPersonal && <DayDialog day={day} onClose={() => setDay(null)} act={act} busy={busy} />}
+      {!isPersonal && (
+        <DayDialog
+          day={day}
+          timezone={session.data.timezone}
+          onClose={() => setDay(null)}
+          act={act}
+          busy={busy}
+        />
+      )}
       <Dialog
         open={!!confirm}
         onOpenChange={(open) => {

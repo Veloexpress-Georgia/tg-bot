@@ -7,6 +7,7 @@ import type {
   Summary,
   Session,
   Rider,
+  DemandCounts,
 } from './types';
 export const demoSession: Session = {
   user_id: 42,
@@ -57,6 +58,8 @@ interface Record {
   time: string;
   seats: number;
   cancelled: boolean;
+  ran: boolean;
+  waiting: number | null;
   net: number;
   guests: number;
   manual: number;
@@ -72,13 +75,16 @@ for (
   const seed = Math.floor(d.getTime() / 86400000);
   times.slice(0, 4).forEach((time, i) => {
     const cancelled = (seed + i * 3) % 23 === 0;
-    const seats = cancelled ? 0 : 5 + ((seed * 7 + i * 11) % 6);
+    const seats = cancelled ? 0 : i === 3 && seed % 4 === 0 ? 3 : 5 + ((seed * 7 + i * 11) % 6);
+    const ran = !cancelled && seats >= 5;
     records.push({
       date: d.toISOString().slice(0, 10),
       time,
       seats,
       cancelled,
-      net: seats * 20 - ((seed + i) % 9 === 0 ? 20 : 0),
+      ran,
+      waiting: d >= new Date('2026-09-01T00:00:00Z') ? (seats === 10 ? 1 + (seed % 4) : 0) : null,
+      net: ran ? seats * 20 - ((seed + i) % 9 === 0 ? 20 : 0) : 0,
       guests: cancelled ? 0 : (seed + i) % 3,
       manual: cancelled ? 0 : (seed + i) % 2,
       reversed: (seed + i) % 17 === 0 ? 20 : 0,
@@ -87,7 +93,7 @@ for (
 }
 function summarize(rows: Record[], personal = false): Summary {
   const result = empty();
-  const ran = rows.filter((r) => !r.cancelled);
+  const ran = rows.filter((r) => r.ran && !r.cancelled);
   result.days = new Set(ran.map((r) => r.date)).size;
   result.lifts = ran.length;
   result.seats = personal ? ran.length : ran.reduce((n, r) => n + r.seats, 0);
@@ -108,6 +114,25 @@ function summarize(rows: Record[], personal = false): Summary {
   result.cancelled_lifts = rows.filter((r) => r.cancelled).length;
   result.new_riders = result.riders ? Math.max(1, Math.floor(result.riders * 0.18)) : 0;
   return result;
+}
+function demoDemandCounts(rows: Record[]): DemandCounts {
+  const offered = rows.filter((r) => !r.cancelled);
+  const known = offered.filter((r) => r.waiting !== null);
+  const seats = offered.reduce((n, r) => n + r.seats, 0);
+  return {
+    offered_lifts: offered.length,
+    ran_lifts: offered.filter((r) => r.ran).length,
+    not_run_lifts: offered.filter((r) => !r.ran).length,
+    booked_seats: seats,
+    capacity: offered.length * 10,
+    occupancy_pct: offered.length ? Math.round((seats / (offered.length * 10)) * 1000) / 10 : 0,
+    full_lifts: offered.filter((r) => r.seats >= 10).length,
+    free_seats: offered.reduce((n, r) => n + 10 - r.seats, 0),
+    queue_recorded_lifts: known.length,
+    queue_unknown_lifts: offered.length - known.length,
+    queued_lifts: known.filter((r) => (r.waiting ?? 0) > 0).length,
+    waiting_total: known.length ? known.reduce((n, r) => n + (r.waiting ?? 0), 0) : null,
+  };
 }
 export function demoAnalytics(start: string, end: string, personal = false): Analytics {
   const own = personal ? records.filter((_, i) => i % 7 === 0) : records;
@@ -174,6 +199,28 @@ export function demoAnalytics(start: string, end: string, personal = false): Ana
         personal,
       ),
     })),
+    demand: personal
+      ? null
+      : {
+          summary: demoDemandCounts(rows),
+          by_time: times
+            .filter((time) => rows.some((r) => r.time === time && !r.cancelled))
+            .map((time) => ({
+              time,
+              ...demoDemandCounts(rows.filter((r) => r.time === time)),
+              days: rows
+                .filter((r) => r.time === time && !r.cancelled)
+                .reverse()
+                .map((r) => ({
+                  date: r.date,
+                  seats: r.seats,
+                  capacity: 10,
+                  ran: r.ran,
+                  waiting_count: r.waiting,
+                  reconstructed: false,
+                })),
+            })),
+        },
     riders: personal ? riders.filter((r) => r.user_id === 42) : rows.length ? riders : [],
     days: [...new Set(rows.map((r) => r.date))].reverse().map((date) => ({
       date,
@@ -214,15 +261,32 @@ export const demoDays: LiveDay[] = ['2026-10-03', '2026-10-04'].map((service_dat
     ? []
     : [
         {
-          telegram_user_id: 109,
-          label: 'Лука Г.',
+          telegram_user_id: 110,
+          label: 'Ксения А.',
           lift_time: '8:30',
           position: 1,
         },
       ],
   late_exits: [],
+  commands: day
+    ? []
+    : [
+        {
+          id: 900,
+          action: 'manual',
+          actor_user_id: 42,
+          actor_name: 'Мишо',
+          service_date,
+          lift_time: '8:30',
+          status: 'review',
+          result: { message: 'Демонстрация запроса, результат которого требует проверки.' },
+          created_at: '2026-10-01T12:00:00Z',
+          finished_at: null,
+        },
+      ],
   lifts: times.slice(0, 4).map((time, i) => {
     const occupied = [10, 9, 7, 4][i] - day;
+    const waiting = i === 0 && day === 0 ? 1 : 0;
     return {
       time,
       vote_count: occupied - 1 + (i === 0 && day === 0 ? 1 : 0),
@@ -232,16 +296,16 @@ export const demoDays: LiveDay[] = ['2026-10-03', '2026-10-04'].map((service_dat
       cancelled: false,
       covered_count: Math.max(0, occupied - 2),
       seat_count: occupied,
-      waiting_count: i === 0 && day === 0 ? 1 : 0,
+      waiting_count: waiting,
       running: occupied >= 5,
       funded: occupied - 2 >= 5,
-      riders: names.slice(0, occupied).map((label, j) => ({
+      riders: names.slice(0, occupied + waiting).map((label, j) => ({
         telegram_user_id: j === 7 ? 42 : 100 + j,
         label,
         paid: j < occupied - 2,
         cash: j % 5 === 0,
         guests: 0,
-        waitlisted: false,
+        waitlisted: j >= occupied,
       })),
     };
   }),
@@ -304,7 +368,8 @@ export function demoDay(day: string): DayDetail {
     reconstructed: false,
     lifts: rows.map((row) => ({
       lift_time: row.time,
-      ran: !row.cancelled,
+      ran: row.ran,
+      waiting_count: row.waiting,
       seats: row.seats,
       capacity: 10,
       covered_seats: Math.floor(row.net / 20),
