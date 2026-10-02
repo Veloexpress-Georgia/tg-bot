@@ -838,17 +838,17 @@ tbody tr:last-child td {
   font-size: 12px;
   font-weight: 600;
   background: #edf2df;
-  color: #617a38;
+  color: var(--green);
   white-space: nowrap;
   letter-spacing: 0;
 }
 .muted-badge {
   background: #eeeee7;
-  color: #878b7e;
+  color: #525e4b;
 }
 .warning-badge {
-  background: #f7ead3;
-  color: #927137;
+  background: var(--queue-background);
+  color: var(--queue-text);
 }
 .data-note {
   font-size: 12px;
