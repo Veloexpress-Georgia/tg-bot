@@ -318,6 +318,7 @@ export const demoDays: LiveDay[] = ['2026-10-03', '2026-10-04'].map((service_dat
     due_now_gel: 40,
     due_all_gel: 40,
     payment_method: 'transfer',
+    cash_on_site: i >= 7,
     pending_lift_times: [],
     rows: [
       {
@@ -349,7 +350,11 @@ export const demoMyDays: MyDays = {
       cancelled: l.cancelled,
       running: l.running,
     })),
-    booking: { ...day.riders![0], paid_gel: day.service_date === '2026-10-04' ? 20 : 40 },
+    booking: {
+      ...day.riders![0],
+      paid_gel: day.service_date === '2026-10-04' ? 0 : 40,
+      cash_on_site: day.service_date === '2026-10-04',
+    },
   })),
   polls_url: null,
   bank_details: 'Демонстрационные данные. Реквизиты для оплаты появятся в рабочем кабинете.',

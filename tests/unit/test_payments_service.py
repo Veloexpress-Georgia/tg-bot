@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.base import Base
 from veloexpress_bot.db.models import (
+    CashPromise,
     DeadlineRoster,
     LiftDayResult,
     LiftDaySeat,
@@ -262,6 +263,46 @@ async def _setup(
     return poll_service, payments_service, client, poll.poll_id or "", saturday
 
 
+async def _legacy_cash_receipt(
+    db: SharedDatabase, payments: PaymentsService, service_date: date, user_id: int = 100
+) -> None:
+    """Seed a received-cash fact from before the button became an intention."""
+    day = await payments._day(service_date)
+    assert day is not None
+    username, full_name = day.labels_by_user[user_id]
+    async with db.session() as session:
+        session.add(
+            PaymentClaim(
+                environment="test",
+                chat_id=CHAT_ID,
+                thread_id=LIFT_THREAD,
+                service_date=service_date,
+                telegram_user_id=user_id,
+                username=username,
+                full_name=full_name,
+                seats=1,
+                amount_gel=day.price_gel,
+                cash_amount_gel=day.price_gel,
+                method=CASH_METHOD,
+            )
+        )
+        session.add(
+            PaymentEntry(
+                environment="test",
+                chat_id=CHAT_ID,
+                thread_id=LIFT_THREAD,
+                service_date=service_date,
+                telegram_user_id=user_id,
+                amount_gel=day.price_gel,
+                method=CASH_METHOD,
+                kind="received",
+            )
+        )
+        await session.commit()
+    await payments._announce_claim(day, user_id)
+    await payments._refresh_board(day)
+
+
 async def _vote(
     poll_service: PollPostingService, poll_id: str, user_id: int, *options: int
 ) -> None:
@@ -407,6 +448,221 @@ async def test_payment_feedback_names_day_total_and_no_addition_on_repeat(
     async with db.session() as session:
         entries = (await session.scalars(select(PaymentEntry))).all()
     assert [(entry.amount_gel, entry.kind) for entry in entries] == [(15, "received")]
+
+
+async def test_cash_button_records_an_intention_not_received_money(db: SharedDatabase) -> None:
+    polls, payments, client, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    await payments.sync_boards()
+    before = len(client.payments_sends())
+    outcome = await payments.claim(
+        service_date=day,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider",
+        method=CASH_METHOD,
+    )
+    assert not outcome.needs_confirmation
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentClaim)) is None
+        assert await session.scalar(select(PaymentEntry)) is None
+    view = await payments.rider_day(service_date=day, telegram_user_id=100)
+    assert view is not None and getattr(view, "cash_on_site", False)
+    assert view.paid_gel == 0
+    assert len(client.payments_sends()) == before
+
+
+async def test_admin_cash_receipt_is_the_first_money_entry_after_a_promise(
+    db: SharedDatabase,
+) -> None:
+    polls, payments, _client, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    await payments.claim(
+        service_date=day,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider",
+        method=CASH_METHOD,
+    )
+    await payments.record_admin_payment(
+        service_date=day,
+        telegram_user_id=100,
+        amount_gel=15,
+        method=CASH_METHOD,
+        admin_user_id=1,
+        reference_key="cash-confirmation-test",
+    )
+    async with db.session() as session:
+        entries = list(await session.scalars(select(PaymentEntry)))
+        claim = await session.scalar(select(PaymentClaim))
+    assert [(entry.amount_gel, entry.method) for entry in entries] == [(15, CASH_METHOD)]
+    assert claim is not None and claim.amount_gel == 15 and claim.verified_by_user_id == 1
+    view = await payments.rider_day(service_date=day, telegram_user_id=100)
+    assert view is not None and not getattr(view, "cash_on_site", True)
+
+
+async def test_topic_message_cannot_turn_a_cash_promise_into_payment(db: SharedDatabase) -> None:
+    polls, payments, _client, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    await payments.claim(
+        service_date=day,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider",
+        method=CASH_METHOD,
+    )
+    await payments.record_topic_post(telegram_user_id=100, posted_at=datetime.now(UTC))
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentClaim)) is None
+        assert await session.scalar(select(PaymentEntry)) is None
+
+
+async def test_undo_cash_promise_never_creates_a_money_reversal(db: SharedDatabase) -> None:
+    polls, payments, _client, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    await payments.claim(
+        service_date=day,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider",
+        method=CASH_METHOD,
+    )
+    await payments.undo(service_date=day, telegram_user_id=100)
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentEntry)) is None
+    view = await payments.rider_day(service_date=day, telegram_user_id=100)
+    assert view is not None and not getattr(view, "cash_on_site", True)
+
+
+async def test_cash_receipts_after_the_deadline_fund_the_lift_without_rewriting_the_roster(
+    db: SharedDatabase,
+) -> None:
+    day = _future_saturday()
+    polls, payments, _client, poll_id, _ = await _setup(db, service_date=day)
+    await _fill(polls, poll_id, 0, riders=5)
+    for user_id in range(100, 105):
+        await payments.claim(
+            service_date=day,
+            telegram_user_id=user_id,
+            username=f"rider{user_id}",
+            full_name="Rider",
+            method=CASH_METHOD,
+        )
+    await payments.capture_deadline_rosters(now=_after_deadline(day))
+    before = (await polls.status_days())[0]
+    assert before.lifts[0].covered_count == 0
+    assert len(getattr(before, "cash_promised", ())) == 5
+    for user_id in range(100, 105):
+        await payments.record_admin_payment(
+            service_date=day,
+            telegram_user_id=user_id,
+            amount_gel=15,
+            method=CASH_METHOD,
+            admin_user_id=1,
+            reference_key=f"onsite:{user_id}",
+        )
+    after = (await polls.status_days())[0]
+    assert after.lifts[0].covered_count == 5
+    assert after.lifts[0].funded
+    assert after.expected_gel == 75
+    async with db.session() as session:
+        frozen = list(await session.scalars(select(DeadlineRoster)))
+    assert all(row.covered_seats == 0 for row in frozen)
+
+
+async def test_cash_choice_cannot_relabel_a_completed_bank_transfer(db: SharedDatabase) -> None:
+    polls, payments, _client, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    await payments.claim(
+        service_date=day, telegram_user_id=100, username="rider100", full_name="Rider"
+    )
+    await payments.claim(
+        service_date=day,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider",
+        method=CASH_METHOD,
+    )
+    view = await payments.rider_day(service_date=day, telegram_user_id=100)
+    assert view is not None and not view.cash_on_site and view.payment_method == "transfer"
+    async with db.session() as session:
+        entries = list(await session.scalars(select(PaymentEntry)))
+    assert [(entry.amount_gel, entry.method) for entry in entries] == [(15, "transfer")]
+
+
+async def test_topic_message_about_sunday_cash_cannot_mark_saturday_paid(
+    db: SharedDatabase,
+) -> None:
+    polls, payments, _client, poll_id, saturday = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    sunday = saturday + timedelta(days=1)
+    second = await polls.create_poll(
+        PollSetup(service_date=sunday, created_by_user_id=1), pin_after_send=False
+    )
+    await _fill(polls, second.poll_id or "", 0, riders=5)
+    await payments.claim(
+        service_date=sunday,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider",
+        method=CASH_METHOD,
+    )
+    await payments.record_topic_post(telegram_user_id=100, posted_at=datetime.now(UTC))
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentClaim)) is None
+        assert await session.scalar(select(PaymentEntry)) is None
+
+
+async def test_cash_promises_are_not_chased_as_overdue_transfers(db: SharedDatabase) -> None:
+    day = _future_saturday()
+    polls, payments, client, poll_id, _ = await _setup(db, service_date=day)
+    await _fill(polls, poll_id, 0, riders=5)
+    for uid in range(100, 105):
+        await payments.claim(
+            service_date=day,
+            telegram_user_id=uid,
+            username=f"rider{uid}",
+            full_name="Rider",
+            method=CASH_METHOD,
+        )
+    before = len(client.payments_sends())
+    await payments.capture_deadline_rosters(now=_after_deadline(day))
+    assert not any(
+        "booking is closed" in record.text for record in client.payments_sends()[before:]
+    )
+    await polls.evaluate_lift_signals(now=_after_deadline(day) - timedelta(hours=1))
+    reminder = next(record.text for record in client.sent if "Tomorrow" in record.text)
+    assert "cash on site" in reminder
+    assert "needs 5 more paid seats" not in reminder
+
+
+async def test_cancelled_cash_only_day_is_reconciled_without_erasing_a_new_cycle(
+    db: SharedDatabase,
+) -> None:
+    polls, payments, _client, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    await payments.claim(
+        service_date=day,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider",
+        method=CASH_METHOD,
+    )
+    await polls.cancel_day(service_date=day, admin_user_id=1)
+    assert await payments.reconcile_cancelled_days() == 1
+    async with db.session() as session:
+        assert await session.scalar(select(CashPromise)) is None
+        assert await session.scalar(select(PaymentEntry)) is None
+    fresh = await polls.create_poll(
+        PollSetup(service_date=day, created_by_user_id=1), pin_after_send=False
+    )
+    await _fill(polls, fresh.poll_id or "", 0, riders=5)
+    await payments.claim(
+        service_date=day, telegram_user_id=100, username="rider100", full_name="Rider"
+    )
+    assert await payments.reconcile_cancelled_days() == 0
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentClaim)) is not None
 
 
 async def test_the_bot_stays_quiet_when_the_rider_already_wrote_in_the_topic(
@@ -607,7 +863,7 @@ async def test_partial_booking_warns_before_charging_for_only_the_filled_lift(
 async def test_a_rider_can_settle_the_whole_day_including_unfilled_lifts(
     db: SharedDatabase,
 ) -> None:
-    """One transfer beats two, and cash cannot be topped up without finding Misho."""
+    """A received transfer can include lifts that have not reached the minimum."""
     poll_service, payments, client, poll_id, saturday = await _setup(db)
     await _fill(poll_service, poll_id, 0, riders=4)
     await _vote(poll_service, poll_id, 104, 0, 1)
@@ -619,13 +875,13 @@ async def test_a_rider_can_settle_the_whole_day_including_unfilled_lifts(
         telegram_user_id=104,
         username="stas",
         full_name="Stas",
-        method=CASH_METHOD,
+        method="transfer",
         acknowledged=True,
         include_pending=True,
     )
 
     assert "8:30, 10:00" in outcome.text
-    assert "30 GEL in cash" in outcome.text
+    assert "Total reported: 30 GEL" in outcome.text
     await payments.sync_boards()
     board_edits = [text for message_id, text in client.edits if message_id == board.message_id]
     # Paid 30, owes 15 right now — that is a prepayment, not an overpayment.
@@ -633,37 +889,30 @@ async def test_a_rider_can_settle_the_whole_day_including_unfilled_lifts(
     assert "back" not in board_edits[-1]
 
 
-async def test_a_cash_tap_records_the_method_so_misho_can_reconcile(
+async def test_cash_promise_is_separate_from_the_paid_lines_on_the_board(
     db: SharedDatabase,
 ) -> None:
-    """Cash needs its own tap: telling riders to press the transfer button anyway is a
-    rule 166 people will not follow, and Misho cannot otherwise tell which lines to
-    look for in his bank statement."""
-    poll_service, payments, client, poll_id, saturday = await _setup(db)
-    await _fill(poll_service, poll_id, 0, riders=5)
+    polls, payments, client, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
     await payments.sync_boards()
     board = client.payments_sends()[-1]
-
-    notice = (
-        await payments.claim(
-            service_date=saturday,
-            telegram_user_id=100,
-            username="konstantin",
-            full_name="Konstantin",
-            method=CASH_METHOD,
-        )
-    ).text
-
-    assert "recorded +15 GEL in cash." in notice
-    posted = client.payments_sends()[-1]
-    assert posted.text.startswith("💵 ")
-    assert posted.text.endswith("· cash")
-    board_edits = [text for message_id, text in client.edits if message_id == board.message_id]
-    assert "· cash" in board_edits[-1]
+    before = len(client.payments_sends())
+    notice = await payments.claim(
+        service_date=day,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider 100",
+        method=CASH_METHOD,
+    )
+    assert "cash on site selected" in notice.text
+    assert len(client.payments_sends()) == before
+    text = [text for mid, text in client.edits if mid == board.message_id][-1]
+    assert "Cash on site (promised, not received):" in text
+    assert "@rider100" in text
     async with db.session() as session:
-        claim = await session.scalar(select(PaymentClaim))
-    assert claim is not None
-    assert claim.method == CASH_METHOD
+        assert await session.scalar(select(PaymentClaim)) is None
+        assert await session.scalar(select(PaymentEntry)) is None
+        assert await session.scalar(select(CashPromise)) is not None
 
 
 async def test_a_rider_can_correct_cash_to_transfer_without_changing_the_amount(
@@ -673,16 +922,10 @@ async def test_a_rider_can_correct_cash_to_transfer_without_changing_the_amount(
     await _fill(poll_service, poll_id, 0, riders=5)
     await payments.sync_boards()
     board = client.payments_sends()[-1]
-    await payments.claim(
-        service_date=saturday,
-        telegram_user_id=100,
-        username="konstantin",
-        full_name="Konstantin",
-        method=CASH_METHOD,
-    )
+    await _legacy_cash_receipt(db, payments, saturday)
     card = await payments.my_day_card(service_date=saturday, telegram_user_id=100)
     assert card.reply_markup is not None
-    assert any(
+    assert not any(
         button.text == "💸 Correct to transfer"
         for row in card.reply_markup.inline_keyboard
         for button in row
@@ -731,13 +974,7 @@ async def test_correcting_cash_after_the_deadline_does_not_undo_payment(
     saturday = _future_saturday()
     poll_service, payments, _client, poll_id, _ = await _setup(db, service_date=saturday)
     await _fill(poll_service, poll_id, 0, riders=5)
-    await payments.claim(
-        service_date=saturday,
-        telegram_user_id=100,
-        username="rider100",
-        full_name="Rider 100",
-        method=CASH_METHOD,
-    )
+    await _legacy_cash_receipt(db, payments, saturday)
     await payments.capture_deadline_rosters(now=_after_deadline(saturday))
 
     outcome = await payments.claim(
@@ -761,13 +998,7 @@ async def test_a_rider_cannot_change_an_admin_verified_payment_method(
 ) -> None:
     poll_service, payments, _client, poll_id, saturday = await _setup(db)
     await _fill(poll_service, poll_id, 0, riders=5)
-    await payments.claim(
-        service_date=saturday,
-        telegram_user_id=100,
-        username="rider100",
-        full_name="Rider 100",
-        method=CASH_METHOD,
-    )
+    await _legacy_cash_receipt(db, payments, saturday)
     async with db.session() as session:
         claim = await session.scalar(select(PaymentClaim))
         assert claim is not None
@@ -1365,14 +1596,8 @@ async def test_an_underfunded_lift_is_chased_not_cancelled(db: SharedDatabase) -
     await payments.claim(
         service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
     )
-    # Cash counts the same as a transfer.
-    await payments.claim(
-        service_date=saturday,
-        telegram_user_id=101,
-        username="anna",
-        full_name="Anna",
-        method=CASH_METHOD,
-    )
+    # Received cash counts the same as a received transfer.
+    await _legacy_cash_receipt(db, payments, saturday, 101)
 
     await payments.capture_deadline_rosters(now=_after_deadline(saturday))
 
@@ -1550,7 +1775,7 @@ async def test_the_board_pay_buttons_are_deep_links_when_the_username_is_known(
         button.url
         for row in board.markup.inline_keyboard
         for button in row
-        if button.text in {"💸 I paid", "💵 Paid cash"}
+        if button.text in {"💸 I paid", "💵 I'll pay cash"}
     ]
     assert urls == [
         f"https://t.me/veloexpress_bot?start=paid-{encoded}",
@@ -1574,7 +1799,7 @@ async def test_the_board_falls_back_to_callbacks_without_a_username(
         button.callback_data
         for row in board.markup.inline_keyboard
         for button in row
-        if button.text in {"💸 I paid", "💵 Paid cash"}
+        if button.text in {"💸 I paid", "💵 I'll pay cash"}
     ]
     assert data == [f"pay:paid:{encoded}", f"pay:cash:{encoded}"]
 
@@ -1688,7 +1913,7 @@ async def test_paying_stays_in_the_group_until_the_setting_is_turned_on(
         button
         for row in board.markup.inline_keyboard
         for button in row
-        if button.text in {"💸 I paid", "💵 Paid cash"}
+        if button.text in {"💸 I paid", "💵 I'll pay cash"}
     ]
     assert [button.callback_data for button in pay_row] == [
         f"pay:paid:{encoded}",
@@ -2025,6 +2250,18 @@ async def test_cash_top_up_keeps_the_original_transfer_method(db: SharedDatabase
         method=CASH_METHOD,
     )
 
+    async with db.session() as session:
+        pending_claim = await session.scalar(select(PaymentClaim))
+        assert pending_claim is not None and pending_claim.amount_gel == 15
+        assert await session.scalar(select(CashPromise)) is not None
+    await payments.record_admin_payment(
+        service_date=saturday,
+        telegram_user_id=100,
+        amount_gel=15,
+        method=CASH_METHOD,
+        admin_user_id=1,
+        reference_key="cash-top-up",
+    )
     async with db.session() as session:
         claim = await session.scalar(select(PaymentClaim))
         entries = (await session.scalars(select(PaymentEntry).order_by(PaymentEntry.id))).all()
@@ -2507,7 +2744,7 @@ async def test_payment_buttons_are_under_existing_booking_status(db: SharedDatab
     assert markup is not None
     assert [[b.text for b in row] for row in markup.inline_keyboard] == [
         ["💸 I paid"],
-        ["💵 Paid cash", "↩️ Undo"],
+        ["💵 I'll pay cash", "↩️ Undo"],
     ]
 
 

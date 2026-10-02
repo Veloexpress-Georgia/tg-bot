@@ -3438,6 +3438,31 @@ body {
   font-size: 12px;
   padding: 12px 0;
 }
+.ride-cash-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ride-cash-choice > svg {
+  flex-shrink: 0;
+}
+.ride-cash-choice > span {
+  flex: 1;
+  min-width: 0;
+}
+.ride-cash-choice > .button {
+  flex-shrink: 0;
+  min-height: 40px;
+  padding: 8px;
+}
 .ride-pending {
   font-size: 12px;
   color: var(--muted);

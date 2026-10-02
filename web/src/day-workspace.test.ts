@@ -3,6 +3,16 @@ import { dayAttention } from './day-workspace';
 import { demoDays } from './demo';
 
 describe('day attention', () => {
+  it('keeps cash on site promises out of transfer reminders without counting them as paid', () => {
+    const day = structuredClone(demoDays[0]);
+    const rider = day.riders![0];
+    rider.paid_gel = 0;
+    rider.cash_on_site = true;
+    const result = dayAttention(day);
+    expect(result.unpaid.some((r) => r.user_id === rider.user_id)).toBe(false);
+    expect(result.cashOnSite.some((r) => r.user_id === rider.user_id)).toBe(true);
+    expect(rider.paid_gel).toBe(0);
+  });
   it('keeps queues, underfilled lifts and unreported amounts separate', () => {
     const day = structuredClone(demoDays[0]);
     const result = dayAttention(day);

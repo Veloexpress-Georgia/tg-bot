@@ -388,6 +388,33 @@ class PaymentClaim(Base):
     )
 
 
+class CashPromise(Base):
+    """A rider plans to pay on site; this is never a received-money fact."""
+
+    __tablename__ = "cash_promise"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+Index(
+    "uq_cash_promise_scope",
+    CashPromise.environment,
+    CashPromise.chat_id,
+    func.coalesce(CashPromise.thread_id, 0),
+    CashPromise.service_date,
+    CashPromise.telegram_user_id,
+    unique=True,
+)
+
+
 class ServiceDayTerms(Base):
     """The price and deadline agreed when a service day is first published."""
 

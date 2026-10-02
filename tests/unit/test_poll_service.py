@@ -744,7 +744,8 @@ async def test_cancel_day_closes_native_poll(db: SharedDatabase) -> None:
 
     assert client.stopped == [poll.message_id]
     assert sunday_poll.message_id not in client.stopped
-    assert poll.message_id not in client.deleted
+    assert poll.message_id in client.deleted
+    assert sunday_poll.message_id not in client.deleted
     # Success is persisted: neither another cancel nor a background refresh
     # closes the poll again or repeats the notice.
     await service.cancel_day(service_date=saturday, admin_user_id=1)
@@ -754,7 +755,7 @@ async def test_cancel_day_closes_native_poll(db: SharedDatabase) -> None:
 
 
 async def test_cancelled_poll_closure_retries_after_restart(db: SharedDatabase) -> None:
-    client = FakeTelegramClient(fail_stop_once=True, fail_unpin_once=True)
+    client = FakeTelegramClient(fail_stop_once=True, fail_unpin_once=True, fail_delete_once=True)
     service = PollPostingService(
         settings=settings(), session_factory=db.session, telegram_client=client
     )
@@ -2881,11 +2882,13 @@ async def test_cancellation_deletes_status_and_retries_cleanup_without_another_n
         PollSetup(service_date=saturday, created_by_user_id=1), pin_after_send=False
     )
     await service.cancel_day(service_date=saturday, admin_user_id=1)
-    assert poll.availability_message_id not in client.deleted
+    assert poll.message_id not in client.deleted
+    assert poll.availability_message_id in client.deleted
     await service.refresh_booking_statuses()
     assert poll.availability_message_id in client.deleted
     await service.refresh_booking_statuses()
     assert client.deleted.count(poll.availability_message_id) == 1
+    assert client.deleted.count(poll.message_id) == 1
     assert sum("All lifts on" in text for text in client.sent_texts) == 1
 
 

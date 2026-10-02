@@ -53,7 +53,7 @@ class PaymentTerms:
             "Be at the meeting point 10 minutes before departure. Message the chat if late.",
             "If leaving, remove your vote and post the day and time in the chat early.",
             "A paid seat is not refunded if you miss your lift; find a replacement if possible.",
-            f"💵 {CASH_ON_SITE_TEXT} {CASH_REPORT_TEXT} Tap {CASH_BUTTON} after paying him.",
+            f"💵 {CASH_ON_SITE_TEXT} Choose {CASH_BUTTON}. {CASH_REPORT_TEXT}",
         )
         return (*lines, self._link_line("Where to pay")) if self.link else lines
 
