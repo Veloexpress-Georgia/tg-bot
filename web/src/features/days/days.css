@@ -1,0 +1,368 @@
+/* Lift board: one row per lift, readable at a glance on a phone. */
+.lift-row {
+  gap: var(--s-3);
+  min-height: 64px;
+}
+.lift-time {
+  min-width: 50px;
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.lift-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+}
+.lift-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.lift-state {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lift-line .badge {
+  min-height: 20px;
+  padding: 1px 7px;
+}
+.lift-count {
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  min-width: 52px;
+  justify-content: flex-end;
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+}
+.lift-count > b {
+  font-size: var(--fs-lg);
+  color: var(--ink);
+}
+.lift-row-off .lift-time,
+.lift-row-off .lift-count {
+  color: var(--ink-3);
+  text-decoration: line-through;
+}
+
+.money-card {
+  padding: 0;
+}
+.money-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  padding: var(--s-4);
+  text-align: left;
+  color: var(--ink);
+}
+button.money-card-body:active {
+  background: var(--surface-2);
+}
+.money-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.money-big {
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+}
+.money-of {
+  flex: 1;
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+}
+.money-line .row-chevron {
+  align-self: center;
+}
+.money-notes {
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+}
+
+.day-tabs {
+  margin-bottom: var(--s-5);
+}
+
+.lift-hero {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  margin: calc(-1 * var(--s-2)) 0 var(--s-6);
+}
+.meter-lg {
+  height: 10px;
+}
+.roster-filter {
+  margin-bottom: var(--s-3);
+}
+
+/* Booking order editor */
+.order-intro {
+  margin: calc(-1 * var(--s-3)) 0 var(--s-4);
+}
+.order-list {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.order-divider {
+  padding: 12px var(--s-4) 6px;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.order-divider-wait {
+  border-top: 2px dashed var(--line-strong);
+  color: var(--warn);
+}
+.order-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 60px;
+  padding: 8px 6px 8px var(--s-4);
+  border-top: 1px solid var(--line);
+}
+.order-divider + .order-row {
+  border-top: 0;
+}
+.order-row-wait {
+  background: color-mix(in srgb, var(--warn-bg) 55%, transparent);
+}
+.order-row-dragged {
+  opacity: 0.4;
+}
+.order-row[draggable='true'] {
+  cursor: grab;
+}
+.order-pos {
+  min-width: 22px;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+.order-name {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.order-name > small {
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  line-height: 1.35;
+}
+.order-controls {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.order-controls .btn-icon {
+  width: 36px;
+  min-height: 40px;
+  color: var(--ink-2);
+}
+.order-note {
+  margin-top: var(--s-3);
+  padding: 0 2px;
+}
+.page:has(.action-bar) {
+  padding-bottom: calc(var(--action-bar, 140px) + var(--safe-bottom) + var(--s-6));
+}
+.action-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 45;
+  padding: 12px var(--gutter) calc(12px + var(--safe-bottom));
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  border-top: 1px solid var(--line);
+}
+.action-bar-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: var(--content);
+  margin: 0 auto;
+}
+.action-bar-buttons {
+  display: flex;
+  gap: 10px;
+}
+.action-bar-buttons > .btn {
+  flex: 1;
+}
+.action-bar-buttons > .btn:first-child {
+  flex: 0 0 auto;
+}
+.order-effects {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+.action-bar .order-effects {
+  max-height: 30dvh;
+  overflow-y: auto;
+}
+.order-preview {
+  display: flex;
+  flex-direction: column;
+  margin-top: 6px;
+  border-top: 1px solid var(--line);
+}
+.order-preview > li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.order-preview-pos {
+  min-width: 20px;
+  color: var(--ink-2);
+  font-weight: 700;
+}
+.order-preview-name {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.order-preview-name > small {
+  font-weight: 500;
+  font-size: var(--fs-xs);
+}
+.confirm-affected {
+  margin-top: var(--s-3);
+}
+
+/* Days list */
+.day-cards {
+  display: grid;
+  gap: var(--s-3);
+}
+.day-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  width: 100%;
+  text-align: left;
+  color: var(--ink);
+}
+.day-card:active {
+  background: var(--surface-2);
+}
+.day-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+.day-card-head .eyebrow {
+  display: block;
+  margin-bottom: 2px;
+}
+.day-card-head strong {
+  font-size: var(--fs-lg);
+}
+.day-card-lifts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 6px;
+}
+.mini-lift {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+}
+.mini-lift > b {
+  font-size: var(--fs-md);
+  color: var(--ink);
+}
+.mini-lift-warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.mini-lift-muted {
+  opacity: 0.55;
+}
+.day-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+}
+.days-history {
+  margin-top: var(--s-4);
+}
+
+@media (min-width: 768px) {
+  .day-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .action-bar {
+    left: 0;
+  }
+}
+@media (min-width: 1024px) {
+  .action-bar {
+    left: var(--sidebar);
+  }
+}
+
+/* Payment status: an icon and a word or two. */
+.pay-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.order-name .pay-mark,
+.order-preview-name .pay-mark {
+  margin-top: 2px;
+  font-size: var(--fs-xs);
+}
+.lift-wait {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+  color: var(--warn);
+  font-weight: 600;
+}
+.money-card-body .badges {
+  margin-top: 2px;
+}

@@ -1,36 +1,40 @@
 import type {
   Analytics,
   DayDetail,
-  LiveDay,
-  Planning,
-  MyDays,
-  Summary,
-  Session,
-  Rider,
   DemandCounts,
+  LiftRider,
+  LiveDay,
+  MyDays,
+  Planning,
+  Rider,
+  RiderBooking,
+  Session,
+  Summary,
 } from './types';
+
+/** Synthetic data for ?demo=1. It is a Sunday lift day, like a real one. */
 export const demoSession: Session = {
   user_id: 42,
-  name: 'Мишо',
+  name: 'Misho',
   admin: true,
   csrf: 'demo',
   timezone: 'Asia/Tbilisi',
-  today: '2026-10-01',
+  today: '2026-10-04',
 };
 const times = ['8:30', '10:00', '11:45', '13:30', '15:30'];
 const names = [
-  'Алексей М.',
-  'Нино К.',
-  'Георгий С.',
-  'Анна В.',
-  'Давид Л.',
-  'Мария П.',
-  'Илья Б.',
-  'Тамара Д.',
-  'Саша Р.',
-  'Лука Г.',
-  'Ксения А.',
-  'Мишо',
+  '@alexey_m',
+  '@nino_k',
+  '@giorgi_s',
+  '@anna_v',
+  '@davit_l',
+  '@maria_p',
+  '@ilya_b',
+  '@tamar_d',
+  '@sasha_r',
+  '@luka_g',
+  '@ksenia_a',
+  '@misho',
 ];
 const empty = (): Summary => ({
   days: 0,
@@ -68,7 +72,7 @@ interface Record {
 const records: Record[] = [];
 for (
   let d = new Date('2025-03-01T12:00:00Z');
-  d < new Date('2026-10-01T12:00:00Z');
+  d < new Date('2026-10-04T12:00:00Z');
   d.setUTCDate(d.getUTCDate() + 1)
 ) {
   if (![0, 6].includes(d.getUTCDay())) continue;
@@ -232,133 +236,212 @@ export function demoAnalytics(start: string, end: string, personal = false): Ana
   };
 }
 export const demoPlanning: Planning = {
-  week_start: '2026-10-03',
+  week_start: '2026-10-10',
   saturday_enabled: true,
   sunday_enabled: true,
   first_lift_time: '8:30',
-  last_lift_time: '13:30',
-  posted_dates: ['2026-10-03', '2026-10-04'],
+  last_lift_time: '15:30',
+  posted_dates: [],
   lift_times: times,
   schedule: {
     enabled: true,
-    creation_weekday: 4,
+    creation_weekday: 3,
     creation_time: '14:00',
     announce_lead_minutes: 120,
     skip_week_start: null,
   },
   terms: { price_gel: 20, deadline_time: '20:00', timezone: 'Asia/Tbilisi' },
 };
-export const demoDays: LiveDay[] = ['2026-10-03', '2026-10-04'].map((service_date, day) => ({
-  service_date,
-  booked_rider_count: 16 - day * 4,
-  paid_rider_count: 12 - day * 3,
-  expected_gel: 600 - day * 180,
-  owed_gel: 120,
-  past: false,
-  running_count: 3,
-  confirmed_seat_count: 30 - day * 9,
-  waitlist: day
-    ? []
-    : [
-        {
-          telegram_user_id: 109,
-          label: 'Лука Г.',
-          lift_time: '8:30',
-          position: 1,
-        },
-      ],
-  late_exits: [],
-  commands: day
-    ? []
-    : [
-        {
-          id: 900,
-          action: 'manual',
-          actor_user_id: 42,
-          actor_name: 'Мишо',
-          service_date,
-          lift_time: '8:30',
-          status: 'review',
-          result: { message: 'Демонстрация запроса, результат которого требует проверки.' },
-          created_at: '2026-10-01T12:00:00Z',
-          finished_at: null,
-        },
-      ],
-  lifts: times.slice(0, 4).map((time, i) => {
-    const occupied = [10, 9, 7, 4][i] - day;
-    const waiting = i === 0 && day === 0 ? 1 : 0;
-    return {
-      time,
-      vote_count: occupied - 1 + (i === 0 && day === 0 ? 1 : 0),
-      manual_count: 1,
-      guest_count: 0,
-      capacity: 10,
-      cancelled: false,
-      covered_count: Math.max(0, occupied - 2),
-      seat_count: occupied,
-      waiting_count: waiting,
-      running: occupied >= 5,
-      funded: occupied - 2 >= 5,
-      riders: names.slice(0, occupied - 1 + waiting).map((label, j) => ({
-        telegram_user_id: j === 7 ? 42 : 100 + j,
-        label,
-        paid: j < occupied - 2,
-        cash: j % 5 === 0,
-        guests: 0,
-        waitlisted: j >= occupied - 1,
-      })),
+
+const PRICE = 20;
+const MINIMUM = 5;
+const riderIds = new Map<string, number>();
+const idOf = (label: string) => {
+  if (label === '@misho') return 42;
+  if (!riderIds.has(label)) riderIds.set(label, 100 + riderIds.size);
+  return riderIds.get(label)!;
+};
+const pool = [
+  '@levan_k',
+  '@mariam_t',
+  '@irakli_p',
+  '@sopho_g',
+  '@nika_z',
+  '@dato_b',
+  '@keti_m',
+  '@zura_a',
+  '@ana_b',
+  '@vakho_t',
+  '@tornike',
+  '@salome_j',
+  '@beka_r',
+  '@lasha_d',
+  '@eka_n',
+  '@gio_m',
+  '@tamuna',
+  '@shota_k',
+  '@nata_l',
+  '@rati_g',
+  '@lika_s',
+  '@temo_v',
+  '@nino_k',
+  '@giorgi_s',
+  '@anna_v',
+  '@davit_l',
+  '@maria_p',
+  '@ilya_b',
+];
+const pick = (from: number, count: number) => pool.slice(from, from + count);
+// Mirrors a busy Sunday: one lift short of the minimum, full lifts with waitlists.
+const todayLifts = [
+  { time: '8:30', manual: 0, guests: 0, seated: pick(0, 2), waiting: [] as string[] },
+  { time: '10:00', manual: 1, guests: 0, seated: pick(2, 9), waiting: [] },
+  { time: '11:45', manual: 0, guests: 0, seated: pick(11, 10), waiting: pick(21, 4) },
+  {
+    time: '13:30',
+    manual: 0,
+    guests: 1,
+    seated: [...pick(5, 6), ...pick(16, 3)],
+    waiting: pick(25, 2),
+  },
+  { time: '15:30', manual: 0, guests: 0, seated: [...pick(12, 6), '@misho'], waiting: [] },
+];
+const hostOfGuest = '@dato_b';
+
+function buildDay(service_date: string): LiveDay {
+  const lifts = todayLifts.map((lift) => {
+    const seat_count = lift.seated.length + lift.manual + lift.guests;
+    return { ...lift, seat_count, running: seat_count >= MINIMUM, capacity: 10 };
+  });
+  const labels = [...new Set(lifts.flatMap((lift) => [...lift.seated, ...lift.waiting]))];
+  const riders = labels.map((label, index) => {
+    const user_id = idOf(label);
+    const rows = lifts
+      .filter((lift) => lift.seated.includes(label) || lift.waiting.includes(label))
+      .map((lift) => ({
+        lift_time: lift.time,
+        guests: label === hostOfGuest && lift.guests ? lift.guests : 0,
+        seats_left: Math.max(lift.capacity - lift.seat_count, 0),
+        waitlist_position: lift.waiting.indexOf(label) + 1,
+        running: lift.running,
+      }));
+    const seated = rows.filter((row) => !row.waitlist_position);
+    const confirmed = seated.filter((row) => row.running);
+    const pending = seated.filter((row) => !row.running).map((row) => row.lift_time);
+    const guests = rows.reduce((sum, row) => sum + row.guests, 0);
+    const due_now_gel = (confirmed.length + guests) * PRICE;
+    const due_all_gel = (seated.length + guests) * PRICE;
+    // Cash is reported like a transfer and handed over on site.
+    const cash = index % 4 === 0 || index % 9 === 4;
+    const unpaid = index % 6 === 5 || label === '@misho';
+    const booking: RiderBooking = {
+      service_date,
+      price_gel: PRICE,
+      paid_gel: unpaid ? 0 : due_now_gel,
+      due_now_gel,
+      due_all_gel,
+      payment_method: unpaid || !due_now_gel ? null : cash ? 'cash' : 'transfer',
+      pending_lift_times: pending,
+      rows,
     };
-  }),
-  riders: names.slice(0, 10).map((label, i) => ({
-    user_id: i === 7 ? 42 : 100 + i,
-    label,
+    return { user_id, label, ...booking };
+  });
+  const byLabel = new Map(riders.map((rider) => [rider.label, rider]));
+  const liftRiders = (lift: (typeof lifts)[number]): LiftRider[] => [
+    ...[...lift.seated, ...lift.waiting].map((label) => {
+      const rider = byLabel.get(label)!;
+      return {
+        telegram_user_id: rider.user_id,
+        label,
+        paid: rider.paid_gel > 0 && rider.paid_gel >= rider.due_now_gel,
+        cash: rider.payment_method === 'cash',
+        guests: label === hostOfGuest ? lift.guests : 0,
+        waitlisted: lift.waiting.includes(label),
+      };
+    }),
+  ];
+  return {
     service_date,
-    price_gel: 20,
-    paid_gel: i < 7 ? 40 : 20,
-    due_now_gel: 40,
-    due_all_gel: 40,
-    payment_method: 'transfer',
-    cash_on_site: i >= 7,
-    pending_lift_times: [],
-    rows: [
+    booked_rider_count: riders.length,
+    paid_rider_count: riders.filter((rider) => rider.paid_gel > 0).length,
+    expected_gel: riders.reduce((sum, rider) => sum + rider.paid_gel, 0),
+    owed_gel:
+      lifts
+        .filter((lift) => lift.running)
+        .reduce((sum, lift) => sum + Math.min(lift.seat_count, lift.capacity), 0) * PRICE,
+    past: false,
+    running_count: lifts.filter((lift) => lift.running).length,
+    confirmed_seat_count: lifts.reduce(
+      (sum, lift) => sum + Math.min(lift.seat_count, lift.capacity),
+      0,
+    ),
+    waitlist: lifts.flatMap((lift) =>
+      lift.waiting.map((label, index) => ({
+        telegram_user_id: idOf(label),
+        label,
+        lift_time: lift.time,
+        position: index + 1,
+      })),
+    ),
+    late_exits: [{ telegram_user_id: idOf('@irakli_p'), label: '@irakli_p', lift_time: '10:00' }],
+    commands: [
       {
-        lift_time: '8:30',
-        guests: 0,
-        seats_left: 0,
-        waitlist_position: 0,
-        running: true,
-      },
-      {
+        id: 900,
+        action: 'manual',
+        actor_user_id: 42,
+        actor_name: 'Misho',
+        service_date,
         lift_time: '10:00',
-        guests: 0,
-        seats_left: 1,
-        waitlist_position: 0,
-        running: true,
+        status: 'review',
+        result: { message: 'Demo request whose result needs checking.' },
+        created_at: '2026-10-04T05:40:00Z',
+        finished_at: null,
       },
     ],
-  })),
+    lifts: lifts.map((lift) => ({
+      time: lift.time,
+      vote_count: lift.seated.length + lift.waiting.length,
+      manual_count: lift.manual,
+      guest_count: lift.guests,
+      capacity: lift.capacity,
+      cancelled: false,
+      covered_count: liftRiders(lift).filter((rider) => rider.paid && !rider.waitlisted).length,
+      seat_count: lift.seat_count,
+      waiting_count: lift.waiting.length,
+      running: lift.running,
+      funded:
+        liftRiders(lift).filter((rider) => rider.paid && !rider.waitlisted).length + lift.manual >=
+        MINIMUM,
+      riders: liftRiders(lift),
+    })),
+    riders,
+  };
+}
+
+export const demoDays: LiveDay[] = [buildDay('2026-10-04')];
+const demoSummaryDays = demoDays.map(({ riders: _riders, commands: _commands, ...day }) => ({
+  ...day,
+  lifts: day.lifts.map(({ riders: _liftRiders, ...lift }) => lift),
 }));
+
 export const demoMyDays: MyDays = {
   days: demoDays.map((day) => ({
     service_date: day.service_date,
-    past: false,
-    lifts: day.lifts.map((l) => ({
-      time: l.time,
-      seats: l.seat_count,
-      capacity: l.capacity,
-      waiting: l.waiting_count,
-      cancelled: l.cancelled,
-      running: l.running,
+    past: day.past,
+    lifts: day.lifts.map((lift) => ({
+      time: lift.time,
+      seats: lift.seat_count,
+      capacity: lift.capacity,
+      waiting: lift.waiting_count,
+      cancelled: lift.cancelled,
+      running: lift.running,
     })),
-    booking: {
-      ...day.riders![0],
-      paid_gel: day.service_date === '2026-10-04' ? 0 : 40,
-      cash_on_site: day.service_date === '2026-10-04',
-    },
+    booking: day.riders?.find((rider) => rider.user_id === 42) ?? null,
   })),
   polls_url: null,
-  bank_details: 'Демонстрационные данные. Реквизиты для оплаты появятся в рабочем кабинете.',
+  bank_details: 'Demo data. Payment details appear in the working cabinet.',
 };
+
 export function demoDay(day: string): DayDetail {
   const live = demoDays.find((d) => d.service_date === day);
   if (live) return live;
@@ -366,10 +449,10 @@ export function demoDay(day: string): DayDetail {
   return {
     historical: true,
     service_date: day,
-    price_gel: 20,
+    price_gel: PRICE,
     received_gel: rows.reduce((n, r) => n + r.net + r.reversed, 0),
     refunded_gel: rows.reduce((n, r) => n + r.reversed, 0),
-    cancelled: rows.every((r) => r.cancelled),
+    cancelled: rows.length > 0 && rows.every((r) => r.cancelled),
     reconstructed: false,
     lifts: rows.map((row) => ({
       lift_time: row.time,
@@ -377,7 +460,7 @@ export function demoDay(day: string): DayDetail {
       waiting_count: row.waiting,
       seats: row.seats,
       capacity: 10,
-      covered_seats: Math.floor(row.net / 20),
+      covered_seats: Math.floor(row.net / PRICE),
       manual_seats: row.manual,
       guest_seats: row.guests,
       riders: names
@@ -386,16 +469,18 @@ export function demoDay(day: string): DayDetail {
     })),
   };
 }
+
 export function demoGet(path: string): unknown {
   const url = new URL(path, 'https://demo.local');
   if (url.pathname === '/api/session') return demoSession;
-  if (url.pathname === '/api/admin/days') return demoDays;
+  if (url.pathname === '/api/admin/days') return demoSummaryDays;
   const orderMatch = url.pathname.match(/^\/api\/admin\/days\/([^/]+)\/lifts\/([^/]+)\/order$/);
   if (orderMatch) {
     const day = demoDay(orderMatch[1]);
     const lift = day.historical
       ? undefined
       : day.lifts.find((l) => l.time === decodeURIComponent(orderMatch[2]));
+    const riders = day.historical ? [] : (day.riders ?? []);
     return {
       digest: 'demo',
       available_seats: Math.max(
@@ -407,29 +492,27 @@ export function demoGet(path: string): unknown {
         label: r.label,
         waitlisted: r.waitlisted,
         paid: r.paid,
-        paid_gel: r.paid ? 40 : 0,
-        cash_on_site:
-          !r.paid &&
-          !day.historical &&
-          !!day.riders?.find((person) => person.user_id === r.telegram_user_id)?.cash_on_site,
+        paid_gel: riders.find((person) => person.user_id === r.telegram_user_id)?.paid_gel ?? 0,
+        cash: r.cash,
       })),
-      previous_positions: {},
-      deadline_closed: false,
+      previous_positions: lift?.time === '11:45' ? { [String(idOf('@temo_v'))]: 3 } : {},
+      deadline_closed: true,
     };
   }
   if (url.pathname.startsWith('/api/admin/days/')) return demoDay(url.pathname.split('/').at(-1)!);
   if (url.pathname === '/api/admin/planning') return demoPlanning;
   if (url.pathname === '/api/my-days') return demoMyDays;
-  if (url.pathname === '/api/admin/audit') return [];
+  if (url.pathname === '/api/admin/audit') return demoDays.flatMap((day) => day.commands ?? []);
   if (url.pathname === '/api/admin/refunds')
     return [
       {
         service_date: '2026-09-20',
         lift_time: '13:30',
-        text: 'Оценка возвратов при отмене выезда 13:30\nАнна В. — 20 GEL\nДавид Л. — 20 GEL\nВсего: 40 GEL\nЭто оценка, а не подтверждение возврата денег.',
+        text: 'Refund estimate for cancelling lift 13:30\n@anna_v — 20 GEL\n@davit_l — 20 GEL\nTotal: 40 GEL\nThis is an estimate, not a confirmation that money was returned.',
         created_at: '2026-09-19T17:00:00Z',
       },
     ];
+  if (url.pathname === '/api/config') return { browser_login: false, timezone: 'Asia/Tbilisi' };
   if (url.pathname === '/api/analytics')
     return demoAnalytics(
       url.searchParams.get('period') === 'all'
@@ -438,5 +521,5 @@ export function demoGet(path: string): unknown {
       url.searchParams.get('end') ?? '2026-09-30',
       url.searchParams.get('personal') === 'true',
     );
-  throw new Error('Неизвестный демонстрационный экран');
+  throw new Error('Unknown demo screen');
 }

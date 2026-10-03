@@ -1,0 +1,80 @@
+.planning-tabs {
+  margin-bottom: var(--s-4);
+}
+.planning-grid {
+  display: grid;
+  gap: var(--s-3);
+}
+.plan-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+.plan-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+.plan-card-head h2 {
+  font-size: var(--fs-xl);
+}
+.plan-card-head .eyebrow {
+  margin-bottom: 4px;
+}
+.plan-card-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--brand);
+}
+.plan-card .form > .btn {
+  align-self: flex-start;
+}
+.day-toggles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-2);
+}
+.day-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 50px;
+  padding: 10px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  font-weight: 600;
+  cursor: pointer;
+}
+.day-toggle.selected {
+  border-color: var(--brand);
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.plan-publish {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--line);
+}
+.plan-zone {
+  margin-top: calc(-1 * var(--s-2));
+}
+@media (max-width: 899px) {
+  .plan-card .form > .btn,
+  .plan-publish > .btn {
+    align-self: stretch;
+    width: 100%;
+  }
+}
+@media (min-width: 900px) {
+  .planning-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+}

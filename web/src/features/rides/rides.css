@@ -1,0 +1,74 @@
+.ride-days {
+  margin-bottom: var(--s-5);
+}
+.ride-time {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  color: var(--ink);
+}
+.ride-row .row-lead,
+.ride-row + .row-item .row-lead {
+  width: auto;
+  height: auto;
+  min-width: 52px;
+  background: none;
+  justify-content: start;
+}
+.ride-row .row-title.tone-ok,
+.ride-row .row-title {
+  font-size: var(--fs-sm);
+}
+.guest-row .row {
+  background: var(--surface-2);
+}
+.ride-pay {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--s-2);
+}
+.ride-pay > .btn {
+  min-height: 48px;
+  white-space: normal;
+}
+.ride-cash {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+.ride-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.ride-details,
+.ride-help {
+  padding: 0;
+}
+.ride-details > summary,
+.ride-help > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 0 var(--s-4);
+  font-weight: 600;
+}
+.ride-details > summary > span,
+.ride-help > summary > span {
+  flex: 1;
+}
+.ride-help {
+  margin-top: var(--s-6);
+}
+.ride-help-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: 0 var(--s-4) var(--s-4);
+}
+.ride-help-body > .btn {
+  align-self: flex-start;
+}

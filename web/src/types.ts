@@ -85,7 +85,6 @@ export interface LiftRider {
   cash: boolean;
   guests: number;
   waitlisted: boolean;
-  cash_on_site?: boolean;
 }
 export interface Lift {
   time: string;
@@ -108,7 +107,6 @@ export interface RiderBooking {
   due_now_gel: number;
   due_all_gel: number;
   payment_method: string | null;
-  cash_on_site?: boolean;
   pending_lift_times: string[];
   rows: {
     lift_time: string;
@@ -207,7 +205,8 @@ export interface BookingOrder {
     waitlisted: boolean;
     paid: boolean;
     paid_gel: number;
-    cash_on_site: boolean;
+    /** The seat's payment was reported as cash, handed over on site. */
+    cash: boolean;
   }[];
   previous_positions: Record<string, number>;
   deadline_closed: boolean;
@@ -224,8 +223,6 @@ export interface CommandSpec {
   service_date?: string;
   lift_time?: string;
   delta?: number;
-  user_id?: number;
-  amount_gel?: number;
   method?: 'cash' | 'transfer';
   saturday_enabled?: boolean;
   sunday_enabled?: boolean;

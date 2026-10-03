@@ -1,0 +1,20 @@
+.month-card {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-3);
+}
+.month-card > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.month-card b {
+  font-size: var(--fs-xl);
+  letter-spacing: -0.03em;
+  white-space: nowrap;
+}
+.month-card span {
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+}
