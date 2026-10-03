@@ -27,7 +27,6 @@ Action = Literal[
     "cancel_lift",
     "restore_lift",
     "cancel_day",
-    "payment",
     "plan",
     "post",
     "extra",
@@ -50,8 +49,6 @@ class CommandInput(BaseModel):
     service_date: date | None = None
     lift_time: str | None = None
     delta: int | None = None
-    user_id: int | None = Field(default=None, gt=0)
-    amount_gel: int | None = Field(default=None, gt=0, le=100000)
     method: Literal["cash", "transfer"] = "transfer"
     saturday_enabled: bool | None = None
     sunday_enabled: bool | None = None
@@ -76,7 +73,6 @@ class CommandInput(BaseModel):
             "cancel_lift": ("service_date", "lift_time"),
             "restore_lift": ("service_date", "lift_time"),
             "cancel_day": ("service_date",),
-            "payment": ("service_date", "user_id", "amount_gel"),
             "plan": ("saturday_enabled", "sunday_enabled", "first_lift_time", "last_lift_time"),
             "extra": ("service_date", "first_lift_time", "last_lift_time"),
             "terms": ("price_gel", "deadline_time"),
@@ -298,15 +294,6 @@ class Operations:
             if spec.action == "cancel_day":
                 await rt.payments.forget_day(service_date=day)
             return {"message": "Cancelled", "report": report}
-        elif spec.action == "payment":
-            await rt.payments.record_admin_payment(
-                service_date=day,
-                telegram_user_id=spec.user_id or 0,
-                amount_gel=spec.amount_gel or 0,
-                method=spec.method,
-                admin_user_id=actor_user_id,
-                reference_key=f"web:{spec.request_id}",
-            )
         elif spec.action == "plan":
             view = await self.planning_view()
             if spec.service_date is None or str(view["week_start"]) != day.isoformat():

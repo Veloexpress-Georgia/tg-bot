@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
@@ -170,7 +171,6 @@ class DayBookings:
     paid_seats_by_user: dict[int, int] = field(default_factory=dict)
     paid_amount_by_user: dict[int, int] = field(default_factory=dict)
     payment_method_by_user: dict[int, str | None] = field(default_factory=dict)
-    cash_promised_user_ids: set[int] = field(default_factory=set)
 
     def pending_lift_times(self, telegram_user_id: int) -> tuple[str, ...]:
         """Lifts the rider booked that have not reached the minimum yet."""
@@ -283,167 +283,86 @@ class PaymentsService:
         """Structured view shared with HTTP; no Telegram rendering or sending."""
         return await self._day(service_date)
 
-    async def record_admin_payment(
-        self,
-        *,
-        service_date: date,
-        telegram_user_id: int,
-        amount_gel: int,
-        method: str,
-        admin_user_id: int,
-        reference_key: str,
-    ) -> None:
-        """Append an administrator-reported payment, preserving the ledger."""
-        if admin_user_id not in self._settings.telegram_admin_ids:
-            raise PermissionError("Admins only")
-        if amount_gel <= 0 or amount_gel > 100000 or method not in {CASH_METHOD, TRANSFER_METHOD}:
-            raise ValueError("Specify a positive amount and cash or transfer")
-        day = await self._day(service_date)
-        if day is None or telegram_user_id not in day.labels_by_user:
-            raise ValueError("Rider is not booked for this day")
-        async with self._session_factory() as session:
-            await self._lock_day(session, service_date)
-            prior = await session.scalar(
-                select(PaymentEntry.id).where(
-                    PaymentEntry.environment == self._settings.app_env,
-                    PaymentEntry.chat_id == self._require_chat_id(),
-                    PaymentEntry.thread_id == self._settings.telegram_target_thread_id,
-                    PaymentEntry.reference_key == reference_key,
-                )
-            )
-            if prior is not None:
-                return
-            claim = await self._claim_row(
-                session=session, service_date=service_date, telegram_user_id=telegram_user_id
-            )
-            username, full_name = day.labels_by_user[telegram_user_id]
-            now = datetime.now(UTC)
-            if claim is None:
-                claim = PaymentClaim(
-                    environment=self._settings.app_env,
-                    chat_id=self._require_chat_id(),
-                    thread_id=self._settings.telegram_target_thread_id,
-                    service_date=service_date,
-                    telegram_user_id=telegram_user_id,
-                    username=username,
-                    full_name=full_name,
-                    amount_gel=0,
-                    cash_amount_gel=0,
-                )
-                session.add(claim)
-            claim.amount_gel = (claim.amount_gel or 0) + amount_gel
-            claim.cash_amount_gel = (claim.cash_amount_gel or 0) + (
-                amount_gel if method == CASH_METHOD else 0
-            )
-            claim.method = (
-                CASH_METHOD
-                if claim.cash_amount_gel == claim.amount_gel
-                else "mixed"
-                if claim.cash_amount_gel
-                else TRANSFER_METHOD
-            )
-            claim.seats = claim.amount_gel // day.price_gel
-            claim.verified_by_user_id = admin_user_id
-            claim.verified_at = now
-            claim.updated_at = now
-            session.add(
-                PaymentEntry(
-                    environment=self._settings.app_env,
-                    chat_id=self._require_chat_id(),
-                    thread_id=self._settings.telegram_target_thread_id,
-                    service_date=service_date,
-                    telegram_user_id=telegram_user_id,
-                    amount_gel=amount_gel,
-                    method=method,
-                    kind="received",
-                    reference_key=reference_key,
-                    recorded_at=now,
-                )
-            )
-            await self._clear_settled_cash_promise(
-                session, day=day, user_id=telegram_user_id, received_gel=claim.amount_gel
-            )
-            await session.commit()
-        refreshed = await self._day(service_date)
-        if refreshed is not None:
-            await self._announce_claim(refreshed, telegram_user_id)
-            await self._refresh_board(refreshed)
+    def rider_views(self, day: DayBookings) -> dict[int, RiderDayView]:
+        """Every booked rider's view of a day that has already been read.
 
-    async def promise_cash(self, *, service_date: date, telegram_user_id: int) -> ClaimOutcome:
-        """Select cash on site without creating or modifying a money entry."""
+        Reading the day once per rider made the admin day screen re-run the
+        whole active-day query for each person booked on it.
+        """
+        views = {uid: self._rider_day_view(day, uid) for uid in day.labels_by_user}
+        return {uid: view for uid, view in views.items() if view is not None}
+
+    async def rider_days(
+        self, *, service_dates: Iterable[date], telegram_user_id: int
+    ) -> dict[date, RiderDayView]:
+        """One rider's view of several days from a single read of the active days."""
+        wanted = set(service_dates)
+        if not wanted:
+            return {}
+        return {
+            day.service_date: view
+            for day in await self._active_days(today=min(wanted))
+            if day.service_date in wanted
+            and (view := self._rider_day_view(day, telegram_user_id)) is not None
+        }
+
+    async def convert_cash_promises(self) -> int:
+        """Report cash-on-site choices stored while cash was a separate intention.
+
+        Cash is reported like a transfer now. Each remaining choice becomes, once,
+        a cash report for the seats the rider holds today; a rider already covered
+        or holding no seat keeps their state. Choices for finished or cancelled
+        days are dropped.
+        """
         if not self.enabled:
-            return ClaimOutcome(PAYMENTS_DISABLED_TEXT)
-        day = await self._day(service_date)
-        if day is None or day.cancelled:
-            return ClaimOutcome(BOARD_GONE_TEXT)
-        if not day.booked_lift_times_by_user.get(telegram_user_id):
-            return ClaimOutcome(NOT_BOOKED_TEXT)
-        if service_date < datetime.now(UTC).astimezone(self._zone).date():
-            return ClaimOutcome(
-                "This day has finished. Ask Misho to record cash actually received."
-            )
+            return 0
         async with self._session_factory() as session:
-            await self._lock_day(session, service_date)
-            claim = await self._claim_row(
-                session=session, service_date=service_date, telegram_user_id=telegram_user_id
-            )
-            booked = day.booked_lift_times_by_user[telegram_user_id]
-            whole_day = (
-                len(day.confirmed_lift_times(telegram_user_id))
-                + len(day.pending_lift_times(telegram_user_id))
-                + day.guest_seats(telegram_user_id, lift_times=booked)
-            ) * day.price_gel
-            if claim is not None and claim.amount_gel >= whole_day:
-                return ClaimOutcome(
-                    f"{ALREADY_SETTLED_TEXT}\n{service_date.isoformat()} · "
-                    f"reported {claim.amount_gel} GEL. Nothing added."
-                )
-            existing = await self._cash_promise_row(session, service_date, telegram_user_id)
-            if existing is None:
-                session.add(
-                    CashPromise(
-                        environment=self._settings.app_env,
-                        chat_id=self._require_chat_id(),
-                        thread_id=self._settings.telegram_target_thread_id,
-                        service_date=service_date,
-                        telegram_user_id=telegram_user_id,
+            promises = list(
+                await session.scalars(
+                    select(CashPromise).where(
+                        CashPromise.environment == self._settings.app_env,
+                        CashPromise.chat_id == self._require_chat_id(),
+                        CashPromise.thread_id == self._settings.telegram_target_thread_id,
                     )
                 )
-                await session.commit()
-        refreshed = await self._day(service_date)
-        if refreshed is not None:
-            await self._refresh_board(refreshed)
-        return ClaimOutcome(
-            f"{service_date.isoformat()} · cash on site selected.\n"
-            "Pay Misho on the lift day. No money recorded as received."
-        )
-
-    async def _cash_promise_row(
-        self, session: AsyncSession, service_date: date, user_id: int
-    ) -> CashPromise | None:
-        return await session.scalar(
-            select(CashPromise).where(
-                CashPromise.environment == self._settings.app_env,
-                CashPromise.chat_id == self._require_chat_id(),
-                CashPromise.thread_id == self._settings.telegram_target_thread_id,
-                CashPromise.service_date == service_date,
-                CashPromise.telegram_user_id == user_id,
             )
-        )
-
-    async def _clear_settled_cash_promise(
-        self, session: AsyncSession, *, day: DayBookings, user_id: int, received_gel: int
-    ) -> None:
-        booked = day.booked_lift_times_by_user.get(user_id, ())
-        whole_day = (
-            len(day.confirmed_lift_times(user_id))
-            + len(day.pending_lift_times(user_id))
-            + day.guest_seats(user_id, lift_times=booked)
-        ) * day.price_gel
-        if whole_day and received_gel >= whole_day:
-            promise = await self._cash_promise_row(session, day.service_date, user_id)
-            if promise is not None:
-                await session.delete(promise)
+        if not promises:
+            return 0
+        days = {
+            day.service_date: day
+            for day in await self._active_days(today=min(p.service_date for p in promises))
+        }
+        converted = 0
+        for promise in promises:
+            day = days.get(promise.service_date)
+            user_id = promise.telegram_user_id
+            try:
+                view = (
+                    self._rider_day_view(day, user_id)
+                    if day is not None and not day.cancelled
+                    else None
+                )
+                if day is not None and view is not None and view.due_now_gel > view.paid_gel:
+                    username, full_name = day.labels_by_user.get(user_id, (None, "Rider"))
+                    await self.claim(
+                        service_date=promise.service_date,
+                        telegram_user_id=user_id,
+                        username=username,
+                        full_name=full_name,
+                        method=CASH_METHOD,
+                        acknowledged=True,
+                    )
+                async with self._session_factory() as session:
+                    await session.execute(delete(CashPromise).where(CashPromise.id == promise.id))
+                    await session.commit()
+                converted += 1
+            except Exception:
+                # Left in place: the next tick tries again, and a report that did
+                # land is not repeated because the rider is then covered.
+                logger.exception(
+                    "cash_promise_conversion_failed", extra={"cash_promise_id": promise.id}
+                )
+        return converted
 
     async def claim(
         self,
@@ -456,16 +375,13 @@ class PaymentsService:
         acknowledged: bool = False,
         include_pending: bool = False,
     ) -> ClaimOutcome:
-        """Report a received transfer, or choose cash on site without receiving money.
+        """Report a transfer, or cash the rider pays Misho on site.
 
-        `include_pending` covers lifts still short of the minimum. Nobody is pushed
-        into it — the rule is that you need not pay before five — but one transfer
-        can cover several lifts. The cash method always selects an intention.
+        Both count toward the lift in the same way; cash is only never refunded,
+        because nothing was handed over before the ride. `include_pending` covers
+        lifts still short of the minimum. Nobody is pushed into it — the rule is
+        that you need not pay before five — but one report can cover several lifts.
         """
-        if method == CASH_METHOD:
-            return await self.promise_cash(
-                service_date=service_date, telegram_user_id=telegram_user_id
-            )
         if not self.enabled:
             return ClaimOutcome(PAYMENTS_DISABLED_TEXT)
         received_delta = 0
@@ -587,9 +503,6 @@ class PaymentsService:
                         kind="received",
                         recorded_at=recorded_at,
                     )
-                )
-                await self._clear_settled_cash_promise(
-                    session, day=day, user_id=telegram_user_id, received_gel=claim.amount_gel
                 )
                 await session.commit()
 
@@ -834,7 +747,6 @@ class PaymentsService:
             due_all_gel=(len(confirmed) + len(pending) + guests_all) * day.price_gel,
             paid_gel=day.paid_amount_by_user.get(telegram_user_id, 0),
             payment_method=day.payment_method_by_user.get(telegram_user_id),
-            cash_on_site=telegram_user_id in day.cash_promised_user_ids,
         )
 
     async def guest_lift_times(
@@ -937,17 +849,6 @@ class PaymentsService:
             return PAYMENTS_DISABLED_TEXT
         day = await self._day(service_date)
         posted_message_id: int | None = None
-        async with self._session_factory() as session:
-            await self._lock_day(session, service_date)
-            promise = await self._cash_promise_row(session, service_date, telegram_user_id)
-            if promise is not None:
-                await session.delete(promise)
-                await session.commit()
-        if promise is not None:
-            refreshed = await self._day(service_date)
-            if refreshed is not None:
-                await self._refresh_board(refreshed)
-            return "Cash on site choice cancelled. Received-payment records are unchanged."
         async with self._session_factory() as session:
             claim = await self._claim_row(
                 session=session,
@@ -1133,23 +1034,13 @@ class PaymentsService:
             )
             .exists()
         )
-        has_cash_choices = (
-            select(CashPromise.id)
-            .where(
-                CashPromise.environment == self._settings.app_env,
-                CashPromise.chat_id == self._require_chat_id(),
-                CashPromise.thread_id == self._settings.telegram_target_thread_id,
-                CashPromise.service_date == PollBatch.service_date,
-            )
-            .exists()
-        )
         async with self._session_factory() as session:
             service_dates = tuple(
                 await session.scalars(
                     select(PollBatch.service_date).where(
                         PollBatch.id.in_(latest_batch_ids),
                         PollBatch.status == "cancelled",
-                        has_receipts | has_cash_choices,
+                        has_receipts,
                     )
                 )
             )
@@ -1193,16 +1084,22 @@ class PaymentsService:
                 day.guests_by_user_lift.get((claim.telegram_user_id, lift_time), 0)
                 for lift_time in remaining
             )
+        released_gel = min(
+            claim.amount_gel,
+            max(claim.seats - held, 0) * (claim.amount_gel // max(claim.seats, 1)),
+        )
+        # Cash is handed over on site, so a cancelled seat paid in cash simply is
+        # not paid for. Released seats use up the cash part first; only money
+        # transferred in advance can come back.
+        cash_gel = min(claim.cash_amount_gel or 0, claim.amount_gel)
+        transferred_gel = claim.amount_gel - cash_gel
         return RefundRow(
             label=_rider_label(claim.username, claim.full_name),
             telegram_user_id=claim.telegram_user_id,
             seats=claim.seats,
-            amount_gel=claim.amount_gel,
+            amount_gel=transferred_gel,
             remaining_lift_times=remaining,
-            refund_gel=min(
-                claim.amount_gel,
-                max(claim.seats - held, 0) * (claim.amount_gel // max(claim.seats, 1)),
-            ),
+            refund_gel=min(transferred_gel, max(released_gel - cash_gel, 0)),
         )
 
     async def recent_refund_reports(self, *, limit: int = 10) -> tuple[StoredRefundReport, ...]:
@@ -1312,26 +1209,25 @@ class PaymentsService:
         """
         today = posted_at.astimezone(self._zone).date()
         async with self._session_factory() as session:
-            promise = await session.scalar(
-                select(CashPromise.id)
+            paying_cash = await session.scalar(
+                select(PaymentClaim.id)
                 .where(
-                    CashPromise.environment == self._settings.app_env,
-                    CashPromise.chat_id == self._require_chat_id(),
-                    CashPromise.thread_id == self._settings.telegram_target_thread_id,
-                    CashPromise.telegram_user_id == telegram_user_id,
-                    CashPromise.service_date >= today,
+                    PaymentClaim.environment == self._settings.app_env,
+                    PaymentClaim.chat_id == self._require_chat_id(),
+                    PaymentClaim.thread_id == self._settings.telegram_target_thread_id,
+                    PaymentClaim.telegram_user_id == telegram_user_id,
+                    PaymentClaim.service_date >= today,
+                    PaymentClaim.cash_amount_gel > 0,
                 )
                 .limit(1)
             )
-        if promise is not None:
-            # A topic post cannot identify either the service day or the method.
-            # It must not turn a cash choice for Sunday into a Saturday transfer.
+        if paying_cash is not None:
+            # A topic post names neither the day nor the method. It must not turn
+            # cash reported for Sunday into a Saturday transfer.
             return
         for day in await self._active_days(today=today):
             if day.cancelled or telegram_user_id not in day.lift_times_by_user:
                 continue
-            if telegram_user_id in day.cash_promised_user_ids:
-                return
             if posted_at < day.polls_created_at:
                 # Written before this day's poll existed, so it cannot be about it.
                 continue
@@ -1352,10 +1248,7 @@ class PaymentsService:
                 if fresh_day is None or fresh_day.cancelled:
                     continue
                 day = fresh_day
-                if (
-                    telegram_user_id in day.cash_promised_user_ids
-                    or posted_at < day.polls_created_at
-                ):
+                if posted_at < day.polls_created_at:
                     return
                 username, full_name = day.labels_by_user.get(telegram_user_id, (None, "Rider"))
                 seats = len(day.confirmed_lift_times(telegram_user_id)) + day.guest_seats(
@@ -1663,12 +1556,6 @@ class PaymentsService:
                     or claim.amount_gel < self._owed_seats(day, claim) * day.price_gel
                 )
                 and not day.is_waitlisted(user_id)
-                and user_id not in day.cash_promised_user_ids
-            ),
-            cash_promised=tuple(
-                _rider_label(*day.labels_by_user[user_id])
-                for user_id in sorted(day.cash_promised_user_ids)
-                if user_id in day.booked_lift_times_by_user
             ),
             guests_url=self._deep_link(day.service_date, DEEP_LINK_PREFIX),
             # Behind a setting, so paying stays a single in-group tap that records
@@ -1787,16 +1674,6 @@ class PaymentsService:
                     .where(ServiceDayTerms.service_date.in_(service_dates))
                 )
             ).all()
-            cash_promises = list(
-                await session.scalars(
-                    select(CashPromise).where(
-                        CashPromise.environment == self._settings.app_env,
-                        CashPromise.chat_id == chat_id,
-                        CashPromise.thread_id == self._settings.telegram_target_thread_id,
-                        CashPromise.service_date.in_(service_dates),
-                    )
-                )
-            )
 
         votes_by_poll: dict[str, list[PollVote]] = {}
         for vote in votes:
@@ -1850,11 +1727,6 @@ class PaymentsService:
                 paid_seats_by_user=dict(paid_seats_by_date.get(service_date, {})),
                 paid_amount_by_user=dict(paid_amount_by_date.get(service_date, {})),
                 payment_method_by_user=dict(payment_method_by_date.get(service_date, {})),
-                cash_promised_user_ids={
-                    promise.telegram_user_id
-                    for promise in cash_promises
-                    if promise.service_date == service_date
-                },
             )
             running: list[str] = []
             for snapshot in (s for s in snapshots if s.batch_id == batch.id):
@@ -2107,20 +1979,11 @@ class PaymentsService:
             # Manual bookings count as paid: Misho took them himself and settles
             # them himself, and there is no button for them to tap.
             paid_seats = sum(row.covered_seats for row in lift_rows)
-            promised_seats = sum(
-                max(row.seats - row.covered_seats, 0)
-                for row in lift_rows
-                if row.telegram_user_id in day.cash_promised_user_ids
-            )
-            if paid_seats + promised_seats >= MINIMUM_RIDERS:
+            if paid_seats >= MINIMUM_RIDERS:
                 continue
             short.append(UnpaidLift(lift_time=lift_time, paid_seats=paid_seats))
             for row in lift_rows:
-                if (
-                    row.telegram_user_id != MANUAL_USER_ID
-                    and row.telegram_user_id not in day.cash_promised_user_ids
-                    and row.covered_seats < row.seats
-                ):
+                if row.telegram_user_id != MANUAL_USER_ID and row.covered_seats < row.seats:
                     unpaid[row.telegram_user_id] = row.label
         if not short:
             return

@@ -167,8 +167,8 @@ def test_booking_monitor_puts_operational_attention_on_the_top_level() -> None:
     # and a waitlist read as a fault.
     assert "Needs attention" not in draft.text
     assert "🔴 No payment reported: @anna 15 GEL" in draft.text
-    # The cash has already changed hands and the ledger counts it as received.
-    assert "💵 Reported in cash: @vitaly 30 GEL" in draft.text
+    # Reported like a transfer and counted for the lift; collected on site.
+    assert "💵 Cash on site: @vitaly 30 GEL" in draft.text
     assert "Cash to collect" not in draft.text
     assert "⏳ Waitlist: @giorgi 10:00 #1" in draft.text
     assert "⏰ Left after deadline: @stas 10:00 · 21:14" in draft.text

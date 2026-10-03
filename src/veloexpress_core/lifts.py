@@ -49,7 +49,6 @@ from veloexpress_bot.db.models import (
     ACTIVE_POLL_BATCH_STATUSES,
     AdminBookingMonitor,
     CancelledLift,
-    CashPromise,
     DeadlineRoster,
     GuestSeat,
     LiftDayResult,
@@ -1270,16 +1269,6 @@ class PollPostingService:
                 )
             ).all()
             claim_by_user = {claim.telegram_user_id: claim for claim in claims}
-            cash_on_site_ids = set(
-                await session.scalars(
-                    select(CashPromise.telegram_user_id).where(
-                        CashPromise.environment == self._settings.app_env,
-                        CashPromise.chat_id == self._settings.telegram_target_chat_id,
-                        CashPromise.thread_id == self._settings.telegram_target_thread_id,
-                        CashPromise.service_date == service_date,
-                    )
-                )
-            )
             day_guest_rows = (
                 await session.scalars(
                     select(GuestSeat)
@@ -1449,7 +1438,6 @@ class PollPostingService:
                             and claim.verified_by_user_id is None,
                             guests=guests_by_host.get(vote.telegram_user_id, 0),
                             waitlisted=vote.telegram_user_id in waitlisted_ids,
-                            cash_on_site=vote.telegram_user_id in cash_on_site_ids,
                             paid_gel=claim.amount_gel if claim is not None else 0,
                         )
                         for vote in lift_votes
@@ -3392,16 +3380,6 @@ class PollPostingService:
                     .where(PaymentClaim.service_date.in_(selected_dates))
                 )
             ).all()
-            cash_promises = list(
-                await session.scalars(
-                    select(CashPromise).where(
-                        CashPromise.environment == self._settings.app_env,
-                        CashPromise.chat_id == self._settings.telegram_target_chat_id,
-                        CashPromise.thread_id == self._settings.telegram_target_thread_id,
-                        CashPromise.service_date.in_(selected_dates),
-                    )
-                )
-            )
             guest_seats = (
                 await session.scalars(
                     select(GuestSeat)
@@ -3458,11 +3436,6 @@ class PollPostingService:
                 votes_by_poll.get(batch_snapshots[0].poll_id, []) if batch_snapshots else []
             )
             day_claims = [claim for claim in claims if claim.service_date == batch.service_date]
-            cash_on_site_ids = {
-                promise.telegram_user_id
-                for promise in cash_promises
-                if promise.service_date == batch.service_date
-            }
             claim_by_user = {claim.telegram_user_id: claim for claim in day_claims}
             day_guests = [row for row in guest_seats if row.service_date == batch.service_date]
             day_deadline_rows = [
@@ -3580,9 +3553,9 @@ class PollPostingService:
                 if guest.count > 0
             }
             live_times = {lift.time for lift in lifts if lift.running}
-            # The deadline freezes money already spent, not the receipt of later
-            # transfers or on-site cash. Assign only the newly received seat-units
-            # on top of that immutable baseline, without counting promises.
+            # The deadline freezes money already spent, not later transfer or cash
+            # reports. Assign only the newly reported seat-units on top of that
+            # immutable baseline.
             coverage_users = set(held_lifts_by_user) | {
                 uid
                 for (uid, time_), count in guests_by_host_lift.items()
@@ -3620,24 +3593,10 @@ class PollPostingService:
                     covered_by_lift[target.lift_time] = (
                         covered_by_lift.get(target.lift_time, 0) + target.covered_seats
                     )
-                    key = (user_id, target.lift_time)
-                    locked_by_user_lift[key] = (
-                        locked_by_user_lift.get(key, 0) + target.covered_seats
-                    )
             lifts = [
                 replace(
                     lift,
                     covered_count=covered_by_lift.get(lift.time, 0),
-                    cash_on_site_count=sum(
-                        max(
-                            1
-                            + guests_by_host_lift.get((user_id, lift.time), 0)
-                            - locked_by_user_lift.get((user_id, lift.time), 0),
-                            0,
-                        )
-                        for user_id in cash_on_site_ids
-                        if lift.time in held_lifts_by_user.get(user_id, ())
-                    ),
                     deadline_closed=bool(day_deadline_rows),
                 )
                 for lift in lifts
@@ -3656,11 +3615,8 @@ class PollPostingService:
                             lift_times=tuple(held_lifts_by_user.get(user_id, ())),
                         )
                         for user_id, owed in owed_seats_by_user.items()
-                        if user_id not in cash_on_site_ids
-                        and (
-                            (claim := claim_by_user.get(user_id)) is None
-                            or claim.amount_gel < owed * day_price
-                        )
+                        if (claim := claim_by_user.get(user_id)) is None
+                        or claim.amount_gel < owed * day_price
                     ),
                     key=lambda rider: rider.label,
                 )
@@ -3722,11 +3678,6 @@ class PollPostingService:
                     past=batch.service_date < today,
                     unpaid_riders=unpaid_riders,
                     cash_pending=cash_pending,
-                    cash_promised=tuple(
-                        MonitorRider(telegram_user_id=user_id, label=label_by_user[user_id])
-                        for user_id in sorted(cash_on_site_ids)
-                        if user_id in label_by_user
-                    ),
                     guests=monitor_guests,
                     waitlist=tuple(waitlist),
                     late_exits=late_exits,
@@ -4231,7 +4182,6 @@ def _day_signals(day: BookingMonitorDay) -> tuple[LiftSignal, ...]:
             seats=lift.total_count,
             cancelled=lift.cancelled,
             covered_seats=lift.covered_count,
-            cash_on_site_seats=lift.cash_on_site_count,
         )
         for lift in day.lifts
     )

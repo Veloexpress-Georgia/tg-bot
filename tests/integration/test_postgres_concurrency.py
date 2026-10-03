@@ -15,7 +15,6 @@ from tests.unit import test_payments_service as helpers
 
 from veloexpress_bot.db.models import (
     BookingOrderChange,
-    CashPromise,
     PaymentClaim,
     PaymentEntry,
     PollVote,
@@ -195,7 +194,7 @@ async def test_concurrent_claims_record_only_one_amount(
     assert len(claims) == 1 and claims[0].amount_gel == 30
 
 
-async def test_concurrent_cash_choices_store_one_intention_and_no_money(
+async def test_concurrent_cash_reports_record_one_payment(
     pg: helpers.SharedDatabase,
 ) -> None:
     polls, payments, client, poll_id, day = await helpers._setup(pg)
@@ -208,7 +207,15 @@ async def test_concurrent_cash_choices_store_one_intention_and_no_money(
     async with pg.session() as holder:
         await payments._lock_day(holder, day)
         tasks = [
-            asyncio.create_task(service.promise_cash(service_date=day, telegram_user_id=100))
+            asyncio.create_task(
+                service.claim(
+                    service_date=day,
+                    telegram_user_id=100,
+                    username="rider100",
+                    full_name="Rider 100",
+                    method="cash",
+                )
+            )
             for service in (payments, other)
         ]
         await asyncio.sleep(0.1)
@@ -217,22 +224,14 @@ async def test_concurrent_cash_choices_store_one_intention_and_no_money(
     await asyncio.wait_for(asyncio.gather(*tasks), 5)
     scope = payments._settings.app_env
     async with pg.session() as session:
-        assert (
-            await session.scalar(
-                select(func.count())
-                .select_from(CashPromise)
-                .where(CashPromise.environment == scope)
-            )
-            == 1
+        claims = list(
+            await session.scalars(select(PaymentClaim).where(PaymentClaim.environment == scope))
         )
-        assert (
-            await session.scalar(select(PaymentClaim).where(PaymentClaim.environment == scope))
-            is None
+        entries = list(
+            await session.scalars(select(PaymentEntry).where(PaymentEntry.environment == scope))
         )
-        assert (
-            await session.scalar(select(PaymentEntry).where(PaymentEntry.environment == scope))
-            is None
-        )
+    assert [(claim.amount_gel, claim.method) for claim in claims] == [(15, "cash")]
+    assert [(entry.amount_gel, entry.method) for entry in entries] == [(15, "cash")]
 
 
 async def test_concurrent_undo_and_claim_keep_projection_equal_to_ledger(

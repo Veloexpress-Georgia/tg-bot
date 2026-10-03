@@ -38,7 +38,6 @@ class LiftSignal:
     seats: int
     cancelled: bool = False
     covered_seats: int = 0
-    cash_on_site_seats: int = 0
 
     @property
     def running(self) -> bool:
@@ -200,10 +199,7 @@ def decide_deadline_reminder(
         return False
     if not any(
         not signal.cancelled
-        and (
-            signal.seats < MINIMUM_RIDERS
-            or signal.covered_seats + signal.cash_on_site_seats < MINIMUM_RIDERS
-        )
+        and (signal.seats < MINIMUM_RIDERS or signal.covered_seats < MINIMUM_RIDERS)
         for signal in signals
     ):
         # Every active lift has enough riders and paid seats.
@@ -253,13 +249,6 @@ def _reminder_line(signal: LiftSignal) -> str:
         # rider can still save the lift if Misho allows it.
         missing = MINIMUM_RIDERS - signal.seats
         return f"{signal.lift_time} — {signal.seats}/{MINIMUM_RIDERS} · needs {missing} more"
-    if signal.cash_on_site_seats:
-        missing = max(MINIMUM_RIDERS - signal.covered_seats - signal.cash_on_site_seats, 0)
-        status = (
-            f"{signal.lift_time} — {signal.seats} riders · {signal.covered_seats} paid · "
-            f"{signal.cash_on_site_seats} cash on site"
-        )
-        return status + (f" · needs {missing} more payment choices" if missing else "")
     if signal.covered_seats < MINIMUM_RIDERS:
         return (
             f"{signal.lift_time} — {signal.seats} riders · "

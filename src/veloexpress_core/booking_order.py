@@ -176,7 +176,7 @@ async def load_order(
         r.telegram_user_id: {
             "paid": r.paid,
             "paid_gel": r.paid_gel,
-            "cash_on_site": r.cash_on_site,
+            "cash": r.cash,
         }
         for r in detail[1]
     }
@@ -273,11 +273,9 @@ def proposal(
 
 def payment_label(payment: dict[str, Any]) -> str:
     if payment["paid"]:
-        return "payment reported"
+        return "cash on site" if payment["cash"] else "payment reported"
     amount = payment["paid_gel"]
     note = f" · {amount} GEL reported for the day" if amount else ""
-    if payment["cash_on_site"]:
-        return f"cash on site promised{note}"
     return f"payment not reported{note}"
 
 

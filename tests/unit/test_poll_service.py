@@ -554,7 +554,7 @@ async def test_booking_monitor_surfaces_money_guests_waitlist_and_late_exits(
 
     view = await service.booking_monitor_view(selected_service_date=saturday)
 
-    assert "💵 Reported in cash: @rider100 30 GEL" in view.text
+    assert "💵 Cash on site: @rider100 30 GEL" in view.text
     assert "👥 Guests: @rider100 +1 (8:30)" in view.text
     assert "@rider109 8:30 #1" in view.text
     assert "@late204 10:00" in view.text

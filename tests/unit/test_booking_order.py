@@ -38,20 +38,28 @@ async def setup_order(database: SharedDatabase):
     return service, client, day, poll_id
 
 
-async def test_order_shows_paid_unpaid_and_cash_promises_and_rechecks_payments(db: SharedDatabase):
+async def test_order_shows_transfer_cash_and_unpaid_riders_and_rechecks_payments(
+    db: SharedDatabase,
+):
     from tests.unit.test_payments_service import SharedDatabase as PaymentsDatabase
-    from tests.unit.test_payments_service import _setup
+    from tests.unit.test_payments_service import _record_payment, _setup
 
     service, payments, _client, poll_id, day = await _setup(cast(PaymentsDatabase, db))
     await _fill_lift(service, poll_id, riders=12)
     await payments.claim(
         service_date=day, telegram_user_id=109, username="rider9", full_name="Rider 9"
     )
-    await payments.promise_cash(service_date=day, telegram_user_id=100)
+    await payments.claim(
+        service_date=day,
+        telegram_user_id=100,
+        username="rider0",
+        full_name="Rider 0",
+        method="cash",
+    )
     view = await service.booking_order_view(service_date=day, lift_time="8:30")
     riders = {r["user_id"]: r for r in view["riders"]}
     assert riders[109]["paid"] is True and riders[109]["paid_gel"] == 15
-    assert riders[100]["paid"] is False and riders[100]["cash_on_site"] is True
+    assert riders[100]["paid"] is True and riders[100]["cash"] is True
     assert riders[101]["paid"] is False and riders[101]["paid_gel"] == 0
     ids = [111, *range(100, 111)]
     preview = await service.preview_booking_order(
@@ -60,14 +68,7 @@ async def test_order_shows_paid_unpaid_and_cash_promises_and_rechecks_payments(d
     assert preview["paid_demoted"] == [109]
     assert "Already-paid bookings will move to the waitlist" in preview["details"]
     assert "@rider9 · waitlist · payment reported" in preview["details"]
-    await payments.record_admin_payment(
-        service_date=day,
-        telegram_user_id=101,
-        amount_gel=5,
-        method="transfer",
-        admin_user_id=1,
-        reference_key="partial-order-payment",
-    )
+    await _record_payment(cast(PaymentsDatabase, db), payments, day, 101, 5)
     refreshed = await service.booking_order_view(service_date=day, lift_time="8:30")
     partial = next(r for r in refreshed["riders"] if r["user_id"] == 101)
     assert partial["paid"] is False and partial["paid_gel"] == 5
@@ -83,7 +84,7 @@ async def test_order_shows_paid_unpaid_and_cash_promises_and_rechecks_payments(d
 
 async def test_guest_payment_does_not_mark_another_lift_paid(db: SharedDatabase):
     from tests.unit.test_payments_service import SharedDatabase as PaymentsDatabase
-    from tests.unit.test_payments_service import _setup
+    from tests.unit.test_payments_service import _record_payment, _setup
 
     from veloexpress_bot.db.models import GuestSeat
 
@@ -99,14 +100,7 @@ async def test_guest_payment_does_not_mark_another_lift_paid(db: SharedDatabase)
     await payments.adjust_guest_seats(
         service_date=day, telegram_user_id=100, lift_times=("8:30",), delta=1
     )
-    await payments.record_admin_payment(
-        service_date=day,
-        telegram_user_id=100,
-        amount_gel=30,
-        method="cash",
-        admin_user_id=1,
-        reference_key="guest-order-payment",
-    )
+    await _record_payment(cast(PaymentsDatabase, db), payments, day, 100, 30, "cash")
     first = await service.booking_order_view(service_date=day, lift_time="8:30")
     second = await service.booking_order_view(service_date=day, lift_time="10:00")
     first_rider = next(r for r in first["riders"] if r["user_id"] == 100)
@@ -119,7 +113,7 @@ async def test_guest_payment_does_not_mark_another_lift_paid(db: SharedDatabase)
 
 async def test_reserved_guest_still_uses_money_when_host_moves_to_waitlist(db: SharedDatabase):
     from tests.unit.test_payments_service import SharedDatabase as PaymentsDatabase
-    from tests.unit.test_payments_service import _setup
+    from tests.unit.test_payments_service import _record_payment, _setup
 
     service, payments, _client, poll_id, day = await _setup(cast(PaymentsDatabase, db))
     for uid in range(100, 106):
@@ -152,14 +146,7 @@ async def test_reserved_guest_still_uses_money_when_host_moves_to_waitlist(db: S
         expected_digest=preview["digest"],
         admin_user_id=1,
     )
-    await payments.record_admin_payment(
-        service_date=day,
-        telegram_user_id=100,
-        amount_gel=30,
-        method="transfer",
-        admin_user_id=1,
-        reference_key="guest-only-coverage",
-    )
+    await _record_payment(cast(PaymentsDatabase, db), payments, day, 100, 30)
     view = await service.booking_order_view(service_date=day, lift_time="13:30")
     assert next(r for r in view["riders"] if r["user_id"] == 100)["paid"] is False
 
@@ -168,7 +155,7 @@ async def test_order_does_not_reuse_money_spent_on_a_deadline_booking(db: Shared
     from datetime import UTC, datetime
 
     from tests.unit.test_payments_service import SharedDatabase as PaymentsDatabase
-    from tests.unit.test_payments_service import _setup
+    from tests.unit.test_payments_service import _record_payment, _setup
 
     service, payments, _client, poll_id, day = await _setup(cast(PaymentsDatabase, db))
     for uid in range(100, 106):
@@ -179,14 +166,7 @@ async def test_order_does_not_reuse_money_spent_on_a_deadline_booking(db: Shared
             full_name=f"Rider {uid}",
             option_ids=(0, 1),
         )
-    await payments.record_admin_payment(
-        service_date=day,
-        telegram_user_id=100,
-        amount_gel=15,
-        method="transfer",
-        admin_user_id=1,
-        reference_key="locked-order-payment",
-    )
+    await _record_payment(cast(PaymentsDatabase, db), payments, day, 100, 15)
     bookings = await payments.day_bookings(day)
     assert bookings is not None
     await payments._capture_roster(bookings, now=datetime.now(UTC), deadline_at=datetime.now(UTC))
@@ -209,13 +189,19 @@ async def test_bot_order_labels_distinguish_reported_payments_and_promised_cash(
     await payments.claim(
         service_date=day, telegram_user_id=101, username="rider1", full_name="Rider 1"
     )
-    await payments.promise_cash(service_date=day, telegram_user_id=100)
+    await payments.claim(
+        service_date=day,
+        telegram_user_id=100,
+        username="rider0",
+        full_name="Rider 0",
+        method="cash",
+    )
     view = await service.booking_order_view(service_date=day, lift_time="8:30")
     draft = render_booking_order(
         {"token": "test", "date": day.isoformat(), "time": "8:30", "view": view}
     )
     assert "@rider1 · payment reported" in draft.text
-    assert "@rider0 · cash on site promised" in draft.text
+    assert "@rider0 · cash on site" in draft.text
     assert "@rider2 · payment not reported" in draft.text
 
 

@@ -121,6 +121,14 @@ class PollAutoScheduler:
                 logger.exception("cancelled_day_reconciliation_failed")
                 failures.append("cancelled_day_reconciliation")
 
+            # Before the roster freeze, so a cash choice made under the old
+            # intention model counts at the deadline like any other report.
+            try:
+                await self._payments_service.convert_cash_promises()
+            except Exception:
+                logger.exception("cash_promise_conversion_failed")
+                failures.append("cash_promise_conversion")
+
             # Freeze first: everything below reads the day's seats, and after the
             # deadline the frozen roster is what those seats are.
             try:

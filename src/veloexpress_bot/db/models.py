@@ -420,7 +420,11 @@ class PaymentClaim(Base):
 
 
 class CashPromise(Base):
-    """A rider plans to pay on site; this is never a received-money fact."""
+    """Legacy: a cash choice stored before cash was reported like a transfer.
+
+    Nothing writes these any more. The scheduler converts each remaining row
+    into a cash report once (see ADR 0005) and deletes it.
+    """
 
     __tablename__ = "cash_promise"
 
