@@ -375,12 +375,12 @@ def create_app(
         bookings = await runtime.payments.day_bookings(service_date)
         riders = []
         if bookings:
-            for uid, (_username, label) in bookings.labels_by_user.items():
-                view = await runtime.payments.rider_day(
-                    service_date=service_date, telegram_user_id=uid
-                )
-                if view:
-                    riders.append({"user_id": uid, "label": label, **asdict(view)})
+            views = runtime.payments.rider_views(bookings)
+            riders = [
+                {"user_id": uid, "label": label, **asdict(views[uid])}
+                for uid, (_username, label) in bookings.labels_by_user.items()
+                if uid in views
+            ]
         return {
             "historical": False,
             **asdict(day),
@@ -417,10 +417,12 @@ def create_app(
     @app.get("/api/my-days")
     async def my_days(user: Annotated[dict[str, Any], Depends(identity)]):
         result = []
-        for day in await runtime.lifts.status_days():
-            view = await runtime.payments.rider_day(
-                service_date=day.service_date, telegram_user_id=user["uid"]
-            )
+        days = await runtime.lifts.status_days()
+        views = await runtime.payments.rider_days(
+            service_dates=(day.service_date for day in days), telegram_user_id=user["uid"]
+        )
+        for day in days:
+            view = views.get(day.service_date)
             result.append(
                 {
                     "service_date": day.service_date,

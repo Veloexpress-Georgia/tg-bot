@@ -1,5 +1,7 @@
 # Cash on site is an intention, not received money
 
+Superseded by [0005](0005-cash-on-site-is-reported-like-a-transfer.md).
+
 The rider's cash button means “I will pay Misho on site on the lift day”. Store
 that choice in a day-scoped `CashPromise`, separate from `PaymentClaim` and the
 immutable `PaymentEntry` ledger. Choosing or cancelling cash never records income,

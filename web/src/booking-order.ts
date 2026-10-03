@@ -1,12 +1,13 @@
 import type { BookingOrder, BookingOrderProposal } from './types';
-import { money } from './lib';
 
-export function orderPaymentLabel(rider: BookingOrder['riders'][number]): string {
-  if (rider.paid) return 'Оплата места отмечена';
-  const received = rider.paid_gel > 0 ? ` · за день отмечено ${money(rider.paid_gel)}` : '';
-  if (rider.cash_on_site) return `Наличные на месте · ещё не получены${received}`;
-  if (rider.waitlisted && rider.paid_gel > 0) return `За день отмечено ${money(rider.paid_gel)}`;
-  return `Оплата места не отмечена${received}`;
+/** How the rider's seat stands: paid by transfer or in cash, money ahead while waiting, or nothing. */
+export function seatPayment(rider: BookingOrder['riders'][number]): {
+  state: 'paid' | 'cash' | 'prepaid' | 'unpaid';
+  amount: number;
+} {
+  if (rider.paid) return { state: rider.cash ? 'cash' : 'paid', amount: rider.paid_gel };
+  if (rider.waitlisted && rider.paid_gel > 0) return { state: 'prepaid', amount: rider.paid_gel };
+  return { state: 'unpaid', amount: 0 };
 }
 
 export function moveBefore(ids: number[], source: number, target: number | null): number[] {
@@ -14,6 +15,14 @@ export function moveBefore(ids: number[], source: number, target: number | null)
     return ids;
   const next = ids.filter((id) => id !== source);
   next.splice(target === null ? next.length : next.indexOf(target), 0, source);
+  return next;
+}
+
+/** Moves a rider to a zero-based position in the list. */
+export function moveTo(ids: number[], source: number, index: number): number[] {
+  if (!ids.includes(source)) return ids;
+  const next = ids.filter((id) => id !== source);
+  next.splice(Math.max(0, Math.min(index, next.length)), 0, source);
   return next;
 }
 

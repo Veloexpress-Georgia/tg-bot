@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react';
-import { telegram } from './telegram';
+import { syncTelegramColors, telegram } from './telegram';
+
 export type ThemePreference = 'system' | 'light' | 'dark';
 export type ColorTheme = 'light' | 'dark';
+
 const STORAGE_KEY = 'veloexpress-theme';
+// Mirrors --bg and --surface in styles/tokens.css for Telegram's own chrome.
+const chrome = {
+  light: { background: '#f4f3ed', surface: '#fffefa' },
+  dark: { background: '#131915', surface: '#1c231e' },
+};
+
 export function readThemePreference(): ThemePreference {
   try {
     const value = localStorage.getItem(STORAGE_KEY);
@@ -11,32 +19,25 @@ export function readThemePreference(): ThemePreference {
     return 'system';
   }
 }
+
 export function resolveTheme(preference: ThemePreference): ColorTheme {
   if (preference !== 'system') return preference;
   const app = telegram();
-  if (app?.initData) return app.colorScheme;
+  if (app) return app.colorScheme;
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
+
 export function applyTheme(preference: ThemePreference) {
   const theme = resolveTheme(preference);
   document.documentElement.dataset.theme = theme;
   document.documentElement.style.colorScheme = theme;
   document
     .querySelector('meta[name=theme-color]')
-    ?.setAttribute('content', theme === 'dark' ? '#171d19' : '#f4f3ed');
-  syncTelegramColors(theme);
+    ?.setAttribute('content', chrome[theme].background);
+  syncTelegramColors(chrome[theme].background, chrome[theme].surface);
   return theme;
 }
-export function syncTelegramColors(theme: ColorTheme) {
-  const app = telegram();
-  if (!app?.initData) return;
-  const color = theme === 'dark' ? '#171d19' : '#f4f3ed';
-  app.setHeaderColor(color);
-  app.setBackgroundColor(color);
-  if (app.isVersionAtLeast?.('7.10')) {
-    app.setBottomBarColor?.(theme === 'dark' ? '#212a23' : '#fffefa');
-  }
-}
+
 export function useTheme() {
   const [preference, setPreference] = useState<ThemePreference>(readThemePreference);
   const [theme, setTheme] = useState<ColorTheme>(() => resolveTheme(preference));

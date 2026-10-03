@@ -33,7 +33,7 @@ def render_booking_order(payload: dict[str, Any]) -> BookingMonitorDraft:
         available = view["available_seats"]
         lines.append("Choose a rider." if mode == "list" else "Choose who they should go before.")
         lines.append("Offline and guest seats remain reserved.")
-        lines.append("✅ payment reported · 💵 cash on site promised · ▫️ not reported")
+        lines.append("✅ payment reported · 💵 cash on site · ▫️ not reported")
         if mode == "target":
             label = next(r["label"] for r in riders if r["user_id"] == source)
             lines.extend(["", f"Moving: {label}"])
@@ -49,7 +49,7 @@ def render_booking_order(payload: dict[str, Any]) -> BookingMonitorDraft:
             rows.append(
                 [
                     InlineKeyboardButton(
-                        text=f"{'✅' if rider['paid'] else '💵' if rider['cash_on_site'] else '▫️'} "
+                        text=f"{('💵' if rider['cash'] else '✅') if rider['paid'] else '▫️'} "
                         f"{index + 1}. {rider['label']}"[:80],
                         callback_data=f"ord:{action}:{token}:{rider['user_id']}",
                     )

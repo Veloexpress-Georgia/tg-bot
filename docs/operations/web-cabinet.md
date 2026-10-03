@@ -121,6 +121,40 @@ For an application rollback, leave 0032 in place so the audit survives. Older
 code ignores manual queue ranks: review the audit before rolling back if admins
 have already changed orders. Do not downgrade the database or delete its volume.
 
+## Cabinet restructure (2026-10-04)
+
+- Screens are pages with their own hash routes instead of dialogs stacked on a
+  page: `#home`, `#days`, `#day/<date>[/payments|/requests]`,
+  `#day/<date>/lift/<time>` and `#day/<date>/lift/<time>/order`. Old links
+  (`#overview`, `#departures`) still open. Telegram's header back button follows
+  the same hierarchy; a bottom sheet is used only for a short task such as a
+  confirmation, a payment record or settings.
+- Home is operational: today's day when there is one, otherwise the next
+  published day (or the latest past day still open for bookkeeping). It shows
+  every lift with seats, waitlist and minimum, reported money against seats on
+  running lifts, and requests or late cancellations that need a decision.
+  Finished-day statistics live under Analytics.
+- English is the default language; Russian can be chosen in More → Language and
+  is remembered on the device. Server messages (previews, results, reports)
+  remain English.
+- Styles are design tokens (`web/src/styles/tokens.css`, both themes) plus one
+  stylesheet per area, written phone first. Components never hard-code colours.
+  Tailwind is no longer part of the build.
+- Telegram's `ready()` is called before the first render. Requests time out
+  after 20 seconds with a retryable error instead of an endless spinner. A
+  reloaded Mini App whose launch data expired keeps a still-valid cabinet
+  session for the same Telegram user.
+- A web request shows its progress at the bottom of the screen. When the bot has
+  not picked a request up after 20 seconds, the cabinet says so and lets the
+  admin stop waiting; the request stays queued and appears in Activity.
+- The admin day API reads the day's bookings once for all riders instead of once
+  per rider.
+- The cabinet records no money. Payments are what riders report, by transfer or
+  as cash on site (ADR 0005); the payments tab shows who paid, by which method,
+  who still owes and whom to collect cash from. Statuses are an icon and a word
+  or two. Manual seats for riders who are not in Telegram stay on the lift page
+  and on the Telegram admin card.
+
 ## Day workspace and demand (2026-10-02)
 
 - The live admin day has attention, departures, payments and request tabs.

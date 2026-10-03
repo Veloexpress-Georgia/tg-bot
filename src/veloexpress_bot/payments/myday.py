@@ -31,8 +31,8 @@ MY_DAY_PARSE_MODE = "HTML"
 # baked into board buttons already posted in the group, so they outlive the
 # rename from "guest form" to "rider card".
 DEEP_LINK_PREFIX = "guests-"
-# The link carries its action: "I paid" reports a transfer; the cash link only
-# selects payment on site. Preserve these wire prefixes on posted keyboards.
+# The link carries its action: "I paid" reports a transfer and the cash link
+# reports cash paid on site. Preserve these wire prefixes on posted keyboards.
 PAID_LINK_PREFIX = "paid-"
 CASH_LINK_PREFIX = "cash-"
 
@@ -64,7 +64,6 @@ class RiderDayView:
     due_all_gel: int = 0
     paid_gel: int = 0
     payment_method: str | None = None
-    cash_on_site: bool = False
 
     @property
     def total_guests(self) -> int:
@@ -143,10 +142,6 @@ def render_rider_card(view: RiderCardView) -> MyDayDraft:
 
 def _money_lines(day: RiderDayView) -> list[str]:
     lines: list[str] = []
-    if day.cash_on_site:
-        lines.extend(
-            ("", "💵 Cash on site selected. Misho will confirm receipt after collecting it.")
-        )
     if day.waitlisted:
         # Said plainly, because the board only shows it as a name in a list and a
         # rider who cannot see a seat should not be guessing whether they have one.
@@ -233,14 +228,6 @@ def _keyboard(view: RiderCardView, day: RiderDayView) -> InlineKeyboardMarkup:
         rows.extend(
             buttons for row in seated if (buttons := _lift_row(row, encoded_date=encoded_date))
         )
-    elif day.cash_on_site:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text="↩️ Cancel cash choice", callback_data=f"guest:undo:{encoded_date}"
-                )
-            ]
-        )
     rows.append([InlineKeyboardButton(text="📊 My statistics", callback_data="rstats:30d:0")])
     rows.extend(_day_tabs(view))
     rows.extend(_season_row(view))
@@ -311,7 +298,7 @@ def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyb
                     callback_data=f"guest:pay:{encoded_date}",
                 ),
                 InlineKeyboardButton(
-                    text="💵 Cash on site ✓" if day.cash_on_site else CASH_BUTTON,
+                    text=f"{CASH_BUTTON} · {due_now}",
                     callback_data=f"guest:cash:{encoded_date}",
                 ),
             ]
@@ -325,26 +312,30 @@ def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyb
                     text=f"💸 I paid all · {due_all}",
                     callback_data=f"guest:payall:{encoded_date}",
                 ),
-            ]
-        )
-    if not due_now and due_all:
-        rows.append(
-            [
                 InlineKeyboardButton(
-                    text="💵 Cash on site ✓" if day.cash_on_site else CASH_BUTTON,
-                    callback_data=f"guest:cash:{encoded_date}",
-                )
+                    text=f"{CASH_BUTTON} all · {due_all}",
+                    callback_data=f"guest:cashall:{encoded_date}",
+                ),
             ]
         )
-    if day.cash_on_site:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text="↩️ Cancel cash choice", callback_data=f"guest:undo:{encoded_date}"
+    if day.paid_gel:
+        if day.paid_gel >= day.due_now_gel:
+            if day.payment_method == "cash":
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text="💸 Correct to transfer", callback_data=f"guest:pay:{encoded_date}"
+                        )
+                    ]
                 )
-            ]
-        )
-    elif day.paid_gel:
+            elif day.payment_method == "transfer":
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text="💵 Correct to cash", callback_data=f"guest:cash:{encoded_date}"
+                        )
+                    ]
+                )
         rows.append(
             [InlineKeyboardButton(text="↩️ Undo", callback_data=f"guest:undo:{encoded_date}")]
         )

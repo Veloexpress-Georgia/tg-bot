@@ -1,0 +1,29 @@
+.report-list {
+  display: grid;
+  gap: var(--s-3);
+  margin-top: var(--s-4);
+}
+.report-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin-bottom: var(--s-3);
+}
+.audit-where {
+  font-weight: 500;
+  color: var(--ink-2);
+}
+.audit-meta {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+}
+.audit-list .row {
+  align-items: flex-start;
+}
+.audit-list .row-trail {
+  padding-top: 2px;
+}

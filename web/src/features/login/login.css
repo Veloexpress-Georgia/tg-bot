@@ -1,0 +1,40 @@
+.login {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  padding: calc(24px + var(--tg-safe-top)) var(--gutter) calc(24px + var(--safe-bottom));
+}
+.login-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  width: 100%;
+  max-width: 400px;
+}
+.login-card .brand {
+  margin-bottom: var(--s-4);
+}
+.login-card h1 {
+  font-size: var(--fs-3xl);
+  letter-spacing: -0.05em;
+}
+.login-text {
+  color: var(--ink-2);
+}
+.login-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.login-demo {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin-top: var(--s-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--brand);
+}

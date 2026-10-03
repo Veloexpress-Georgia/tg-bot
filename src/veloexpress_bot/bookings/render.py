@@ -35,7 +35,6 @@ class BookingLiftStatus:
     cancelled: bool = False
     running_locked: bool = False
     covered_count: int = 0
-    cash_on_site_count: int = 0
     deadline_closed: bool = False
 
     @property
@@ -68,7 +67,6 @@ class LiftRider:
     cash: bool = False
     guests: int = 0
     waitlisted: bool = False
-    cash_on_site: bool = False
     paid_gel: int = 0
 
 
@@ -119,7 +117,6 @@ class BookingMonitorDay:
     past: bool = False
     unpaid_riders: tuple[MonitorRider, ...] = ()
     cash_pending: tuple[MonitorRider, ...] = ()
-    cash_promised: tuple[MonitorRider, ...] = ()
     guests: tuple[MonitorGuest, ...] = ()
     waitlist: tuple[MonitorWaitlistRider, ...] = ()
     late_exits: tuple[MonitorLateExit, ...] = ()
@@ -973,8 +970,6 @@ def _lift_rider_line(rider: LiftRider, *, running: bool = True) -> str:
         marker = "💵"
     elif rider.paid:
         marker = "✅"
-    elif rider.cash_on_site:
-        marker = "💵 on site ·"
     else:
         marker = "🔴"
     guests = f" · +{rider.guests} guest" if rider.guests == 1 else ""
@@ -995,13 +990,9 @@ def _attention_lines(day: BookingMonitorDay) -> tuple[str, ...]:
     if day.unpaid_riders:
         lines.append(_labelled("🔴 No payment reported: ", _money_rider_items(day.unpaid_riders)))
     if day.cash_pending:
-        # The rider says the cash has changed hands and the ledger already counts
-        # it as received. "Cash to collect" called that a debt.
-        lines.append(_labelled("💵 Reported in cash: ", _money_rider_items(day.cash_pending)))
-    if day.cash_promised:
-        lines.append(
-            _labelled("💵 Will pay on site: ", (rider.label for rider in day.cash_promised))
-        )
+        # Reported like a transfer and already counted for the lift; the money is
+        # handed over on site, so this is who to collect from, not a debt.
+        lines.append(_labelled("💵 Cash on site: ", _money_rider_items(day.cash_pending)))
     if day.waitlist:
         lines.append(
             _labelled(

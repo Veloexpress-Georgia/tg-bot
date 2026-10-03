@@ -1,0 +1,108 @@
+/*
+ * Design tokens. Every colour, radius and size used by the cabinet lives here;
+ * components never hard-code a colour, so both themes stay in one place.
+ */
+:root {
+  color-scheme: light;
+  --bg: #f4f3ed;
+  --surface: #fffefa;
+  --surface-2: #eceee3;
+  --surface-3: #e2e5d7;
+  --ink: #1f281f;
+  --ink-2: #5c6655;
+  --ink-3: #8b9383;
+  --line: #e1e3d7;
+  --line-strong: #cdd2bf;
+  --accent: #d6ec78;
+  --accent-ink: #1c2616;
+  --accent-ink-2: #3a4a26;
+  --brand: #4a6522;
+  --ok: #3d5c1c;
+  --ok-bg: #e6efcf;
+  --warn: #7a5216;
+  --warn-bg: #fbeec9;
+  --danger: #a33d31;
+  --danger-bg: #f9e5df;
+  --bar: #a9c94a;
+  --bar-track: #e5e8da;
+  --overlay: #141c1773;
+  --shadow-sm: 0 1px 2px #1a24170f;
+  --shadow-lg: 0 18px 50px #1a24172e;
+  --chart-stroke: #739224;
+  --chart-fill: #b9d552;
+  --chart-dash: #9ca395;
+  --chart-cash: #334638;
+  --chart-unknown: #d0d1c6;
+
+  --r-xs: 6px;
+  --r-sm: 9px;
+  --r-md: 13px;
+  --r-lg: 18px;
+  --r-xl: 24px;
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-7: 32px;
+  --s-8: 40px;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 15px;
+  --fs-lg: 17px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+  --fs-3xl: 34px;
+  --font: 'Manrope', system-ui, -apple-system, sans-serif;
+  --font-display: 'Unbounded', var(--font);
+  --gutter: 16px;
+  --content: 760px;
+  --content-wide: 1120px;
+  --sidebar: 232px;
+  --topbar: 60px;
+  --nav: 62px;
+  --tg-safe-top: 0px;
+  --tg-safe-bottom: 0px;
+  --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--tg-safe-bottom));
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #131915;
+  --surface: #1c231e;
+  --surface-2: #252e27;
+  --surface-3: #2e3930;
+  --ink: #edf2e6;
+  --ink-2: #a3af9e;
+  --ink-3: #737f6e;
+  --line: #2c362e;
+  --line-strong: #3d4a3e;
+  --accent: #d6ec78;
+  --accent-ink: #1c2616;
+  --accent-ink-2: #3a4a26;
+  --brand: #c3db8a;
+  --ok: #b7d877;
+  --ok-bg: #2b3922;
+  --warn: #f0cf8a;
+  --warn-bg: #3f331c;
+  --danger: #ffb4a6;
+  --danger-bg: #46271f;
+  --bar: #b9d552;
+  --bar-track: #2e3930;
+  --overlay: #050806b3;
+  --shadow-sm: 0 1px 2px #00000040;
+  --shadow-lg: 0 18px 60px #00000080;
+  --chart-stroke: #bbd76d;
+  --chart-fill: #b9d552;
+  --chart-dash: #7d8a78;
+  --chart-cash: #8eb9a5;
+  --chart-unknown: #627962;
+}
+
+@media (min-width: 768px) {
+  :root {
+    --gutter: 28px;
+    --topbar: 68px;
+  }
+}

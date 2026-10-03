@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { moveBefore, orderPaymentLabel, proposeOrder } from './booking-order';
+import { moveBefore, moveTo, proposeOrder, seatPayment } from './booking-order';
 import type { BookingOrder } from './types';
 
 describe('booking order', () => {
@@ -7,6 +7,14 @@ describe('booking order', () => {
     expect(moveBefore([1, 2, 3, 4], 4, 2)).toEqual([1, 4, 2, 3]);
     expect(moveBefore([1, 2, 3], 1, null)).toEqual([2, 3, 1]);
     expect(moveBefore([1, 2, 3], 2, 2)).toEqual([1, 2, 3]);
+  });
+  it('moves across the seat boundary by position', () => {
+    // Seats are the first three: a waiting rider takes the last seat, a seated one leads the line.
+    expect(moveTo([1, 2, 3, 4, 5], 5, 2)).toEqual([1, 2, 5, 3, 4]);
+    expect(moveTo([1, 2, 3, 4, 5], 2, 3)).toEqual([1, 3, 4, 2, 5]);
+    expect(moveTo([1, 2, 3], 3, 0)).toEqual([3, 1, 2]);
+    expect(moveTo([1, 2, 3], 1, 99)).toEqual([2, 3, 1]);
+    expect(moveTo([1, 2, 3], 9, 0)).toEqual([1, 2, 3]);
   });
   it('counts reserved seats and exposes both sides of a seat change', () => {
     const order: BookingOrder = {
@@ -20,7 +28,7 @@ describe('booking order', () => {
         waitlisted: i > 0,
         paid: i === 0,
         paid_gel: i === 0 ? 20 : 0,
-        cash_on_site: i === 1,
+        cash: false,
       })),
     };
     const result = proposeOrder(order, [3, 1, 2]);
@@ -29,21 +37,23 @@ describe('booking order', () => {
     expect(result.paid_demoted).toEqual([1]);
     expect(proposeOrder(order, [1, 3, 2]).promoted).toEqual([]);
   });
-  it('keeps promises and money for other bookings distinct from paid seats', () => {
+  it('reads a seat as paid, paid in cash, prepaid while waiting, or unpaid', () => {
     const rider = {
       user_id: 1,
       label: 'Rider',
       waitlisted: false,
       paid: false,
       paid_gel: 0,
-      cash_on_site: false,
+      cash: false,
     };
-    expect(orderPaymentLabel(rider)).toBe('Оплата места не отмечена');
-    expect(orderPaymentLabel({ ...rider, paid: true, paid_gel: 20 })).toBe('Оплата места отмечена');
-    expect(orderPaymentLabel({ ...rider, cash_on_site: true })).toContain('ещё не получены');
-    expect(orderPaymentLabel({ ...rider, paid_gel: 20 })).toContain('Оплата места не отмечена');
-    expect(orderPaymentLabel({ ...rider, waitlisted: true, paid_gel: 20 })).toContain(
-      'За день отмечено',
-    );
+    expect(seatPayment(rider).state).toBe('unpaid');
+    expect(seatPayment({ ...rider, paid: true, paid_gel: 20 }).state).toBe('paid');
+    expect(seatPayment({ ...rider, paid: true, paid_gel: 20, cash: true }).state).toBe('cash');
+    // Money for another lift does not pay for this seat.
+    expect(seatPayment({ ...rider, paid_gel: 20 }).state).toBe('unpaid');
+    expect(seatPayment({ ...rider, waitlisted: true, paid_gel: 20 })).toEqual({
+      state: 'prepaid',
+      amount: 20,
+    });
   });
 });

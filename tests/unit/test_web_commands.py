@@ -100,7 +100,7 @@ def test_command_validation_rejects_invalid_operations() -> None:
             CommandInput.model_validate({"request_id": uuid4(), **fields})
 
 
-async def test_worker_uses_shared_payment_logic_once_and_protects_ledger() -> None:
+async def test_worker_reports_cash_once_through_the_shared_payment_logic() -> None:
     from sqlalchemy import select
     from tests.unit.test_payments_service import _fill, _setup
 
@@ -110,41 +110,25 @@ async def test_worker_uses_shared_payment_logic_once_and_protects_ledger() -> No
 
     db = SharedDatabase()
     await db.create()
-    lifts, payments, client, poll_id, day = await _setup(db)
+    lifts, _payments, client, poll_id, day = await _setup(db)
     await _fill(lifts, poll_id, 0)
     config = settings()
     runtime = build_runtime(settings=config, session_factory=db.session, telegram_client=client)
     queue = CommandQueue(settings=config, session_factory=db.session)
-    spec = CommandInput(
-        request_id=uuid4(),
-        action="payment",
-        service_date=day,
-        user_id=100,
-        amount_gel=15,
-        method="cash",
-    )
-    command = await queue.enqueue(spec, actor_user_id=1)
+    spec = CommandInput(request_id=uuid4(), action="claim_payment", service_date=day, method="cash")
+    command = await queue.enqueue(spec, actor_user_id=100, identity={"name": "Rider 100"})
     assert await queue.process_one(Operations(settings=config, runtime=runtime))
     assert not await queue.process_one(Operations(settings=config, runtime=runtime))
-    result = await queue.get(command["id"], actor_user_id=1)
+    result = await queue.get(command["id"], actor_user_id=100)
     assert result is not None and result["status"] == "complete"
+    # A transport retry returns the original request instead of running it again.
+    assert (await queue.existing(spec, actor_user_id=100) or {}).get("id") == command["id"]
+    assert not await queue.process_one(Operations(settings=config, runtime=runtime))
     async with db.session() as session:
         entries = list(await session.scalars(select(PaymentEntry)))
         claim = await session.scalar(select(PaymentClaim))
-    assert len(entries) == 1 and entries[0].amount_gel == 15
-    assert claim is not None and claim.verified_by_user_id == 1
-    assert "Ask him" in await payments.undo(service_date=day, telegram_user_id=100)
-    # A retry with the same reference also remains safe if called outside the queue.
-    await runtime.payments.record_admin_payment(
-        service_date=day,
-        telegram_user_id=100,
-        amount_gel=15,
-        method="cash",
-        admin_user_id=1,
-        reference_key=f"web:{spec.request_id}",
-    )
-    async with db.session() as session:
-        assert len(list(await session.scalars(select(PaymentEntry)))) == 1
+    assert [(entry.amount_gel, entry.method) for entry in entries] == [(15, "cash")]
+    assert claim is not None and claim.method == "cash" and claim.verified_by_user_id is None
     await db.dispose()
 
 

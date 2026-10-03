@@ -19,8 +19,8 @@ def bank_details_text() -> str:
             CASH_ON_SITE_TEXT,
             f"Choose {CASH_BUTTON} if you will pay on site.",
             CASH_REPORT_TEXT,
-            "Paid for another rider? They tap I paid for their day, or ask Misho to record "
-            "the actual amount. Do not also report it as your payment.",
+            "Paid for another rider? They report it for their day. "
+            "Do not also report it as your payment.",
         )
     )
     return "\n".join(lines)

@@ -1,4 +1,4 @@
-"""Cash on site must not inherit the previous-evening transfer deadline."""
+"""Cash is paid on site: it never inherits the previous-evening transfer deadline."""
 
 from datetime import date
 
@@ -62,7 +62,7 @@ def test_payment_messages_separate_cash_on_site_from_transfer_deadline(text: str
     assert "book and pay by" not in text.lower()
 
 
-def test_cash_choice_is_a_promise_and_misho_records_actual_receipt() -> None:
+def test_cash_counts_toward_the_lift_like_a_transfer() -> None:
     text = bank_details_text().lower()
-    assert "promise" in text
-    assert "misho records cash after collecting" in text
+    assert "counts toward the lift like a transfer" in text
+    assert "misho records" not in text
