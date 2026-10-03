@@ -64,6 +64,7 @@ class SentRecord:
 class FakeTelegramClient:
     def __init__(self) -> None:
         self.sent: list[SentRecord] = []
+        self.card_ids: list[int] = []
         self.edits: list[tuple[int, str]] = []
         self.markups: dict[int, InlineKeyboardMarkup | None] = {}
         self.deleted: list[int] = []
@@ -106,12 +107,14 @@ class FakeTelegramClient:
         reply_markup: InlineKeyboardMarkup | None = None,
     ) -> SentTextMessage:
         assert image.startswith(b"\x89PNG")
-        return await self.send_text(
+        message = await self.send_text(
             chat_id=chat_id,
             message_thread_id=message_thread_id,
             text=caption,
             reply_markup=reply_markup,
         )
+        self.card_ids.append(message.message_id)
+        return message
 
     async def send_poll(
         self,
@@ -701,7 +704,7 @@ async def test_booking_status_keeps_payment_in_topic(db: SharedDatabase) -> None
     await polls.evaluate_lift_signals(now=midday - timedelta(days=1))
     assert len(client.sent) == before
     assert not any(r.thread_id == LIFT_THREAD and "Payment open:" in r.text for r in client.sent)
-    status = next(r for r in client.sent if "Availability" in r.text)
+    status = next(r for r in client.sent if r.message_id in client.card_ids)
     markup = client.markups[status.message_id]
     assert markup is not None
     assert markup.inline_keyboard[0][0].callback_data == f"pay:paid:{saturday:%Y%m%d}"
@@ -2565,12 +2568,12 @@ async def test_past_payment_boards_lose_buttons_and_pins_once(db: SharedDatabase
     assert board.markup is not None
     assert client.cleared == []
     await payments.sync_boards(now=datetime(2026, 7, 18, 20, tzinfo=UTC))
-    availability_id = next(r.message_id for r in client.sent if "Availability" in r.text)
+    availability_id = next(r.message_id for r in client.sent if r.message_id in client.card_ids)
     assert client.cleared == [board.message_id, availability_id]
     assert client.unpinned == [board.message_id]
     assert client.deleted == []
     await payments.sync_boards(now=datetime(2026, 8, 1, tzinfo=UTC))
-    availability_id = next(r.message_id for r in client.sent if "Availability" in r.text)
+    availability_id = next(r.message_id for r in client.sent if r.message_id in client.card_ids)
     assert client.cleared == [board.message_id, availability_id]
     assert len(client.payments_sends()) == 1
 
@@ -2652,7 +2655,7 @@ async def test_thursday_opening_updates_booking_status_without_new_lift_cards(
     await _fill(polls, poll_id, 1, first_user_id=200)
     await polls.refresh_booking_statuses(now=thursday + timedelta(minutes=10))
     assert len(client.sent) == before
-    status = next(r for r in client.sent if "Availability" in r.text)
+    status = next(r for r in client.sent if r.message_id in client.card_ids)
     assert client.markups[status.message_id] is not None
 
 
@@ -2673,7 +2676,9 @@ async def test_weekend_cards_and_reminders_have_separate_deadlines(db: SharedDat
     thursday = thursday.replace(hour=15)
     await payments.sync_boards(now=thursday)
     await polls.evaluate_lift_signals(now=thursday)
-    cards = [r for r in client.sent if r.thread_id == LIFT_THREAD and "Availability" in r.text]
+    cards = [
+        r for r in client.sent if r.thread_id == LIFT_THREAD and r.message_id in client.card_ids
+    ]
     assert len(cards) == 2
     assert not any(r.thread_id == LIFT_THREAD and "Payment open:" in r.text for r in client.sent)
     assert not any("⏳ Tomorrow" in r.text for r in client.sent)
@@ -2739,7 +2744,7 @@ async def test_payment_buttons_are_under_existing_booking_status(db: SharedDatab
     await _fill(polls, poll_id, 0)
     await payments.sync_boards()
     await polls._refresh_availability(poll_id)
-    board = next(r for r in client.sent if "Availability" in r.text)
+    board = next(r for r in client.sent if r.message_id in client.card_ids)
     markup = client.markups[board.message_id]
     assert markup is not None
     assert [[b.text for b in row] for row in markup.inline_keyboard] == [

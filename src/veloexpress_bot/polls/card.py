@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import re
 from datetime import date
-from html import unescape
 from io import BytesIO
 from pathlib import Path
 
@@ -105,8 +103,6 @@ def _notes(lift: LiftAvailability) -> list[str]:
         names = [f"{party.label} +{party.count}" for party in lift.guests if party.count]
         if names:
             notes.append("GUESTS  ·  " + ", ".join(names))
-    if lift.waitlist:
-        notes.append("WAITING  ·  " + ", ".join(rider.label for rider in lift.waitlist))
     return notes
 
 
@@ -133,19 +129,6 @@ def _seat_segments(lift: LiftAvailability) -> tuple[tuple[int, str], ...]:
     poll_votes = max(lift.seat_count - lift.off_poll_count, 0)
     votes = min(poll_votes, capacity - offline - guests)
     return ((offline, BLUE), (guests, PURPLE), (votes, GREEN))
-
-
-def availability_caption(text: str) -> str:
-    """Keep a readable Telegram caption, including clickable names when it fits."""
-    if len(unescape(re.sub(r"<[^>]+>", "", text))) <= 1024:
-        return text
-    lines: list[str] = []
-    for line in text.splitlines():
-        candidate = "\n".join((*lines, line, "… More details in the image."))
-        if len(unescape(re.sub(r"<[^>]+>", "", candidate))) > 1024:
-            break
-        lines.append(line)
-    return "\n".join((*lines, "… More details in the image."))
 
 
 def _draw_legend(

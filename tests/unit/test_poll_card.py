@@ -10,10 +10,14 @@ from veloexpress_bot.polls.card import (
     _seat_segments,
     _short_summary,
     _state,
-    availability_caption,
     render_availability_card,
 )
-from veloexpress_bot.polls.render import GuestParty, LiftAvailability, WaitlistRider
+from veloexpress_bot.polls.render import (
+    GuestParty,
+    LiftAvailability,
+    WaitlistRider,
+    render_availability_caption,
+)
 
 
 def test_availability_card_renders_dynamic_lifts_as_a_telegram_sized_png() -> None:
@@ -118,11 +122,57 @@ def test_below_minimum_summary_counts_sources_in_plain_english() -> None:
     )
 
 
-def test_caption_preserves_clickable_names_when_possible_and_caps_long_boards() -> None:
-    short = '🚐 Availability\n<a href="tg://user?id=1">Иван</a>'
-    assert availability_caption(short) == short
+def test_caption_only_names_active_queues_with_clickable_escaped_mentions() -> None:
+    lifts = (
+        LiftAvailability(time="8:30", seat_count=2),
+        LiftAvailability(
+            time="11:45",
+            seat_count=12,
+            waitlist=(
+                WaitlistRider(2, "@rider"),
+                WaitlistRider(3, "Nika & <friend>"),
+            ),
+        ),
+        LiftAvailability(time="13:30", seat_count=11, waitlist=(WaitlistRider(4, "Иван"),)),
+        LiftAvailability(
+            time="15:30", seat_count=11, cancelled=True, waitlist=(WaitlistRider(5, "@cancelled"),)
+        ),
+    )
+    assert render_availability_caption(lifts) == (
+        '⏳ 11:45: <a href="tg://user?id=2">@rider</a> '
+        '<a href="tg://user?id=3">Nika &amp; &lt;friend&gt;</a>\n'
+        '⏳ 13:30: <a href="tg://user?id=4">Иван</a>'
+    )
+    assert render_availability_caption(()) == ""
+    assert render_availability_caption((lifts[0], lifts[3])) == ""
 
-    long = "🚐 Availability\n" + "\n".join(f"{index}: " + "Rider " * 30 for index in range(30))
-    caption = availability_caption(long)
-    assert len(caption) <= 1024
-    assert caption.endswith("… More details in the image.")
+
+def test_long_queue_caption_keeps_complete_mentions_within_telegram_limit() -> None:
+    import re
+    from html import unescape
+
+    lift = LiftAvailability(
+        time="11:45",
+        seat_count=50,
+        waitlist=tuple(
+            WaitlistRider(index, "🚲" * 20 + f" & rider {index}") for index in range(40)
+        ),
+    )
+    caption = render_availability_caption((lift,))
+    visible = unescape(re.sub(r"<[^>]+>", "", caption))
+    assert len(visible.encode("utf-16-le")) // 2 <= 1024
+    assert caption.startswith('⏳ 11:45: <a href="tg://user?id=0">')
+    assert caption.count("<a href=") == caption.count("</a>")
+    assert caption.endswith("… More riders in the queue.")
+    assert "image" not in caption
+
+
+def test_waitlist_names_do_not_increase_or_change_the_image() -> None:
+    with_names = LiftAvailability(
+        time="11:45", seat_count=12, waitlist=(WaitlistRider(2, "@rider"), WaitlistRider(3, "Nika"))
+    )
+    without_names = LiftAvailability(time="11:45", seat_count=12)
+    assert render_availability_card(date(2026, 10, 4), (with_names,)) == (
+        render_availability_card(date(2026, 10, 4), (without_names,))
+    )
+    assert _state(with_names, deadline_passed=False)[0] == "WAITLIST +2"

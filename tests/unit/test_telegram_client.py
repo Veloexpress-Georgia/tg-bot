@@ -4,7 +4,12 @@ import pytest
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.methods import EditMessageMedia, SendPoll, StopPoll
-from aiogram.types import BufferedInputFile, InputMediaPhoto
+from aiogram.types import (
+    BufferedInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+)
 
 from veloexpress_bot.polls.render import PollDraft
 from veloexpress_bot.telegram.client import AiogramTelegramClient
@@ -149,24 +154,34 @@ async def test_edit_text_updates_existing_telegram_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_card_is_sent_with_caption_and_can_replace_a_text_message() -> None:
+@pytest.mark.parametrize("caption", ["Availability", ""])
+async def test_card_is_sent_with_caption_and_can_replace_a_text_message(caption: str) -> None:
     bot = CardBot()
     client = AiogramTelegramClient(cast(Bot, bot))
 
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="I paid", callback_data="pay:paid:20261004")]]
+    )
     sent = await client.send_availability_card(
-        chat_id=-100123, message_thread_id=7, image=b"png", caption="Availability"
+        chat_id=-100123,
+        message_thread_id=7,
+        image=b"png",
+        caption=caption,
+        reply_markup=markup,
     )
     assert sent.message_id == 71
     assert isinstance(bot.kwargs["photo"], BufferedInputFile)
-    assert bot.kwargs["caption"] == "Availability"
+    assert bot.kwargs["caption"] == caption
+    assert bot.kwargs["reply_markup"] == markup
     assert bot.kwargs["parse_mode"] == "HTML"
 
     assert await client.edit_availability_card(
-        chat_id=-100123, message_id=71, image=b"new png", caption="Updated"
+        chat_id=-100123, message_id=71, image=b"new png", caption=caption, reply_markup=markup
     )
     media = cast(InputMediaPhoto, bot.kwargs["media"])
     assert isinstance(media.media, BufferedInputFile)
-    assert media.caption == "Updated"
+    assert media.caption == caption
+    assert bot.kwargs["reply_markup"] == markup
 
 
 @pytest.mark.parametrize(

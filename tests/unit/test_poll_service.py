@@ -371,7 +371,7 @@ async def test_admin_booking_monitor_controls_manual_counts_and_tracks_votes(
     monitor_updates = [
         text for message_id, text in client.edited_texts if message_id == monitor_message_id
     ]
-    assert "8:30 — <b>1/10</b> · needs 4 more" in availability_updates[-1]
+    assert availability_updates[-1] == ""
     # One manual seat does not make a lift: it is named, not given a line.
     assert "💤 Not filled: 8:30" in monitor_updates[-1]
 
@@ -609,7 +609,7 @@ async def test_cancel_lift_marks_board_and_tags_voters(db: SharedDatabase) -> No
         for message_id, text in client.edited_texts
         if message_id == poll.availability_message_id
     ]
-    assert "8:30 — ❌ cancelled" in availability_updates[-1]
+    assert availability_updates[-1] == ""
 
     detail = await service.lift_detail(service_date=saturday, lift_time="8:30")
     assert detail is not None
@@ -1299,7 +1299,7 @@ async def test_poll_service_can_send_notice_before_poll_and_pin_poll(
         '📍 <a href="https://maps.app.goo.gl/nSNiv7GnNiQt5J64A">Opposite Vake Park</a>'
     )
     assert "Bank transfer once your lift reaches 5 booked seats" in client.sent_texts[0]
-    assert "🚐 Availability · Sat, 16 May" in client.sent_texts[1]
+    assert client.sent_texts[1] == ""
     assert client.sent[0].question == "🚐 Saturday · May 16"
 
     pinned_result = await service.pin_created_poll(result)
@@ -1682,10 +1682,7 @@ async def test_poll_service_updates_daily_availability_after_vote_changes(
 
     assert client.edited_texts[-1][0] == result.availability_message_id
     status = client.edited_texts[-1][1]
-    assert "8:30 — <b>2/10</b> · needs 3 more" in status
-    assert "10:00 — <b>1/10</b> · needs 4 more" in status
-    assert "15:30" not in status
-    assert "Check answers" not in status
+    assert status == ""
 
 
 @pytest.mark.asyncio
@@ -1719,7 +1716,7 @@ async def test_poll_service_recovers_manually_deleted_availability_on_next_vote(
 
     assert availability_message is not None
     assert availability_message.telegram_message_id == 44
-    assert "8:30 — <b>1/10</b> · needs 4 more" in client.sent_texts[-1]
+    assert client.sent_texts[-1] == ""
 
 
 @pytest.mark.asyncio
@@ -1834,7 +1831,7 @@ async def test_poll_service_clears_vote_selection_with_empty_answer(
 
     assert "@stas" not in report
     assert "No tracked rider votes were found." in report
-    assert "8:30 — <b>0/10</b> · needs 5 more" in client.edited_texts[-1][1]
+    assert client.edited_texts[-1][1] == ""
     assert any(
         "poll_vote_event action=retracted" in record.getMessage()
         and record.__dict__["telegram_user_id"] == 10
@@ -2914,3 +2911,38 @@ async def test_a_screen_the_admin_opened_is_not_overwritten_by_a_refresh(
     await service.record_screen(admin_user_id=1, screen=AdminScreen(name="day"))
     await service._refresh_booking_monitors()
     assert len(client.edited_texts) > before[1]
+
+
+@pytest.mark.asyncio
+async def test_queue_caption_is_cleared_on_the_same_card_when_last_waiting_vote_leaves(
+    db: SharedDatabase,
+) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    poll = await service.create_poll(
+        PollSetup(service_date=date(2026, 5, 16), created_by_user_id=1)
+    )
+    for uid in range(100, 111):
+        await service.track_poll_answer(
+            poll_id=poll.poll_id or "",
+            telegram_user_id=uid,
+            username=f"rider{uid}",
+            full_name=f"Rider {uid}",
+            option_ids=(0,),
+        )
+    assert client.edited_texts[-1] == (
+        poll.availability_message_id,
+        '⏳ 8:30: <a href="tg://user?id=110">@rider110</a>',
+    )
+    sends = len(client.sent_texts)
+    await service.track_poll_answer(
+        poll_id=poll.poll_id or "",
+        telegram_user_id=110,
+        username="rider110",
+        full_name="Rider 110",
+        option_ids=(),
+    )
+    assert client.edited_texts[-1] == (poll.availability_message_id, "")
+    assert len(client.sent_texts) == sends

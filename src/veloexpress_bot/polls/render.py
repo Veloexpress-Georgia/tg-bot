@@ -154,6 +154,48 @@ def render_poll_notice(first_lift_location: StartLocation, *, terms: PaymentTerm
     return "\n".join((route_notice, payment_notice, f"💵 {CASH_ON_SITE_TEXT}", " · ".join(links)))
 
 
+def render_availability_caption(lifts: tuple[LiftAvailability, ...]) -> str:
+    """Only clickable queue mentions; counts and states belong to the photo.
+
+    Keep whole mention entities within Telegram's 1024-character caption limit.
+    Count visible UTF-16 units conservatively so emoji-heavy names also fit.
+    """
+    queues = [(lift.time, lift.waitlist) for lift in lifts if not lift.cancelled and lift.waitlist]
+    lines = [
+        f"⏳ {time}: {' '.join(_waitlist_mention(rider) for rider in riders)}"
+        for time, riders in queues
+    ]
+    visible_size = sum(
+        len(f"⏳ {time}: ".encode("utf-16-le")) // 2
+        + sum(len(rider.label.encode("utf-16-le")) // 2 for rider in riders)
+        + len(riders)
+        - 1
+        for time, riders in queues
+    ) + max(len(lines) - 1, 0)
+    if visible_size <= 1024:
+        return "\n".join(lines)
+
+    overflow = "… More riders in the queue."
+    budget = 1024 - len(overflow) - 1
+    lines = []
+    used = 0
+    for time, riders in queues:
+        prefix = f"⏳ {time}: "
+        mentions: list[str] = []
+        prefix_size = len(prefix.encode("utf-16-le")) // 2 + bool(lines)
+        for rider in riders:
+            size = len(rider.label.encode("utf-16-le")) // 2
+            size += 1 if mentions else prefix_size
+            if used + size > budget:
+                if mentions:
+                    lines.append(prefix + " ".join(mentions))
+                return "\n".join((*lines, overflow))
+            mentions.append(_waitlist_mention(rider))
+            used += size
+        lines.append(prefix + " ".join(mentions))
+    return "\n".join(lines)
+
+
 def render_availability_status(
     service_date: date,
     lifts: tuple[LiftAvailability, ...],

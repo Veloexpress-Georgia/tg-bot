@@ -78,7 +78,7 @@ from veloexpress_bot.payments.coverage import CoverageTarget, reconcile_coverage
 # rather than moved into `deeplinks`, which is about t.me/c group links.
 from veloexpress_bot.payments.myday import deep_link
 from veloexpress_bot.polls.autoschedule import render_schedule_summary, state_from_row
-from veloexpress_bot.polls.card import availability_caption, render_availability_card
+from veloexpress_bot.polls.card import render_availability_card
 from veloexpress_bot.polls.defaults import (
     DEFAULT_CANCELLED_LIFT_TIMES,
     DEFAULT_LIFTS,
@@ -107,7 +107,7 @@ from veloexpress_bot.polls.render import (
     PollDraft,
     PollRenderInput,
     WaitlistRider,
-    render_availability_status,
+    render_availability_caption,
     render_poll,
     render_poll_notice,
 )
@@ -2182,11 +2182,7 @@ class PollPostingService:
                 deadline_passed = datetime.now(UTC).astimezone(self._zone) > booking_deadline_at(
                     setup.service_date, terms.deadline_time, zone=self._zone
                 )
-                initial_availability = availability_caption(
-                    render_availability_status(
-                        setup.service_date, initial_lifts, deadline_passed=deadline_passed
-                    )
-                )
+                initial_availability = render_availability_caption(initial_lifts)
                 initial_card = render_availability_card(
                     setup.service_date,
                     initial_lifts,
@@ -2618,11 +2614,7 @@ class PollPostingService:
             deadline_passed = datetime.now(UTC).astimezone(self._zone) > booking_deadline_at(
                 batch.service_date, deadline_time, zone=self._zone
             )
-            text = availability_caption(
-                render_availability_status(
-                    batch.service_date, availability, deadline_passed=deadline_passed
-                )
-            )
+            text = render_availability_caption(availability)
             card = render_availability_card(
                 batch.service_date,
                 availability,
