@@ -72,7 +72,7 @@ from veloexpress_bot.polls.liftsignals import (
     lift_minutes,
     render_seat_promotions,
 )
-from veloexpress_bot.polls.seating import SeatCandidate, allocate_seats
+from veloexpress_bot.polls.seating import SeatCandidate, allocate_seats, queue_rank
 from veloexpress_core.lifts import (
     SessionFactory,
     TelegramPollClient,
@@ -160,6 +160,10 @@ class DayBookings:
     # Riders holding a real seat on each lift, in booking order. Everyone booked
     # beyond this is on the waitlist.
     seat_holders_by_lift: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    # Actual seats before deadline obligations are overlaid for billing. A paid
+    # rider can retain a financial obligation after losing their physical seat;
+    # that must never look like a promotion back into the van.
+    current_seat_holders_by_lift: dict[str, tuple[int, ...]] = field(default_factory=dict)
     waitlist_by_lift: dict[str, tuple[int, ...]] = field(default_factory=dict)
     # Observed before the deadline's money obligations are overlaid on bookings.
     waiting_by_lift: dict[str, int] = field(default_factory=dict)
@@ -175,6 +179,18 @@ class DayBookings:
             lift_time
             for lift_time in self.booked_lift_times_by_user.get(telegram_user_id, ())
             if lift_time not in running
+        )
+
+    def confirmed_lift_times(self, telegram_user_id: int) -> tuple[str, ...]:
+        """Chargeable own seats: real holders plus retained deadline obligations.
+
+        A vote on a running lift still expresses intent when the rider is on
+        its waitlist. It cannot add a seat to the bill.
+        """
+        return tuple(
+            lift_time
+            for lift_time in self.lift_times_by_user.get(telegram_user_id, ())
+            if telegram_user_id in self.seat_holders_by_lift.get(lift_time, ())
         )
 
     def is_waitlisted(self, telegram_user_id: int) -> bool:
@@ -373,7 +389,9 @@ class PaymentsService:
             )
             booked = day.booked_lift_times_by_user[telegram_user_id]
             whole_day = (
-                len(booked) + day.guest_seats(telegram_user_id, lift_times=booked)
+                len(day.confirmed_lift_times(telegram_user_id))
+                + len(day.pending_lift_times(telegram_user_id))
+                + day.guest_seats(telegram_user_id, lift_times=booked)
             ) * day.price_gel
             if claim is not None and claim.amount_gel >= whole_day:
                 return ClaimOutcome(
@@ -417,7 +435,11 @@ class PaymentsService:
         self, session: AsyncSession, *, day: DayBookings, user_id: int, received_gel: int
     ) -> None:
         booked = day.booked_lift_times_by_user.get(user_id, ())
-        whole_day = (len(booked) + day.guest_seats(user_id, lift_times=booked)) * day.price_gel
+        whole_day = (
+            len(day.confirmed_lift_times(user_id))
+            + len(day.pending_lift_times(user_id))
+            + day.guest_seats(user_id, lift_times=booked)
+        ) * day.price_gel
         if whole_day and received_gel >= whole_day:
             promise = await self._cash_promise_row(session, day.service_date, user_id)
             if promise is not None:
@@ -446,14 +468,6 @@ class PaymentsService:
             )
         if not self.enabled:
             return ClaimOutcome(PAYMENTS_DISABLED_TEXT)
-        day = await self._day(service_date)
-        if day is None:
-            return ClaimOutcome(BOARD_GONE_TEXT)
-        lift_times = day.lift_times_by_user.get(telegram_user_id)
-        if not lift_times:
-            return ClaimOutcome(NOT_BOOKED_TEXT)
-        pending = day.pending_lift_times(telegram_user_id)
-        paying_for = (*lift_times, *pending) if include_pending else lift_times
         received_delta = 0
 
         async with self._session_factory() as session:
@@ -462,8 +476,30 @@ class PaymentsService:
                 service_date=service_date,
                 telegram_user_id=telegram_user_id,
             )
+            day = await self._day(service_date)
+            if day is None:
+                return ClaimOutcome(BOARD_GONE_TEXT)
+            booked_running = day.lift_times_by_user.get(telegram_user_id)
+            if not booked_running:
+                return ClaimOutcome(NOT_BOOKED_TEXT)
+            lift_times = day.confirmed_lift_times(telegram_user_id)
+            # Preserve deliberate prepayment by someone entirely on the waitlist,
+            # after the existing warning. Partial waitlists never enlarge a bill.
+            if (
+                acknowledged
+                and day.is_waitlisted(telegram_user_id)
+                and not day.guest_seats(telegram_user_id)
+            ):
+                lift_times = booked_running
+            pending = day.pending_lift_times(telegram_user_id)
+            guest_times = tuple(
+                t for t in booked_running if day.guests_by_user_lift.get((telegram_user_id, t), 0)
+            )
+            paying_for = tuple(
+                dict.fromkeys((*lift_times, *guest_times, *(pending if include_pending else ())))
+            )
             guests = day.guest_seats(telegram_user_id, lift_times=paying_for)
-            owed = len(paying_for) + guests
+            owed = len(lift_times) + (len(pending) if include_pending else 0) + guests
             owed_amount = owed * day.price_gel
             if claim is not None and claim.amount_gel >= owed_amount:
                 if claim.method not in {CASH_METHOD, TRANSFER_METHOD} or claim.method == method:
@@ -773,6 +809,7 @@ class PaymentsService:
         if not booked:
             return None
         running = day.lift_times_by_user.get(telegram_user_id, ())
+        confirmed = day.confirmed_lift_times(telegram_user_id)
         rows = tuple(
             RiderLiftRow(
                 lift_time=lift_time,
@@ -791,10 +828,10 @@ class PaymentsService:
             price_gel=day.price_gel,
             rows=rows,
             pending_lift_times=pending,
-            due_now_gel=(len(running) + guests_now) * day.price_gel,
+            due_now_gel=(len(confirmed) + guests_now) * day.price_gel,
             # Settling the whole day covers the guests waiting on it as well;
             # leaving them out quoted an amount the next tap would not accept.
-            due_all_gel=(len(running) + len(pending) + guests_all) * day.price_gel,
+            due_all_gel=(len(confirmed) + len(pending) + guests_all) * day.price_gel,
             paid_gel=day.paid_amount_by_user.get(telegram_user_id, 0),
             payment_method=day.payment_method_by_user.get(telegram_user_id),
             cash_on_site=telegram_user_id in day.cash_promised_user_ids,
@@ -1308,10 +1345,24 @@ class PaymentsService:
                     is not None
                 ):
                     return
+                # The claim lookup holds the day lock. Refresh the seat allocation
+                # after acquiring it: a vote or admin correction may have committed
+                # while this topic report was waiting.
+                fresh_day = await self._day(day.service_date)
+                if fresh_day is None or fresh_day.cancelled:
+                    continue
+                day = fresh_day
+                if (
+                    telegram_user_id in day.cash_promised_user_ids
+                    or posted_at < day.polls_created_at
+                ):
+                    return
                 username, full_name = day.labels_by_user.get(telegram_user_id, (None, "Rider"))
-                seats = len(day.lift_times_by_user[telegram_user_id]) + day.guest_seats(
+                seats = len(day.confirmed_lift_times(telegram_user_id)) + day.guest_seats(
                     telegram_user_id
                 )
+                if not seats:
+                    continue
                 amount_gel = seats * day.price_gel
                 session.add(
                     PaymentClaim(
@@ -1637,7 +1688,7 @@ class PaymentsService:
         deadline — after which the day carries its frozen roster and the figure
         stops falling. See `veloexpress_bot.payments.roster`.
         """
-        return len(day.lift_times_by_user.get(claim.telegram_user_id, ())) + day.guest_seats(
+        return len(day.confirmed_lift_times(claim.telegram_user_id)) + day.guest_seats(
             claim.telegram_user_id
         )
 
@@ -1836,6 +1887,7 @@ class PaymentsService:
                             telegram_user_id=vote.telegram_user_id,
                             label=_rider_label(vote.username, vote.full_name),
                             booked_at=vote_booked_at(vote, snapshot.option_index),
+                            queue_rank=queue_rank(vote.option_queue_ranks, snapshot.option_index),
                         )
                         for vote in voters
                     ),
@@ -1845,6 +1897,7 @@ class PaymentsService:
                 day.seat_holders_by_lift[lift_time] = tuple(
                     candidate.telegram_user_id for candidate in allocation.holders
                 )
+                day.current_seat_holders_by_lift[lift_time] = day.seat_holders_by_lift[lift_time]
                 day.waitlist_by_lift[lift_time] = tuple(
                     candidate.telegram_user_id for candidate in allocation.waitlist
                 )
@@ -1913,6 +1966,10 @@ class PaymentsService:
     ) -> list[SeatPromotion]:
         promotions: list[SeatPromotion] = []
         async with self._session_factory() as session:
+            await transaction_lock(
+                session,
+                f"payment-day:{self._settings.app_env}:{self._require_chat_id()}:{day.service_date}",
+            )
             rows = {
                 row.lift_time: row
                 for row in (
@@ -1925,7 +1982,7 @@ class PaymentsService:
                     )
                 ).all()
             }
-            for lift_time, holders in day.seat_holders_by_lift.items():
+            for lift_time, holders in day.current_seat_holders_by_lift.items():
                 waitlist = day.waitlist_by_lift.get(lift_time, ())
                 row = rows.get(lift_time)
                 if row is None:
@@ -1943,6 +2000,10 @@ class PaymentsService:
                             updated_at=now.astimezone(UTC),
                         )
                     )
+                    continue
+                if _as_utc(row.updated_at) > now.astimezone(UTC):
+                    # An admin correction committed after this cycle took its
+                    # booking snapshot. Keep its final distribution; retry next cycle.
                     continue
                 # Promoted means exactly this: was waiting, now holds a seat. A
                 # rider who simply booked into a free seat is not news to them.

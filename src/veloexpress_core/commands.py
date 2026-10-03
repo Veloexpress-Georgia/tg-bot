@@ -37,9 +37,10 @@ Action = Literal[
     "claim_payment",
     "guest",
     "undo_payment",
+    "booking_order",
 ]
 USER_ACTIONS = {"claim_payment", "guest", "undo_payment"}
-CONFIRMED_ACTIONS = {"cancel_day", "cancel_lift", "post", "extra"}
+CONFIRMED_ACTIONS = {"cancel_day", "cancel_lift", "post", "extra", "booking_order"}
 
 
 class CommandInput(BaseModel):
@@ -65,6 +66,8 @@ class CommandInput(BaseModel):
     expected_digest: str | None = None
     acknowledged: bool = False
     include_pending: bool = False
+    ordered_user_ids: list[int] | None = Field(default=None, max_length=1000)
+    restore_user_id: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def validate_action(self) -> CommandInput:
@@ -83,11 +86,20 @@ class CommandInput(BaseModel):
             "undo_payment": ("service_date",),
             "post": (),
             "skip": (),
+            "booking_order": ("service_date", "lift_time"),
         }
         if any(getattr(self, field) is None for field in required[self.action]):
             raise ValueError("Missing action parameters")
         if self.action in {"manual", "guest"} and self.delta not in {-1, 1}:
             raise ValueError("Seat adjustments must be +1 or -1")
+        if self.action == "booking_order":
+            if (self.ordered_user_ids is None) == (self.restore_user_id is None):
+                raise ValueError("Choose a new order or one rider to restore")
+            if self.ordered_user_ids is not None and (
+                any(uid <= 0 for uid in self.ordered_user_ids)
+                or len(set(self.ordered_user_ids)) != len(self.ordered_user_ids)
+            ):
+                raise ValueError("Booking order must contain unique positive user IDs")
         times = {lift.time for lift in DEFAULT_LIFTS}
         if self.lift_time is not None and self.lift_time not in times:
             raise ValueError("Unknown lift time")
@@ -152,6 +164,13 @@ class Operations:
         }
 
     async def preview(self, spec: CommandInput) -> dict[str, Any]:
+        if spec.action == "booking_order":
+            return await self.runtime.lifts.preview_booking_order(
+                service_date=spec.service_date or date.min,
+                lift_time=spec.lift_time or "",
+                ordered_user_ids=spec.ordered_user_ids,
+                restore_user_id=spec.restore_user_id,
+            )
         if spec.action in {"cancel_lift", "cancel_day"}:
             days = await self.runtime.lifts.status_days()
             day = next((d for d in days if d.service_date == spec.service_date), None)
@@ -235,13 +254,22 @@ class Operations:
             )
             if day_view is None or day_view.past:
                 raise ValueError("Finished service days cannot be edited")
-        if spec.action in CONFIRMED_ACTIONS:
+        if spec.action in CONFIRMED_ACTIONS - {"booking_order"}:
             preview = await self.preview(spec)
             if preview["digest"] != spec.expected_digest:
                 raise ValueError("Data changed. Open the confirmation again")
         rt = self.runtime
         day = spec.service_date or date.min
         lift_time = spec.lift_time or ""
+        if spec.action == "booking_order":
+            return await rt.lifts.save_booking_order(
+                service_date=day,
+                lift_time=lift_time,
+                expected_digest=spec.expected_digest or "",
+                admin_user_id=actor_user_id,
+                ordered_user_ids=spec.ordered_user_ids,
+                restore_user_id=spec.restore_user_id,
+            )
         if spec.action == "manual":
             result = await rt.lifts.adjust_manual_booking(
                 service_date=day,

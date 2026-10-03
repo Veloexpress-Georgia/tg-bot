@@ -94,7 +94,38 @@ class PollVote(Base):
     # changes — so adding a second lift used to send the rider to the back of the
     # queue on the lift they already held.
     option_booked_at: Mapped[str] = mapped_column(Text, default="")
+    # Per-option ranks assigned by an admin. Unranked new bookings append;
+    # retracting an option drops its rank without altering vote history.
+    option_queue_ranks: Mapped[str] = mapped_column(Text, default="{}")
+    # Order immediately before the rider last left each option, for explicit
+    # admin restoration after an accidental retraction (never automatic).
+    option_previous_orders: Mapped[str] = mapped_column(Text, default="{}")
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class BookingOrderChange(Base):
+    __tablename__ = "booking_order_change"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Poll recreation may remove snapshots; the audit keeps its own identity.
+    snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("poll_option_snapshot.id", ondelete="SET NULL"), index=True
+    )
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    lift_time: Mapped[str] = mapped_column(String(16))
+    poll_id: Mapped[str] = mapped_column(Text)
+    admin_user_id: Mapped[int] = mapped_column(BigInteger)
+    action: Mapped[str] = mapped_column(String(32))
+    before_order: Mapped[str] = mapped_column(Text)
+    after_order: Mapped[str] = mapped_column(Text)
+    promoted_ids: Mapped[str] = mapped_column(Text, default="[]")
+    demoted_ids: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
 

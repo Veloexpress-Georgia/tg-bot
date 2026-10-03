@@ -1,7 +1,8 @@
 import logging
 from collections.abc import Iterable
 from datetime import UTC, date, datetime
-from typing import cast
+from typing import Any, cast
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, F, Router
@@ -11,6 +12,7 @@ from aiogram.filters import Command, CommandObject, CommandStart, ExceptionTypeF
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, ErrorEvent, InlineKeyboardMarkup, Message, PollAnswer
 
+from veloexpress_bot.bookings.order_render import PAGE_SIZE, render_booking_order
 from veloexpress_bot.bookings.render import (
     BUMPED_REPORT_PARSE_MODE,
     REFUND_REPORTS_PARSE_MODE,
@@ -755,6 +757,154 @@ async def open_lift_card(
         await callback.answer("This lift is no longer active.", show_alert=True)
         return
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("mon:order:"))
+async def open_booking_order(
+    callback: CallbackQuery,
+    settings: Settings,
+    poll_service: PollPostingService,
+    state: FSMContext,
+) -> None:
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+    parts = (callback.data or "").split(":")
+    try:
+        day = decode_monitor_date(parts[2])
+        time = decode_monitor_time(parts[3])
+        view = await poll_service.booking_order_view(service_date=day, lift_time=time)
+    except (ValueError, IndexError) as error:
+        await callback.answer(str(error), show_alert=True)
+        return
+    payload = {
+        "date": day.isoformat(),
+        "time": time,
+        "view": view,
+        "message_id": message.message_id,
+        "mode": "list",
+        "page": 0,
+    }
+    await _show_booking_order(message, poll_service, callback.from_user.id, state, payload)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ord:"))
+async def change_booking_order(
+    callback: CallbackQuery,
+    settings: Settings,
+    poll_service: PollPostingService,
+    state: FSMContext,
+) -> None:
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+    parts = (callback.data or "").split(":")
+    payload = (await state.get_data()).get("booking_order")
+    screen = await poll_service.admin_screen(admin_user_id=callback.from_user.id)
+    if (
+        len(parts) < 3
+        or not isinstance(payload, dict)
+        or payload.get("token") != parts[2]
+        or payload.get("message_id") != message.message_id
+        or screen.name != "booking_order"
+    ):
+        await callback.answer(
+            "This order editor is outdated. Open it from the lift again.", show_alert=True
+        )
+        return
+    action = parts[1]
+    day = date.fromisoformat(payload["date"])
+    time = payload["time"]
+    ids = [r["user_id"] for r in payload["view"]["riders"]]
+    mode = payload["mode"]
+    try:
+        if action == "save" and mode == "confirm":
+            preview = payload["preview"]
+            kwargs = (
+                {"restore_user_id": payload["source"]}
+                if payload.get("restore")
+                else {"ordered_user_ids": preview["ordered_user_ids"]}
+            )
+            await callback.answer("Saving…")
+            await poll_service.save_booking_order(
+                service_date=day,
+                lift_time=time,
+                expected_digest=preview["digest"],
+                admin_user_id=callback.from_user.id,
+                **kwargs,
+            )
+            await state.update_data(booking_order=None)
+            await _show_lift(
+                message, poll_service, callback.from_user.id, service_date=day, lift_time=time
+            )
+            return
+        if action == "rider" and mode == "list":
+            source = int(parts[3])
+            if source not in ids:
+                raise ValueError("This rider is no longer booked")
+            payload.update(source=source, mode="target", page=0)
+        elif action == "list":
+            payload.update(mode="list", page=0)
+        elif action == "page" and mode in {"list", "target"}:
+            page = int(parts[3])
+            count = len(ids) - (mode == "target")
+            if not 0 <= page <= max(count - 1, 0) // PAGE_SIZE:
+                raise ValueError("Invalid page")
+            payload["page"] = page
+        elif action in {"before", "restore"} and mode == "target":
+            source = payload["source"]
+            if action == "restore":
+                preview = await poll_service.preview_booking_order(
+                    service_date=day, lift_time=time, restore_user_id=source
+                )
+            else:
+                target = int(parts[3])
+                if target == source or (target != 0 and target not in ids):
+                    raise ValueError("Invalid target rider")
+                reordered = [uid for uid in ids if uid != source]
+                reordered.insert(reordered.index(target) if target else len(reordered), source)
+                preview = await poll_service.preview_booking_order(
+                    service_date=day, lift_time=time, ordered_user_ids=reordered
+                )
+            if preview["digest"] != payload["view"]["digest"]:
+                raise ValueError("Data changed. Reopen the booking order and confirm again")
+            label = next(r["label"] for r in payload["view"]["riders"] if r["user_id"] == source)
+            position = preview["ordered_user_ids"].index(source) + 1
+            preview["details"] = f"Move {label} to position {position}.\n\n{preview['details']}"
+            payload.update(mode="confirm", preview=preview, restore=action == "restore")
+        else:
+            raise ValueError("This order editor is outdated. Open it from the lift again.")
+    except (ValueError, IndexError) as error:
+        if action == "save":
+            await message.answer(str(error))
+        else:
+            await callback.answer(str(error)[:190], show_alert=True)
+        return
+    await _show_booking_order(message, poll_service, callback.from_user.id, state, payload)
+    await callback.answer()
+
+
+async def _show_booking_order(
+    message: Message,
+    poll_service: PollPostingService,
+    admin_user_id: int,
+    state: FSMContext,
+    payload: dict[str, Any],
+) -> None:
+    payload["token"] = uuid4().hex[:8]
+    draft = render_booking_order(payload)
+    await state.update_data(booking_order=payload)
+    await _show_frozen(
+        message,
+        poll_service,
+        admin_user_id,
+        "booking_order",
+        draft.text,
+        draft.reply_markup,
+        service_date=date.fromisoformat(payload["date"]),
+        lift_time=payload["time"],
+    )
 
 
 @router.callback_query(F.data.startswith("mon:refunds"))

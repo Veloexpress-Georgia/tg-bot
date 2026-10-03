@@ -261,8 +261,8 @@ export const demoDays: LiveDay[] = ['2026-10-03', '2026-10-04'].map((service_dat
     ? []
     : [
         {
-          telegram_user_id: 110,
-          label: 'Ксения А.',
+          telegram_user_id: 109,
+          label: 'Лука Г.',
           lift_time: '8:30',
           position: 1,
         },
@@ -299,13 +299,13 @@ export const demoDays: LiveDay[] = ['2026-10-03', '2026-10-04'].map((service_dat
       waiting_count: waiting,
       running: occupied >= 5,
       funded: occupied - 2 >= 5,
-      riders: names.slice(0, occupied + waiting).map((label, j) => ({
+      riders: names.slice(0, occupied - 1 + waiting).map((label, j) => ({
         telegram_user_id: j === 7 ? 42 : 100 + j,
         label,
         paid: j < occupied - 2,
         cash: j % 5 === 0,
         guests: 0,
-        waitlisted: j >= occupied,
+        waitlisted: j >= occupied - 1,
       })),
     };
   }),
@@ -390,6 +390,33 @@ export function demoGet(path: string): unknown {
   const url = new URL(path, 'https://demo.local');
   if (url.pathname === '/api/session') return demoSession;
   if (url.pathname === '/api/admin/days') return demoDays;
+  const orderMatch = url.pathname.match(/^\/api\/admin\/days\/([^/]+)\/lifts\/([^/]+)\/order$/);
+  if (orderMatch) {
+    const day = demoDay(orderMatch[1]);
+    const lift = day.historical
+      ? undefined
+      : day.lifts.find((l) => l.time === decodeURIComponent(orderMatch[2]));
+    return {
+      digest: 'demo',
+      available_seats: Math.max(
+        (lift?.capacity ?? 10) - (lift?.manual_count ?? 0) - (lift?.guest_count ?? 0),
+        0,
+      ),
+      riders: (lift?.riders ?? []).map((r) => ({
+        user_id: r.telegram_user_id,
+        label: r.label,
+        waitlisted: r.waitlisted,
+        paid: r.paid,
+        paid_gel: r.paid ? 40 : 0,
+        cash_on_site:
+          !r.paid &&
+          !day.historical &&
+          !!day.riders?.find((person) => person.user_id === r.telegram_user_id)?.cash_on_site,
+      })),
+      previous_positions: {},
+      deadline_closed: false,
+    };
+  }
   if (url.pathname.startsWith('/api/admin/days/')) return demoDay(url.pathname.split('/').at(-1)!);
   if (url.pathname === '/api/admin/planning') return demoPlanning;
   if (url.pathname === '/api/my-days') return demoMyDays;

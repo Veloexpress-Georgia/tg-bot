@@ -449,7 +449,7 @@ async def test_day_money_covers_the_lift_that_leaves_not_the_earliest_one(
                 username="stas",
                 full_name="Stas",
                 seats=1,
-                amount_gel=15,
+                amount_gel=settings().payment_price_gel,
                 method="transfer",
             )
         )
