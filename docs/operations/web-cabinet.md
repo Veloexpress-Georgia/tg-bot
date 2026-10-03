@@ -107,6 +107,20 @@ when rolling back application images. Existing historical prices, seats and
 payment entries are preserved. Queue analytics start filling as new days close;
 old and reconstructed records display missing observations explicitly.
 
+## Booking order release (0032)
+
+Migration 0032 adds empty per-option order/restoration fields and an audit table.
+It does not rewrite votes, payment entries or deadline rosters. Apply it before
+starting the new bot and API; release bot/API/web from the same tested commit.
+Before deploying, keep a fresh custom-format Postgres dump and verify that it
+restores into an isolated database. CI must pass the fresh Postgres migration and
+concurrent order/payment tests. Do not exercise real reorder/payment writes as
+production smoke checks; inspect authenticated views and health instead.
+
+For an application rollback, leave 0032 in place so the audit survives. Older
+code ignores manual queue ranks: review the audit before rolling back if admins
+have already changed orders. Do not downgrade the database or delete its volume.
+
 ## Day workspace and demand (2026-10-02)
 
 - The live admin day has attention, departures, payments and request tabs.

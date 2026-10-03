@@ -4,6 +4,7 @@ import { plain } from '../lib';
 import { Empty } from './Shared';
 const actions: Record<string, string> = {
   manual: 'Ручные места',
+  booking_order: 'Порядок записи',
   payment: 'Отметка оплаты',
   cancel_lift: 'Отмена выезда',
   restore_lift: 'Восстановление выезда',

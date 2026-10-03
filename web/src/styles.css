@@ -3801,3 +3801,113 @@ body {
     display: none;
   }
 }
+
+/* Booking order: an editable roster with a visible seat boundary. */
+.booking-order-editor {
+  margin-top: 16px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+}
+.order-place-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 16px 0;
+}
+.booking-order-list {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0;
+}
+.order-divider {
+  padding: 12px 0 7px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.order-rider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--line);
+  cursor: grab;
+}
+.order-rider:active {
+  cursor: grabbing;
+}
+.order-rider > svg {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.order-position {
+  min-width: 22px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.order-label {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.order-waiting {
+  background: var(--queue-background);
+}
+.order-consequences {
+  margin: 14px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.order-consequences p {
+  margin: 0 0 8px;
+}
+.order-consequences p:last-child {
+  margin-bottom: 0;
+}
+.order-preview-list {
+  padding-left: 24px;
+}
+.order-preview-list li {
+  padding: 4px 0;
+}
+.order-preview-list li span {
+  float: right;
+  font-size: 12px;
+  color: var(--muted);
+  margin-left: 12px;
+}
+@media (max-width: 600px) {
+  .booking-order-editor {
+    padding: 12px;
+  }
+  .order-place-controls {
+    grid-template-columns: 1fr;
+  }
+}
+
+.order-payment {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.order-preview-rider {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.order-preview-rider > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.order-preview-rider > span {
+  flex-shrink: 0;
+}

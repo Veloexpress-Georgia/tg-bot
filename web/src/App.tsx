@@ -22,6 +22,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
+import { BookingOrderConsequences } from './components/BookingOrderEditor';
 import { ApiError, executeCommand, isDemo, loadSession, previewCommand, request } from './api';
 import { dateLabel, money, periodRange, plain } from './lib';
 import { initTelegram } from './telegram';
@@ -284,7 +285,7 @@ export default function App() {
       request_id: input.request_id ?? crypto.randomUUID(),
     };
     pendingSpec.current = spec;
-    if (['cancel_day', 'cancel_lift', 'post', 'extra'].includes(spec.action)) {
+    if (['cancel_day', 'cancel_lift', 'post', 'extra', 'booking_order'].includes(spec.action)) {
       setPreviewBusy(true);
       try {
         setConfirm({ spec, preview: await previewCommand(spec) });
@@ -681,13 +682,23 @@ export default function App() {
         title={
           confirm?.spec.action.startsWith('cancel')
             ? 'Подтвердить отмену'
-            : 'Подтвердить публикацию'
+            : confirm?.spec.action === 'booking_order'
+              ? 'Подтвердить порядок записи'
+              : 'Подтвердить публикацию'
         }
         description="Проверь последствия перед выполнением действия."
       >
         {confirm && (
           <>
-            <pre className="report-text confirmation-report">{plain(confirm.preview.details)}</pre>
+            {confirm.spec.action === 'booking_order' && confirm.preview.ordered_user_ids ? (
+              <BookingOrderConsequences
+                proposal={confirm.preview as import('./types').BookingOrderProposal}
+              />
+            ) : (
+              <pre className="report-text confirmation-report">
+                {plain(confirm.preview.details)}
+              </pre>
+            )}
             {confirm.preview.affected !== undefined && (
               <p className="caption">Участников в дне: {confirm.preview.affected}</p>
             )}

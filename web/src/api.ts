@@ -1,5 +1,6 @@
 import { telegram } from './telegram';
-import type { CommandSpec, CommandResult, Preview, Session } from './types';
+import { proposeOrder } from './booking-order';
+import type { BookingOrder, CommandSpec, CommandResult, Preview, Session } from './types';
 export const isDemo = new URLSearchParams(window.location.search).get('demo') === '1';
 let csrf = '';
 export class ApiError extends Error {
@@ -50,6 +51,16 @@ export function loadSession(): Promise<Session> {
   return loginPromise;
 }
 export async function previewCommand(spec: CommandSpec): Promise<Preview> {
+  if (isDemo && spec.action === 'booking_order') {
+    const order = await request<BookingOrder>(
+      `/api/admin/days/${spec.service_date}/lifts/${encodeURIComponent(spec.lift_time!)}/order`,
+    );
+    return {
+      ...proposeOrder(order, spec.ordered_user_ids ?? order.riders.map((r) => r.user_id)),
+      confirmation: 'demo',
+      details: 'Демонстрация: рабочие данные не изменяются.',
+    };
+  }
   if (isDemo)
     return {
       confirmation: 'demo',

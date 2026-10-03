@@ -1,6 +1,7 @@
 """Real database locking tests; run against a disposable, migrated PostgreSQL."""
 
 import asyncio
+import json
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -12,10 +13,110 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from tests.unit import test_payments_service as helpers
 
-from veloexpress_bot.db.models import CashPromise, PaymentClaim, PaymentEntry, TelegramOutbox
+from veloexpress_bot.db.models import (
+    BookingOrderChange,
+    CashPromise,
+    PaymentClaim,
+    PaymentEntry,
+    PollVote,
+    TelegramOutbox,
+)
 from veloexpress_bot.telegram.outbox import TelegramOutboxDispatcher
 from veloexpress_core.lifts import SentTextMessage
 from veloexpress_core.payments import PaymentsService
+
+
+async def test_competing_booking_corrections_commit_only_one_reviewed_order(
+    pg: helpers.SharedDatabase,
+):
+    polls, payments, _client, poll_id, day = await helpers._setup(pg)
+    await helpers._fill(polls, poll_id, 0, riders=11)
+    polls._settings = polls._settings.model_copy(update={"telegram_admin_ids": (1, 2)})
+    orders = [[110, *range(100, 110)], [109, *range(100, 109), 110]]
+    previews = [
+        await polls.preview_booking_order(
+            service_date=day, lift_time="8:30", ordered_user_ids=order
+        )
+        for order in orders
+    ]
+    async with pg.session() as holder:
+        await payments._lock_day(holder, day)
+        tasks = [
+            asyncio.create_task(
+                polls.save_booking_order(
+                    service_date=day,
+                    lift_time="8:30",
+                    ordered_user_ids=order,
+                    expected_digest=preview["digest"],
+                    admin_user_id=actor,
+                )
+            )
+            for actor, order, preview in zip((1, 2), orders, previews, strict=True)
+        ]
+        await asyncio.sleep(0.1)
+        assert not any(task.done() for task in tasks)
+        await holder.commit()
+    results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 15)
+    assert sum(isinstance(result, dict) for result in results) == 1
+    assert sum(isinstance(result, ValueError) for result in results) == 1
+    async with pg.session() as session:
+        audit = list(
+            await session.scalars(
+                select(BookingOrderChange).where(
+                    BookingOrderChange.environment == polls._settings.app_env
+                )
+            )
+        )
+        assert len(audit) == 1
+    final = await polls.booking_order_view(service_date=day, lift_time="8:30")
+    assert [r["user_id"] for r in final["riders"]] == json.loads(audit[0].after_order)
+
+
+@pytest.mark.parametrize("source", ["button", "topic"])
+async def test_receipts_wait_for_queue_edit_and_do_not_charge_a_new_waitlist(
+    pg: helpers.SharedDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+):
+    polls, payments, _client, poll_id, day = await helpers._setup(pg)
+    await helpers._fill(polls, poll_id, 0, riders=11)
+    entered = asyncio.Event()
+    original = payments._claim_row
+
+    async def observe_lock(**kwargs):
+        entered.set()
+        return await original(**kwargs)
+
+    monkeypatch.setattr(payments, "_claim_row", observe_lock)
+    async with pg.session() as holder:
+        await payments._lock_day(holder, day)
+        task = asyncio.create_task(
+            payments.claim(
+                service_date=day, telegram_user_id=100, username="test", full_name="Test"
+            )
+            if source == "button"
+            else payments.record_topic_post(telegram_user_id=100, posted_at=datetime.now(UTC))
+        )
+        await asyncio.wait_for(entered.wait(), 5)
+        assert not task.done()
+        votes = {
+            v.telegram_user_id: v
+            for v in await holder.scalars(select(PollVote).where(PollVote.poll_id == poll_id))
+        }
+        for rank, uid in enumerate([*range(101, 111), 100]):
+            votes[uid].option_queue_ranks = json.dumps({"0": rank})
+        await holder.commit()
+    await asyncio.wait_for(task, 15)
+    async with pg.session() as session:
+        assert (
+            await session.scalar(
+                select(PaymentClaim).where(
+                    PaymentClaim.environment == payments._settings.app_env,
+                    PaymentClaim.telegram_user_id == 100,
+                )
+            )
+            is None
+        )
 
 
 @pytest.fixture

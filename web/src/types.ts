@@ -196,7 +196,28 @@ export type Action =
   | 'skip'
   | 'claim_payment'
   | 'guest'
-  | 'undo_payment';
+  | 'undo_payment'
+  | 'booking_order';
+export interface BookingOrder {
+  digest: string;
+  available_seats: number;
+  riders: {
+    user_id: number;
+    label: string;
+    waitlisted: boolean;
+    paid: boolean;
+    paid_gel: number;
+    cash_on_site: boolean;
+  }[];
+  previous_positions: Record<string, number>;
+  deadline_closed: boolean;
+}
+export interface BookingOrderProposal extends BookingOrder {
+  ordered_user_ids: number[];
+  promoted: number[];
+  demoted: number[];
+  paid_demoted: number[];
+}
 export interface CommandSpec {
   action: Action;
   request_id?: string;
@@ -218,6 +239,8 @@ export interface CommandSpec {
   announce_lead_minutes?: number;
   acknowledged?: boolean;
   include_pending?: boolean;
+  ordered_user_ids?: number[];
+  restore_user_id?: number;
 }
 export interface CommandResult {
   id: number;
@@ -235,7 +258,7 @@ export interface CommandResult {
   created_at: string;
   finished_at: string | null;
 }
-export interface Preview {
+export interface Preview extends Partial<BookingOrderProposal> {
   confirmation: string;
   details: string;
   affected?: number;

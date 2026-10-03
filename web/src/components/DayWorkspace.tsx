@@ -5,6 +5,7 @@ import { money } from '../lib';
 import type { LiveDay } from '../types';
 import type { Act } from './Operations';
 import { AuditView } from './Audit';
+import { BookingOrderEditor } from './BookingOrderEditor';
 import { Empty } from './Shared';
 import { Button } from './ui/button';
 import { Select } from './ui/select';
@@ -24,6 +25,7 @@ export function DayWorkspace({
   const [section, setSection] = useState<Section>('attention');
   const [time, setTime] = useState(detail.lifts[0]?.time ?? '');
   const [filter, setFilter] = useState('all');
+  const [editingOrder, setEditingOrder] = useState(false);
   const [userId, setUserId] = useState(detail.riders?.[0]?.user_id ?? 0);
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState<'cash' | 'transfer'>('transfer');
@@ -215,6 +217,7 @@ export function DayWorkspace({
                 onClick={() => {
                   setTime(l.time);
                   setFilter('all');
+                  setEditingOrder(false);
                 }}
               >
                 <strong>{l.time}</strong>
@@ -287,56 +290,76 @@ export function DayWorkspace({
                   (filter === 'queue' ? r.waitlisted : !r.paid && !r.waitlisted),
               ) && <p className="caption">В этом списке пока нет участников.</p>}
               {!detail.past && (
-                <div className="lift-actions">
-                  <span>Ручные места</span>
-                  <Button
-                    variant="secondary"
-                    size="icon"
-                    aria-label={`Убрать ручное место ${lift.time}`}
-                    disabled={busy || lift.manual_count === 0}
-                    onClick={() =>
-                      act({
-                        action: 'manual',
-                        service_date: detail.service_date,
-                        lift_time: lift.time,
-                        delta: -1,
-                      })
-                    }
-                  >
-                    <Minus size={15} />
-                  </Button>
-                  <b>{lift.manual_count}</b>
-                  <Button
-                    variant="secondary"
-                    size="icon"
-                    aria-label={`Добавить ручное место ${lift.time}`}
-                    disabled={busy || lift.cancelled || lift.seat_count >= lift.capacity}
-                    onClick={() =>
-                      act({
-                        action: 'manual',
-                        service_date: detail.service_date,
-                        lift_time: lift.time,
-                        delta: 1,
-                      })
-                    }
-                  >
-                    <Plus size={15} />
-                  </Button>
-                  <Button
-                    variant={lift.cancelled ? 'secondary' : 'ghost'}
-                    size="sm"
-                    disabled={busy}
-                    onClick={() =>
-                      act({
-                        action: lift.cancelled ? 'restore_lift' : 'cancel_lift',
-                        service_date: detail.service_date,
-                        lift_time: lift.time,
-                      })
-                    }
-                  >
-                    {lift.cancelled ? 'Восстановить' : 'Отменить выезд'}
-                  </Button>
-                </div>
+                <>
+                  {!lift.cancelled && (lift.riders?.length ?? 0) > 1 && (
+                    <Button
+                      variant="secondary"
+                      disabled={busy}
+                      onClick={() => setEditingOrder(!editingOrder)}
+                    >
+                      {editingOrder ? 'Закрыть порядок записи' : 'Изменить порядок записи'}
+                    </Button>
+                  )}
+                  {editingOrder && !lift.cancelled && (
+                    <BookingOrderEditor
+                      day={detail.service_date}
+                      time={lift.time}
+                      act={act}
+                      busy={busy}
+                      onClose={() => setEditingOrder(false)}
+                    />
+                  )}
+                  <div className="lift-actions">
+                    <span>Ручные места</span>
+                    <Button
+                      variant="secondary"
+                      size="icon"
+                      aria-label={`Убрать ручное место ${lift.time}`}
+                      disabled={busy || lift.manual_count === 0}
+                      onClick={() =>
+                        act({
+                          action: 'manual',
+                          service_date: detail.service_date,
+                          lift_time: lift.time,
+                          delta: -1,
+                        })
+                      }
+                    >
+                      <Minus size={15} />
+                    </Button>
+                    <b>{lift.manual_count}</b>
+                    <Button
+                      variant="secondary"
+                      size="icon"
+                      aria-label={`Добавить ручное место ${lift.time}`}
+                      disabled={busy || lift.cancelled || lift.seat_count >= lift.capacity}
+                      onClick={() =>
+                        act({
+                          action: 'manual',
+                          service_date: detail.service_date,
+                          lift_time: lift.time,
+                          delta: 1,
+                        })
+                      }
+                    >
+                      <Plus size={15} />
+                    </Button>
+                    <Button
+                      variant={lift.cancelled ? 'secondary' : 'ghost'}
+                      size="sm"
+                      disabled={busy}
+                      onClick={() =>
+                        act({
+                          action: lift.cancelled ? 'restore_lift' : 'cancel_lift',
+                          service_date: detail.service_date,
+                          lift_time: lift.time,
+                        })
+                      }
+                    >
+                      {lift.cancelled ? 'Восстановить' : 'Отменить выезд'}
+                    </Button>
+                  </div>
+                </>
               )}
             </section>
           )}

@@ -69,6 +69,7 @@ class LiftRider:
     guests: int = 0
     waitlisted: bool = False
     cash_on_site: bool = False
+    paid_gel: int = 0
 
 
 @dataclass(frozen=True)
@@ -881,6 +882,15 @@ def render_lift_detail(
 
     rows: list[list[InlineKeyboardButton]] = []
     if not lift.cancelled:
+        if len(riders) > 1:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="↕️ Booking order",
+                        callback_data=f"mon:order:{compact_date}:{compact_time}",
+                    )
+                ]
+            )
         # Named for what they move. "Manual" left it to the admin to work out that
         # the number being changed is the offline seat count.
         rows.append(

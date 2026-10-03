@@ -393,6 +393,19 @@ def create_app(
     async def planning(_: Annotated[dict[str, Any], Depends(admin)]):
         return await operations.planning_view()
 
+    @app.get("/api/admin/days/{service_date}/lifts/{lift_time}/order")
+    async def booking_order(
+        service_date: date,
+        lift_time: str,
+        _: Annotated[dict[str, Any], Depends(admin)],
+    ):
+        try:
+            return await runtime.lifts.booking_order_view(
+                service_date=service_date, lift_time=lift_time
+            )
+        except (ValueError, KeyError) as error:
+            raise HTTPException(409, str(error)) from error
+
     @app.get("/api/admin/refunds")
     async def refunds(_: Annotated[dict[str, Any], Depends(admin)]):
         return [asdict(report) for report in await runtime.payments.recent_refund_reports(limit=50)]
