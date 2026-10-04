@@ -103,6 +103,16 @@ class MonitorLateExit:
 
 
 @dataclass(frozen=True)
+class BookingWithdrawal:
+    event_id: int
+    telegram_user_id: int
+    label: str
+    lift_time: str
+    changed_at: datetime
+    after_deadline: bool
+
+
+@dataclass(frozen=True)
 class BookingMonitorDay:
     service_date: date
     lifts: tuple[BookingLiftStatus, ...]
@@ -279,6 +289,13 @@ def render_booking_monitor(
             )
         )
     rows.append(day_row)
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="🕒 Withdrawals", callback_data=f"mon:withdrawals:{compact_date}:all:0"
+            )
+        ]
+    )
 
     rows.append([InlineKeyboardButton(text="☰ Menu", callback_data="mon:menu")])
 
@@ -877,7 +894,14 @@ def render_lift_detail(
         lines.append("")
         lines.extend(_lift_rider_line(rider, running=lift.running) for rider in riders)
 
-    rows: list[list[InlineKeyboardButton]] = []
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                text="🕒 Withdrawals",
+                callback_data=f"mon:withdrawals:{compact_date}:{compact_time}:0",
+            )
+        ]
+    ]
     if not lift.cancelled:
         if len(riders) > 1:
             rows.append(
@@ -1183,3 +1207,58 @@ def _compact_date(service_date: date) -> str:
 def _compact_time(lift_time: str) -> str:
     hour, minute = lift_time.split(":", maxsplit=1)
     return f"{int(hour):02d}{minute}"
+
+
+WITHDRAWAL_PAGE_SIZE = 10
+
+
+def render_booking_withdrawals(
+    *,
+    service_date: date,
+    lift_time: str | None,
+    withdrawals: tuple[BookingWithdrawal, ...],
+    page: int,
+    timezone: str,
+) -> BookingMonitorDraft:
+    pages = max(1, (len(withdrawals) + WITHDRAWAL_PAGE_SIZE - 1) // WITHDRAWAL_PAGE_SIZE)
+    page = min(max(page, 0), pages - 1)
+    compact_date = _compact_date(service_date)
+    scope = _compact_time(lift_time) if lift_time else "all"
+    title = f"🕒 Withdrawals · {_long_day_label(service_date)}"
+    if lift_time:
+        title += f" · {lift_time}"
+    lines = [title, f"Recorded times · {timezone}", ""]
+    selected = withdrawals[page * WITHDRAWAL_PAGE_SIZE : (page + 1) * WITHDRAWAL_PAGE_SIZE]
+    for entry in selected:
+        moment = entry.changed_at
+        stamp = (
+            f"{moment.day:02d} {EN_SHORT_MONTHS[moment.month]} {moment.year} · {moment:%H:%M:%S}"
+        )
+        deadline = "after deadline" if entry.after_deadline else "before deadline"
+        lines.extend((f"{entry.label[:100]} · {entry.lift_time}", f"{stamp} · {deadline}", ""))
+    if not selected:
+        lines.append("No recorded withdrawals.")
+    rows: list[list[InlineKeyboardButton]] = []
+    if pages > 1:
+        lines.append(f"Page {page + 1} of {pages} · {len(withdrawals)} withdrawals")
+        pager = []
+        if page:
+            pager.append(
+                InlineKeyboardButton(
+                    text="⬅️ Newer",
+                    callback_data=f"mon:withdrawals:{compact_date}:{scope}:{page - 1}",
+                )
+            )
+        if page + 1 < pages:
+            pager.append(
+                InlineKeyboardButton(
+                    text="Older ➡️",
+                    callback_data=f"mon:withdrawals:{compact_date}:{scope}:{page + 1}",
+                )
+            )
+        rows.append(pager)
+    back = f"mon:lift:{compact_date}:{scope}" if lift_time else f"mon:day:{compact_date}"
+    rows.append([InlineKeyboardButton(text="⬅️ Back", callback_data=back)])
+    return BookingMonitorDraft(
+        text="\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+    )

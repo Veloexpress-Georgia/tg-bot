@@ -21,6 +21,7 @@ from veloexpress_bot.bookings.render import (
     BookingLiftStatus,
     BookingMonitorDay,
     BookingMonitorDraft,
+    BookingWithdrawal,
     LiftDayAudit,
     LiftDayAuditLift,
     LiftDayAuditSeat,
@@ -36,6 +37,7 @@ from veloexpress_bot.bookings.render import (
     render_admin_menu,
     render_all_riders,
     render_booking_monitor,
+    render_booking_withdrawals,
     render_cancel_day_confirmation,
     render_lift_day_audit,
     render_lift_detail,
@@ -552,6 +554,10 @@ class PollPostingService:
         """
         if not screen.live:
             return None
+        if screen.name == "withdrawals" and screen.service_date is not None:
+            return await self.booking_withdrawals_view(
+                service_date=screen.service_date, lift_time=screen.lift_time, page=screen.page
+            )
         days = await self._booking_monitor_days()
         selected = screen.service_date
         if selected not in {day.service_date for day in days}:
@@ -582,6 +588,82 @@ class PollPostingService:
             return None
         status, riders = detail
         return render_lift_detail(service_date=service_date, lift=status, riders=riders)
+
+    async def booking_withdrawals(
+        self, *, service_date: date, lift_time: str | None = None
+    ) -> tuple[BookingWithdrawal, ...]:
+        """Every recorded removal, including before the deadline and before rejoining."""
+        if self._settings.telegram_target_chat_id is None:
+            return ()
+        async with self._session_factory() as session:
+            query = (
+                select(PollVoteEvent, PollOptionSnapshot)
+                .join(PollOptionSnapshot, PollOptionSnapshot.poll_id == PollVoteEvent.poll_id)
+                .join(PollBatch, PollBatch.id == PollOptionSnapshot.batch_id)
+                .where(
+                    PollBatch.environment == self._settings.app_env,
+                    PollBatch.chat_id == self._settings.telegram_target_chat_id,
+                    PollBatch.thread_id == self._settings.telegram_target_thread_id,
+                    PollBatch.service_date == service_date,
+                    PollOptionSnapshot.lift_time.is_not(None),
+                )
+                .order_by(
+                    PollVoteEvent.created_at.desc(),
+                    PollVoteEvent.id.desc(),
+                    PollOptionSnapshot.option_index,
+                )
+            )
+            if lift_time is not None:
+                query = query.where(PollOptionSnapshot.lift_time == lift_time)
+            rows = (await session.execute(query)).all()
+            terms = await session.scalar(
+                select(ServiceDayTerms).where(
+                    ServiceDayTerms.environment == self._settings.app_env,
+                    ServiceDayTerms.chat_id == self._settings.telegram_target_chat_id,
+                    ServiceDayTerms.thread_id == self._settings.telegram_target_thread_id,
+                    ServiceDayTerms.service_date == service_date,
+                )
+            )
+        zone = ZoneInfo(terms.timezone if terms else self._settings.schedule_timezone)
+        deadline = booking_deadline_at(
+            service_date,
+            terms.deadline_time if terms else self._settings.booking_deadline_time,
+            zone=zone,
+        )
+        result = []
+        for event, snapshot in rows:
+            if snapshot.option_index not in decode_option_ids(
+                event.old_option_ids
+            ) or snapshot.option_index in decode_option_ids(event.new_option_ids):
+                continue
+            changed_at = _as_utc(event.created_at)
+            assert changed_at is not None
+            assert snapshot.lift_time is not None
+            result.append(
+                BookingWithdrawal(
+                    event_id=event.id,
+                    telegram_user_id=event.telegram_user_id,
+                    label=_rider_label_from_parts(event.username, event.full_name),
+                    lift_time=snapshot.lift_time,
+                    changed_at=changed_at.astimezone(zone),
+                    after_deadline=changed_at >= deadline,
+                )
+            )
+        return tuple(result)
+
+    async def booking_withdrawals_view(
+        self, *, service_date: date, lift_time: str | None = None, page: int = 0
+    ) -> BookingMonitorDraft:
+        withdrawals = await self.booking_withdrawals(service_date=service_date, lift_time=lift_time)
+        return render_booking_withdrawals(
+            service_date=service_date,
+            lift_time=lift_time,
+            withdrawals=withdrawals,
+            page=page,
+            timezone=str(withdrawals[0].changed_at.tzinfo)
+            if withdrawals
+            else self._settings.schedule_timezone,
+        )
 
     async def booking_monitor_view(
         self,

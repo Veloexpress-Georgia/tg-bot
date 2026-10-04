@@ -15,7 +15,7 @@ from datetime import date
 
 # Screens built from live booking data. A vote, a payment or a cancellation
 # changes what they say, so the background refresh redraws them in place.
-LIVE_SCREENS = frozenset({"day", "riders", "lift"})
+LIVE_SCREENS = frozenset({"day", "riders", "lift", "withdrawals"})
 
 DEFAULT_SCREEN = "day"
 

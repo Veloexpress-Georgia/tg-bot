@@ -26,6 +26,7 @@ import { AuditList } from '../reports/ReportPages';
 import { AttentionList, LiftBoard, MoneyCard, daySubtitle, useClock } from './DaySummary';
 import { dayAttention, longDate, nextLiftTime, paysCash, relativeDay } from './model';
 import { PaymentMark } from './PaymentMark';
+import { WithdrawalList } from './WithdrawalList';
 import './days.css';
 
 type PaymentFilter = 'all' | 'unpaid' | 'cash' | 'marked';
@@ -83,6 +84,11 @@ function LiveDayView({
         options={[
           { value: 'lifts', label: t.day.tabs.lifts },
           {
+            value: 'withdrawals',
+            label: t.day.tabs.withdrawals,
+            count: day.withdrawals?.length || undefined,
+          },
+          {
             value: 'payments',
             label: t.day.tabs.payments,
             count: attention.unpaid.length || undefined,
@@ -111,6 +117,7 @@ function LiveDayView({
             />
           </Section>
           <AttentionList
+            timezone={session.timezone}
             attention={attention}
             onRequests={() => show('requests')}
             onLift={(time) => navigate({ name: 'lift', date, time })}
@@ -132,6 +139,13 @@ function LiveDayView({
             </Section>
           )}
         </>
+      )}
+      {route.tab === 'withdrawals' && (
+        <WithdrawalList
+          entries={day.withdrawals}
+          timezone={session.timezone}
+          onLift={(time) => navigate({ name: 'lift', date, time })}
+        />
       )}
       {route.tab === 'payments' && (
         <PaymentsTab

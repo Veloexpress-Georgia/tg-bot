@@ -107,7 +107,7 @@ export const ru: Messages = {
     unpaidChip: (n) => `${num(n)} не оплатили`,
     cashChip: (n) => `${num(n)} наличными`,
     sections: 'Разделы дня',
-    tabs: { lifts: 'Выезды', payments: 'Оплаты', requests: 'Запросы' },
+    tabs: { lifts: 'Выезды', payments: 'Оплаты', requests: 'Запросы', withdrawals: 'Отмены' },
     liftsRunning: (running, total) =>
       `${running} из ${count(total, 'выезда', 'выездов', 'выездов')} ${ruWord(running, 'набрал', 'набрали', 'набрали')} минимум`,
     riders,
@@ -157,6 +157,13 @@ export const ru: Messages = {
     offlineHint: 'Для тех, кого нет в Telegram',
     addOffline: 'Добавить ручное место',
     removeOffline: 'Убрать ручное место',
+  },
+  withdrawals: {
+    title: 'Отмены записи',
+    empty: 'Записанных отмен нет',
+    timezone: (zone) => `Время записи отмены · ${zone}`,
+    before: 'До дедлайна',
+    after: 'После дедлайна',
   },
   order: {
     title: 'Порядок записи',

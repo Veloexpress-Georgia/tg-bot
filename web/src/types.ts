@@ -116,6 +116,14 @@ export interface RiderBooking {
     running: boolean;
   }[];
 }
+export interface BookingWithdrawal {
+  event_id: number;
+  telegram_user_id: number;
+  label: string;
+  lift_time: string;
+  changed_at: string;
+  after_deadline: boolean;
+}
 export interface LiveDay {
   service_date: string;
   lifts: Lift[];
@@ -132,7 +140,13 @@ export interface LiveDay {
     lift_time: string;
     position: number;
   }[];
-  late_exits: { telegram_user_id: number; label: string; lift_time: string }[];
+  late_exits: {
+    telegram_user_id: number;
+    label: string;
+    lift_time: string;
+    changed_at?: string | null;
+  }[];
+  withdrawals?: BookingWithdrawal[];
   historical?: false;
   riders?: (RiderBooking & { user_id: number; label: string })[];
   commands?: CommandResult[];
