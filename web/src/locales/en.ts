@@ -102,7 +102,12 @@ export const en = {
     unpaidChip: (n: number) => `${num(n)} unpaid`,
     cashChip: (n: number) => `${num(n)} cash`,
     sections: 'Day sections',
-    tabs: { lifts: 'Lifts', payments: 'Payments', requests: 'Requests' },
+    tabs: {
+      lifts: 'Lifts',
+      payments: 'Payments',
+      requests: 'Requests',
+      withdrawals: 'Withdrawals',
+    },
     liftsRunning: (running: number, total: number) =>
       `${running} of ${count(total, 'lift', 'lifts')} running`,
     riders: (n: number) => count(n, 'rider', 'riders'),
@@ -152,6 +157,13 @@ export const en = {
     offlineHint: 'For riders not in Telegram',
     addOffline: 'Add a manual seat',
     removeOffline: 'Remove a manual seat',
+  },
+  withdrawals: {
+    title: 'Booking withdrawals',
+    empty: 'No recorded withdrawals',
+    timezone: (zone: string) => `Recorded times · ${zone}`,
+    before: 'Before deadline',
+    after: 'After deadline',
   },
   order: {
     title: 'Booking order',

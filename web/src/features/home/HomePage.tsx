@@ -99,6 +99,7 @@ function FocusDay({
         />
       </Section>
       <AttentionList
+        timezone={session.timezone}
         attention={attention}
         onRequests={() => navigate({ name: 'day', date, tab: 'requests' })}
         onLift={(time) => navigate({ name: 'lift', date, time })}

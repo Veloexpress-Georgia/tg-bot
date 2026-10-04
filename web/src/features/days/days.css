@@ -366,3 +366,9 @@ button.money-card-body:active {
 .money-card-body .badges {
   margin-top: 2px;
 }
+
+.withdrawal-time {
+  display: block;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}

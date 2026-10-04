@@ -386,6 +386,10 @@ def create_app(
             **asdict(day),
             "lifts": details,
             "riders": riders,
+            "withdrawals": [
+                asdict(entry)
+                for entry in await runtime.lifts.booking_withdrawals(service_date=service_date)
+            ],
             "commands": await queue.recent(service_date=service_date),
         }
 

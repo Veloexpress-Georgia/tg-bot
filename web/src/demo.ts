@@ -383,7 +383,40 @@ function buildDay(service_date: string): LiveDay {
         position: index + 1,
       })),
     ),
-    late_exits: [{ telegram_user_id: idOf('@irakli_p'), label: '@irakli_p', lift_time: '10:00' }],
+    late_exits: [
+      {
+        telegram_user_id: idOf('@irakli_p'),
+        label: '@irakli_p',
+        lift_time: '10:00',
+        changed_at: '2026-10-04T04:09:20Z',
+      },
+    ],
+    withdrawals: [
+      {
+        event_id: 3,
+        telegram_user_id: idOf('@irakli_p'),
+        label: '@irakli_p',
+        lift_time: '10:00',
+        changed_at: '2026-10-04T04:09:20Z',
+        after_deadline: true,
+      },
+      {
+        event_id: 2,
+        telegram_user_id: idOf('@sandro_v'),
+        label: '@sandro_v',
+        lift_time: '15:30',
+        changed_at: '2026-10-04T01:13:51Z',
+        after_deadline: true,
+      },
+      {
+        event_id: 1,
+        telegram_user_id: idOf('@niko_t'),
+        label: '@niko_t',
+        lift_time: '15:30',
+        changed_at: '2026-10-03T14:13:22Z',
+        after_deadline: false,
+      },
+    ],
     commands: [
       {
         id: 900,

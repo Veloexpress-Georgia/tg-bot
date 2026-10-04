@@ -22,6 +22,7 @@ import {
 } from '../../ui';
 import { liftState, liftStateLabel, liftTone, relativeDay, shortDate } from './model';
 import { PaymentMark } from './PaymentMark';
+import { WithdrawalList } from './WithdrawalList';
 import './days.css';
 
 type LiftRoute = Extract<Route, { name: 'lift' }>;
@@ -125,6 +126,10 @@ function LiftView({
           />
         )}
       </Section>
+      <WithdrawalList
+        entries={day.withdrawals?.filter((entry) => entry.lift_time === lift.time)}
+        timezone={session.timezone}
+      />
       {!day.past && (
         <Section title={t.lift.manage}>
           <Card flush>

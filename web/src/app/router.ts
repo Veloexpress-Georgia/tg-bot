@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
  * screen is a page with its own back step; nothing operational lives in a
  * dialog stacked on another screen.
  */
-export type DayTab = 'lifts' | 'payments' | 'requests';
+export type DayTab = 'lifts' | 'payments' | 'requests' | 'withdrawals';
 export type Route =
   | { name: 'home' }
   | { name: 'days' }
@@ -52,7 +52,8 @@ export function parseRoute(hash: string): Route {
       return sub === 'order'
         ? { name: 'order', date, time }
         : { name: 'lift', date, time, ...(filter ? { filter } : {}) };
-    const tab: DayTab = kind === 'payments' || kind === 'requests' ? kind : 'lifts';
+    const tab: DayTab =
+      kind === 'payments' || kind === 'requests' || kind === 'withdrawals' ? kind : 'lifts';
     return { name: 'day', date, tab, ...(filter ? { filter } : {}) };
   }
   if (head && head in aliases) return { name: aliases[head] };

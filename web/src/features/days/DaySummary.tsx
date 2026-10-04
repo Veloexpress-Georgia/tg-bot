@@ -13,6 +13,7 @@ import {
   runningCount,
   type dayAttention,
 } from './model';
+import { withdrawalTime } from './WithdrawalList';
 import './days.css';
 
 export function daySubtitle(day: LiveDay) {
@@ -143,7 +144,9 @@ export function AttentionList({
   attention,
   onRequests,
   onLift,
+  timezone,
 }: {
+  timezone: string;
   attention: ReturnType<typeof dayAttention>;
   onRequests(): void;
   onLift(time: string): void;
@@ -168,7 +171,16 @@ export function AttentionList({
               leading={<CircleAlert size={19} />}
               tone="warn"
               title={`${exit.label} · ${exit.lift_time}`}
-              subtitle={t.day.lateExit}
+              subtitle={
+                <>
+                  {t.day.lateExit}
+                  {exit.changed_at && (
+                    <span className="withdrawal-time">
+                      {withdrawalTime(exit.changed_at, timezone)}
+                    </span>
+                  )}
+                </>
+              }
               onClick={() => onLift(exit.lift_time)}
             />
           ))}

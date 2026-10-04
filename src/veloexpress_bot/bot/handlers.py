@@ -564,6 +564,38 @@ async def select_booking_monitor_day(
     await _show_monitor(message, poll_service, callback.from_user.id, selected_date)
 
 
+@router.callback_query(F.data.startswith("mon:withdrawals:"))
+async def open_booking_withdrawals(
+    callback: CallbackQuery,
+    settings: Settings,
+    poll_service: PollPostingService,
+) -> None:
+    message = await _admin_private_message(callback, settings)
+    if message is None:
+        return
+    parts = (callback.data or "").split(":")
+    try:
+        if len(parts) != 5:
+            raise ValueError("Invalid withdrawal page")
+        service_date = decode_monitor_date(parts[2])
+        lift_time = None if parts[3] == "all" else decode_monitor_time(parts[3])
+        page = max(0, int(parts[4]))
+    except ValueError:
+        await callback.answer("This withdrawal page is unavailable.", show_alert=True)
+        return
+    await callback.answer()
+    draft = await poll_service.booking_withdrawals_view(
+        service_date=service_date, lift_time=lift_time, page=page
+    )
+    await _show_live(
+        message,
+        poll_service,
+        callback.from_user.id,
+        AdminScreen(name="withdrawals", service_date=service_date, lift_time=lift_time, page=page),
+        draft,
+    )
+
+
 @router.callback_query(F.data.startswith("mon:add:") | F.data.startswith("mon:sub:"))
 async def adjust_manual_booking(
     callback: CallbackQuery,
