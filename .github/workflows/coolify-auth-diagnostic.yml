@@ -1,0 +1,82 @@
+name: Coolify auth diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/coolify-auth-diagnostic.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Read-only Coolify authentication probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    environment: Production
+    steps:
+      - name: Check format and authentication without deploying resources
+        env:
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
+        run: |
+          python3 - <<'PY_PROBE'
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          raw = os.environ.get('COOLIFY_TOKEN', '')
+          url = urllib.parse.urlsplit(os.environ.get('COOLIFY_WEBHOOK', ''))
+          print(json.dumps({
+              'host': url.hostname, 'path': url.path, 'https': url.scheme == 'https',
+              'token_present': bool(raw), 'token_length': len(raw),
+              'outer_whitespace': raw != raw.strip(),
+              'has_pipe_separator': '|' in raw,
+              'numeric_id_prefix': bool(re.match(r'^\d+\|', raw)),
+              'already_has_bearer_prefix': raw.lower().startswith('bearer '),
+              'control_characters': any(ord(c) < 32 for c in raw),
+          }, sort_keys=True))
+          if url.hostname != 'coolify.whekin.dev' or url.scheme != 'https' or url.username or url.port not in (None, 443):
+              raise SystemExit('Refusing to send credentials to an unexpected destination')
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          opener = urllib.request.build_opener(NoRedirect)
+          base = 'https://coolify.whekin.dev'
+          known = {
+              'Unauthenticated.', 'Invalid token.', 'You must provide uuid or tag.',
+              'API access is disabled.', 'API access is disabled for this team.',
+              'Forbidden.', 'Insufficient permissions.',
+          }
+          # No UUID, tag or body is supplied. Coolify rejects this before resource deployment.
+          for path in ('/api/v1/health', '/api/v1/deploy'):
+              request = urllib.request.Request(base + path, headers={
+                  'Authorization': 'Bearer ' + raw, 'Accept': 'application/json',
+              })
+              try:
+                  response = opener.open(request, timeout=20)
+              except urllib.error.HTTPError as error:
+                  response = error
+              except ValueError:
+                  print(json.dumps({'path': path, 'error': 'invalid_header_format'}))
+                  continue
+              except urllib.error.URLError:
+                  print(json.dumps({'path': path, 'error': 'network_or_tls_error'}))
+                  continue
+              content = response.read(8192).decode('utf-8', errors='replace')
+              try:
+                  payload = json.loads(content)
+                  message = payload.get('message') if isinstance(payload, dict) else None
+              except json.JSONDecodeError:
+                  message = None
+              challenge = response.headers.get('WWW-Authenticate', '').split(' ', 1)[0].lower()
+              print(json.dumps({'path': path, 'status': response.status,
+                  'message': message if message in known else ('other_json' if message else 'non_json'),
+                  'authentication_scheme': challenge if challenge in ('basic', 'bearer') else None,
+              }, sort_keys=True))
+          PY_PROBE
