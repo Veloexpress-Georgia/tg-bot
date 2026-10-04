@@ -36,6 +36,7 @@ jobs:
               'outer_whitespace': raw != raw.strip(),
               'has_pipe_separator': '|' in raw,
               'numeric_id_prefix': bool(re.match(r'^\d+\|', raw)),
+              'token_record_id': int(raw.split('|', 1)[0]) if re.match(r'^\d+\|', raw) else None,
               'already_has_bearer_prefix': raw.lower().startswith('bearer '),
               'control_characters': any(ord(c) < 32 for c in raw),
           }, sort_keys=True))
@@ -54,9 +55,9 @@ jobs:
               'Forbidden.', 'Insufficient permissions.',
           }
           # No UUID, tag or body is supplied. Coolify rejects this before resource deployment.
-          for path in ('/api/v1/health', '/api/v1/deploy'):
+          for path, mode, credential in (('/api/v1/health', 'original', raw), ('/api/v1/deploy', 'original', raw), ('/api/v1/deploy', 'hash_lookup', raw.split('|', 1)[-1])):
               request = urllib.request.Request(base + path, headers={
-                  'Authorization': 'Bearer ' + raw, 'Accept': 'application/json',
+                  'Authorization': 'Bearer ' + credential, 'Accept': 'application/json',
               })
               try:
                   response = opener.open(request, timeout=20)
@@ -75,7 +76,7 @@ jobs:
               except json.JSONDecodeError:
                   message = None
               challenge = response.headers.get('WWW-Authenticate', '').split(' ', 1)[0].lower()
-              print(json.dumps({'path': path, 'status': response.status,
+              print(json.dumps({'path': path, 'mode': mode, 'status': response.status,
                   'message': message if message in known else ('other_json' if message else 'non_json'),
                   'authentication_scheme': challenge if challenge in ('basic', 'bearer') else None,
               }, sort_keys=True))
