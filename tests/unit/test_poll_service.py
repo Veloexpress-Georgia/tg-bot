@@ -86,6 +86,7 @@ class FakeTelegramClient:
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
         parse_mode: str | None = None,
+        disable_notification: bool = False,
     ) -> SentTextMessage:
         if chat_id == -100123:
             assert message_thread_id == 7

@@ -85,6 +85,7 @@ class FakeTelegramClient:
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
         parse_mode: str | None = None,
+        disable_notification: bool = False,
     ) -> SentTextMessage:
         self.next_message_id += 1
         self.sent.append(
@@ -418,6 +419,41 @@ async def test_the_board_appears_once_a_lift_runs_and_is_then_edited_in_place(
         stored = await session.scalar(select(PaymentsBoard))
     assert stored is not None
     assert stored.service_date == saturday
+
+
+async def test_a_board_for_an_earlier_day_moves_later_boards_below_it(
+    db: SharedDatabase,
+) -> None:
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    sunday = saturday + timedelta(days=1)
+    sunday_poll = await poll_service.create_poll(
+        PollSetup(service_date=sunday, created_by_user_id=1, cancelled_lift_times=("15:30",)),
+        include_notice=False,
+        pin_after_send=False,
+    )
+    # Sunday funds first, so its board is posted first.
+    await _fill(poll_service, sunday_poll.poll_id or "", 0, riders=5)
+    await payments.sync_boards()
+    [first_sunday] = client.payments_sends()
+    assert "Payments · Sun" in first_sunday.text
+
+    await _fill(poll_service, poll_id, 0, riders=5, first_user_id=200)
+    await payments.sync_boards()
+
+    sends = client.payments_sends()
+    # Saturday lands above Sunday: the old Sunday board is replaced, not duplicated.
+    assert ["Payments · Sat" in r.text for r in sends[1:]] == [True, False]
+    assert first_sunday.message_id in client.deleted
+    async with db.session() as session:
+        boards = {
+            b.service_date: b.telegram_message_id
+            for b in await session.scalars(select(PaymentsBoard))
+        }
+    assert boards == {saturday: sends[1].message_id, sunday: sends[2].message_id}
+
+    # Already in order: later ticks edit in place.
+    await payments.sync_boards()
+    assert len(client.payments_sends()) == 3
 
 
 async def test_a_claim_posts_the_rider_line_with_the_amount(db: SharedDatabase) -> None:

@@ -1448,7 +1448,11 @@ class PaymentsService:
                 board.lift_message_id = None
                 await session.commit()
 
-    async def _refresh_payments_board(self, day: DayBookings) -> None:
+    async def _refresh_payments_board(self, day: DayBookings, *, repost: bool = False) -> None:
+        """Edit the day's board in place, or post it when it does not exist yet.
+
+        `repost` moves an existing board to the bottom of the topic instead.
+        """
         view = await self._board_view(day)
         draft = render_payments_board(view)
         async with self._session_factory() as session:
@@ -1462,7 +1466,15 @@ class PaymentsService:
                 return
             board_message_id = board.telegram_message_id if board is not None else None
 
-        if board_message_id is not None:
+        if repost:
+            if board_message_id is None or draft.reply_markup is None:
+                return
+            # Delete first: a failed delete must not leave two boards for one day.
+            if not await self._telegram_client.delete_message(
+                chat_id=self._require_chat_id(), message_id=board_message_id
+            ):
+                return
+        elif board_message_id is not None:
             updated = await self._telegram_client.edit_text(
                 chat_id=self._require_chat_id(),
                 message_id=board_message_id,
@@ -1482,6 +1494,8 @@ class PaymentsService:
             text=draft.text,
             reply_markup=draft.reply_markup,
             parse_mode=PAYMENTS_PARSE_MODE,
+            # Moving a board the group already saw is not news.
+            disable_notification=repost,
         )
         async with self._session_factory() as session:
             board = await session.scalar(
@@ -1516,6 +1530,35 @@ class PaymentsService:
             sent.message_id,
             extra={"service_date": day.service_date.isoformat(), "message_id": sent.message_id},
         )
+        if not repost:
+            await self._repost_later_boards(day.service_date)
+
+    async def _repost_later_boards(self, service_date: date) -> None:
+        """Keep boards in day order: Sat above Sun, whichever funded first.
+
+        A later day often reaches the minimum first, and a board posted below it
+        then reads as the next day. Later live boards move below the new one.
+        Locks are taken in date order, as `sync_boards` does, so this cannot
+        deadlock against another refresh.
+        """
+        async with self._session_factory() as session:
+            later_dates = list(
+                await session.scalars(
+                    select(PaymentsBoard.service_date)
+                    .where(PaymentsBoard.environment == self._settings.app_env)
+                    .where(PaymentsBoard.chat_id == self._require_chat_id())
+                    .where(PaymentsBoard.service_date > service_date)
+                    .where(PaymentsBoard.retired_at.is_(None))
+                    .order_by(PaymentsBoard.service_date)
+                )
+            )
+        for later_date in later_dates:
+            later_day = await self._day(later_date)
+            if later_day is None:
+                continue
+            async with self._session_factory() as session:
+                await self._lock_board(session, later_date)
+                await self._refresh_payments_board(later_day, repost=True)
 
     async def _board_view(self, day: DayBookings) -> PaymentsBoardView:
         async with self._session_factory() as session:

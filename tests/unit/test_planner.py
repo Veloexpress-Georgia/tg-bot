@@ -41,6 +41,7 @@ class RecordingTelegramClient:
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
         parse_mode: str | None = None,
+        disable_notification: bool = False,
     ) -> SentTextMessage:
         self.sent_texts.append(text)
         self.next_message_id += 1

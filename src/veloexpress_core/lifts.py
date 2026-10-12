@@ -177,6 +177,7 @@ class TelegramPollClient(Protocol):
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
         parse_mode: str | None = None,
+        disable_notification: bool = False,
     ) -> SentTextMessage: ...
 
     async def send_poll(

@@ -23,6 +23,7 @@ class AiogramTelegramClient:
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
         parse_mode: str | None = None,
+        disable_notification: bool = False,
     ) -> SentTextMessage:
         try:
             message = await self._bot.send_message(
@@ -31,6 +32,7 @@ class AiogramTelegramClient:
                 text=text,
                 reply_markup=reply_markup,
                 parse_mode=parse_mode,
+                disable_notification=disable_notification,
             )
         except TelegramForbiddenError as error:
             logger.warning(
