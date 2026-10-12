@@ -132,8 +132,8 @@ def render_payments_board(view: PaymentsBoardView) -> PaymentsBoardDraft:
         header,
         "",
         f"Payment open: {', '.join(view.running_lift_times)}",
-        f"{view.price_gel} GEL per seat · transfer by {view.deadline_time}"
-        f" ({_long_day_label(view.service_date - timedelta(days=1))})",
+        f"{view.price_gel} GEL per seat · transfer by "
+        f"{_weekday(view.service_date - timedelta(days=1))} {view.deadline_time}",
     ]
     if view.payments:
         lines.extend(("", "Paid:"))
@@ -251,6 +251,10 @@ def _payment_line(payment: RiderPayment) -> str:
         # A free amount is an estimate, not a completed or promised bank payout.
         gap = f" · {-payment.gap_gel} {'prepaid' if payment.prepaid else 'unallocated'}"
     return f"✓ {html.escape(payment.label)} — {payment.amount_gel} GEL{seats}{cash}{gap}"
+
+
+def _weekday(service_date: date) -> str:
+    return SHORT_DAY_LABELS[service_date.weekday()]
 
 
 def _long_day_label(service_date: date) -> str:

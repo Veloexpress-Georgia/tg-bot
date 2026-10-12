@@ -48,7 +48,7 @@ def test_board_lists_running_lifts_price_and_the_taps() -> None:
 
     assert "💸 Payments · Sat, 18 Jul" in draft.text
     assert "Payment open: 8:30, 10:00" in draft.text
-    assert "15 GEL per seat · transfer by 20:00" in draft.text
+    assert "15 GEL per seat · transfer by Fri 20:00" in draft.text
     assert "Waiting on:" in draft.text
     assert draft.reply_markup is not None
     # Cash has its own button rather than a rule telling riders to press the

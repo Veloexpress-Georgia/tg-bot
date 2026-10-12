@@ -62,7 +62,7 @@ def test_payment_messages_separate_cash_on_site_from_transfer_deadline(text: str
     assert "book and pay by" not in text.lower()
 
 
-def test_cash_counts_toward_the_lift_like_a_transfer() -> None:
+def test_cash_is_reported_with_its_own_button() -> None:
     text = bank_details_text().lower()
-    assert "counts toward the lift like a transfer" in text
+    assert "i'll pay cash" in text
     assert "misho records" not in text

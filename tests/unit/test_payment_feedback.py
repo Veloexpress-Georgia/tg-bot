@@ -79,8 +79,7 @@ def test_money_already_reported_is_visible_even_when_all_seats_are_waitlisted() 
     assert "Misho" in draft.text
 
 
-def test_bank_details_explain_how_to_report_payment_for_another_rider() -> None:
+def test_bank_details_say_which_button_to_tap() -> None:
     text = bank_details_text()
-    assert "another rider" in text
-    assert "their day" in text
-    assert "Misho" in text
+    assert "Transferred? Tap 💸 I paid." in text
+    assert "Paying Misho cash on site? Tap 💵 I'll pay cash." in text
