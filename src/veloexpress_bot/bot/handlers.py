@@ -36,7 +36,7 @@ from veloexpress_bot.payments.myday import (
     decode_guest_time,
     parse_deep_link,
 )
-from veloexpress_bot.payments.render import decode_board_date
+from veloexpress_bot.payments.render import PAYMENTS_PARSE_MODE, decode_board_date
 from veloexpress_bot.polls.autoschedule import CardView
 from veloexpress_bot.polls.extraday import (
     ExtraDayDraftState,
@@ -1024,6 +1024,7 @@ async def handle_lift_cancellation(
             "confirm_day",
             draft.text,
             draft.reply_markup,
+            parse_mode=PAYMENTS_PARSE_MODE,
             service_date=service_date,
         )
         await callback.answer()
@@ -1062,6 +1063,7 @@ async def handle_lift_cancellation(
             "confirm_lift",
             draft.text,
             draft.reply_markup,
+            parse_mode=PAYMENTS_PARSE_MODE,
             service_date=service_date,
             lift_time=lift_time,
         )
