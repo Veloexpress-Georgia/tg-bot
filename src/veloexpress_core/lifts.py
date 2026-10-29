@@ -2038,6 +2038,8 @@ class PollPostingService:
     ) -> list[LiftEvent]:
         signals = _day_signals(day)
         opener = day_opener_time(signals)
+        terms = await self._payment_terms(service_date=day.service_date)
+        deadline_at = booking_deadline_at(day.service_date, terms.deadline_time, zone=self._zone)
         events: list[LiftEvent] = []
         async with self._session_factory() as session:
             rows = await self._lift_signal_rows(session=session, service_date=day.service_date)
@@ -2047,6 +2049,7 @@ class PollPostingService:
                     signal,
                     _lift_memory(row),
                     now=now,
+                    deadline_at=deadline_at,
                     departure_at=lift_departure_at(
                         signal.service_date,
                         signal.lift_time,

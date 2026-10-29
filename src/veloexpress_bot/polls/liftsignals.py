@@ -74,6 +74,7 @@ def decide_lift_signal(
     memory: LiftMemory,
     *,
     now: datetime,
+    deadline_at: datetime,
     departure_at: datetime,
     is_day_opener: bool,
 ) -> LiftDecision:
@@ -88,7 +89,7 @@ def decide_lift_signal(
             departure_at=departure_at,
             is_day_opener=is_day_opener,
         )
-    return _decide_short(signal, memory, now=now)
+    return _decide_short(signal, memory, now=now, deadline_at=deadline_at)
 
 
 def _decide_running(
@@ -129,7 +130,9 @@ def _decide_running(
     return LiftDecision(memory=updated)
 
 
-def _decide_short(signal: LiftSignal, memory: LiftMemory, *, now: datetime) -> LiftDecision:
+def _decide_short(
+    signal: LiftSignal, memory: LiftMemory, *, now: datetime, deadline_at: datetime
+) -> LiftDecision:
     if memory.threshold_notified_at is None:
         # Never announced as running, so there is nothing to walk back.
         return LiftDecision(memory=memory)
@@ -138,6 +141,10 @@ def _decide_short(signal: LiftSignal, memory: LiftMemory, *, now: datetime) -> L
     if memory.undershoot_notified_at is not None:
         return LiftDecision(memory=memory)
     if now - memory.undershoot_since < UNDERSHOOT_DEBOUNCE:
+        return LiftDecision(memory=memory)
+    # Early vote changes are normal planning, not a reason to tag riders. Use
+    # the same evening-before window as the day's general deadline reminder.
+    if not deadline_at - DEADLINE_REMINDER_LEAD <= now <= deadline_at:
         return LiftDecision(memory=memory)
     return LiftDecision(
         memory=replace(memory, undershoot_notified_at=now),

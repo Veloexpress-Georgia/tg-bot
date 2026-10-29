@@ -855,7 +855,9 @@ async def test_lift_signals_report_a_settled_undershoot(db: SharedDatabase) -> N
     poll_id = poll.poll_id or ""
     await _fill_lift(service, poll_id, riders=5)
 
-    start = datetime.now(UTC)
+    start = booking_deadline_at(saturday, "20:00", zone=ZoneInfo("Asia/Tbilisi")) - timedelta(
+        hours=1
+    )
     await service.evaluate_lift_signals(now=start)
 
     await service.track_poll_answer(
@@ -870,6 +872,55 @@ async def test_lift_signals_report_a_settled_undershoot(db: SharedDatabase) -> N
     events = await service.evaluate_lift_signals(now=start + timedelta(minutes=12))
     assert [event.kind for event in events] == ["undershoot"]
     assert "is short — 4/5 riders" in client.sent_texts[-1]
+
+
+@pytest.mark.parametrize("day_offset", [0, 1])
+@pytest.mark.parametrize("deadline_time", ["20:00", "19:30"])
+async def test_lift_undershoot_stays_quiet_until_its_own_deadline_evening(
+    db: SharedDatabase, day_offset: int, deadline_time: str
+) -> None:
+    client = FakeTelegramClient()
+    service_settings = settings()
+    service_settings.booking_deadline_time = deadline_time
+    defaults = ServiceDayDefaultsStore(settings=service_settings, session_factory=db.session)
+    service = PollPostingService(
+        settings=service_settings,
+        session_factory=db.session,
+        telegram_client=client,
+        service_day_defaults=defaults,
+    )
+    saturday, _ = _upcoming_weekend()
+    saturday += timedelta(days=7)
+    service_date = saturday + timedelta(days=day_offset)
+    poll = await service.create_poll(
+        PollSetup(service_date=service_date, created_by_user_id=1), pin_after_send=False
+    )
+    # A later default change must not move this published day's warning window.
+    await defaults.adjust_deadline(-30, admin_user_id=1)
+    poll_id = poll.poll_id or ""
+    thursday = datetime.combine(
+        saturday - timedelta(days=2), time(20, 49), tzinfo=ZoneInfo("Asia/Tbilisi")
+    )
+    await _fill_lift(service, poll_id, riders=5)
+    await service.evaluate_lift_signals(now=thursday)
+    await service.track_poll_answer(
+        poll_id=poll_id,
+        telegram_user_id=104,
+        username="rider4",
+        full_name="Rider 4",
+        option_ids=(),
+    )
+    await service.evaluate_lift_signals(now=thursday + timedelta(minutes=1))
+    assert await service.evaluate_lift_signals(now=thursday + timedelta(minutes=12)) == ()
+    assert not any("is short" in text for text in client.sent_texts)
+
+    deadline = booking_deadline_at(service_date, deadline_time, zone=ZoneInfo("Asia/Tbilisi"))
+    assert await service.evaluate_lift_signals(now=deadline - timedelta(days=1, hours=2)) == ()
+    assert await service.evaluate_lift_signals(now=deadline - timedelta(hours=2, seconds=1)) == ()
+    events = await service.evaluate_lift_signals(now=deadline - timedelta(hours=2))
+    assert [event.kind for event in events] == ["undershoot"]
+    assert "is short — 4/5 riders" in client.sent_texts[-1]
+    assert await service.evaluate_lift_signals(now=deadline - timedelta(hours=1)) == ()
 
 
 async def test_lift_signals_ping_only_the_first_lift_before_departure(

@@ -45,6 +45,7 @@ def _decide(
         signal,
         memory,
         now=now,
+        deadline_at=booking_deadline_at(signal.service_date, TERMS.deadline_time, zone=TBILISI),
         departure_at=lift_departure_at(SATURDAY, signal.lift_time, zone=TBILISI),
         is_day_opener=is_day_opener,
     )
@@ -65,7 +66,7 @@ def test_threshold_is_announced_once_and_never_again() -> None:
 
 
 def test_undershoot_waits_for_the_debounce_then_speaks_once() -> None:
-    now = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
+    now = datetime(2026, 7, 17, 18, 0, tzinfo=TBILISI)
     confirmed = _decide(_signal(5), LiftMemory(), now=now).memory
 
     dropped = _decide(_signal(4), confirmed, now=now + timedelta(minutes=1))
@@ -84,7 +85,7 @@ def test_undershoot_waits_for_the_debounce_then_speaks_once() -> None:
 
 
 def test_a_recovered_lift_stays_quiet_but_can_report_a_later_drop() -> None:
-    now = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
+    now = datetime(2026, 7, 17, 18, 0, tzinfo=TBILISI)
     confirmed = _decide(_signal(5), LiftMemory(), now=now).memory
     dropped = _decide(_signal(4), confirmed, now=now + timedelta(minutes=1)).memory
     notified = _decide(_signal(4), dropped, now=now + timedelta(minutes=12)).memory
@@ -98,6 +99,31 @@ def test_a_recovered_lift_stays_quiet_but_can_report_a_later_drop() -> None:
     settled_again = _decide(_signal(4), dropped_again.memory, now=now + timedelta(minutes=55))
     assert settled_again.event is not None
     assert settled_again.event.kind == "undershoot"
+
+
+@pytest.mark.parametrize(
+    ("offset", "should_notify"),
+    [
+        (timedelta(days=-2), False),
+        (timedelta(hours=-2, seconds=-1), False),
+        (timedelta(hours=-2), True),
+        (timedelta(), True),
+        (timedelta(seconds=1), False),
+        (timedelta(hours=12), False),
+    ],
+)
+def test_undershoot_only_notifies_in_the_deadline_window(
+    offset: timedelta, should_notify: bool
+) -> None:
+    deadline = booking_deadline_at(SATURDAY, TERMS.deadline_time, zone=TBILISI)
+    memory = LiftMemory(
+        threshold_notified_at=deadline - timedelta(days=2),
+        undershoot_since=deadline - timedelta(days=1),
+    )
+    decision = _decide(_signal(4), memory, now=deadline + offset)
+    assert (decision.event is not None) is should_notify
+    if not should_notify:
+        assert decision.memory.undershoot_notified_at is None
 
 
 def test_a_cancelled_lift_never_signals() -> None:
