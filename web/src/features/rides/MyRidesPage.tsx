@@ -21,6 +21,7 @@ import {
   Segmented,
   Stepper,
 } from '../../ui';
+import { BikeParkCard } from '../days/BikeParkCard';
 import { longDate, shortDate } from '../days/model';
 import './rides.css';
 
@@ -36,7 +37,21 @@ export function MyRidesPage() {
 
 type RideDay = MyDays['days'][number];
 
-function MyRides({ data }: { data: MyDays }) {
+function MyRides({ data: source }: { data: MyDays }) {
+  const data = {
+    ...source,
+    days: [
+      ...source.days,
+      ...(source.bike_parks ?? [])
+        .filter((park) => !source.days.some((day) => day.service_date === park.service_date))
+        .map((park) => ({
+          service_date: park.service_date,
+          past: false,
+          lifts: [],
+          booking: null,
+        })),
+    ].sort((a, b) => a.service_date.localeCompare(b.service_date)),
+  };
   const [selected, setSelected] = useState<string | null>(null);
   const first =
     data.days.find((day) => !day.past && day.booking?.rows.length) ??
@@ -94,12 +109,21 @@ function RideDayView({ day, data }: { day: RideDay; data: MyDays }) {
   // Both report the payment for the seats held now; cash is only handed over on site.
   const report = (method: 'cash' | 'transfer') =>
     act({ action: 'claim_payment', service_date: date, method });
+  const park = data.bike_parks?.find((park) => park.service_date === date);
+  if (!day.lifts.length && park)
+    return (
+      <>
+        <h2>{longDate(date)}</h2>
+        <BikeParkCard park={park} />
+      </>
+    );
   const cash = booking?.payment_method === 'cash';
   return (
     <Section
       title={longDate(date)}
       action={day.past ? <Badge tone="muted">{t.rides.past}</Badge> : undefined}
     >
+      {park && <BikeParkCard park={park} />}
       {booking?.rows.length ? (
         <div className="stack">
           <Card flush>

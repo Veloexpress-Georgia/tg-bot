@@ -26,6 +26,7 @@ class ServiceDayDefaultValues:
     price_gel: int
     deadline_time: str
     timezone: str
+    bike_park_price_gel: int = 5
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class ServiceDayDefaultsStore:
                 row.deadline_time if row is not None else self._settings.booking_deadline_time
             ),
             timezone=self._settings.schedule_timezone,
+            bike_park_price_gel=row.bike_park_price_gel if row is not None else 5,
         )
 
     async def adjust_price(self, delta: int, *, admin_user_id: int) -> ServiceDayDefaultValues:
@@ -65,7 +67,7 @@ class ServiceDayDefaultsStore:
             deadline_time=current.deadline_time,
             admin_user_id=admin_user_id,
         )
-        return ServiceDayDefaultValues(price, current.deadline_time, current.timezone)
+        return await self.values()
 
     async def adjust_deadline(
         self, delta_minutes: int, *, admin_user_id: int
@@ -81,15 +83,36 @@ class ServiceDayDefaultsStore:
             deadline_time=deadline,
             admin_user_id=admin_user_id,
         )
-        return ServiceDayDefaultValues(current.price_gel, deadline, current.timezone)
+        return await self.values()
 
     async def set_values(
-        self, *, price_gel: int, deadline_time: str, admin_user_id: int
+        self,
+        *,
+        price_gel: int,
+        deadline_time: str,
+        admin_user_id: int,
+        bike_park_price_gel: int | None = None,
     ) -> ServiceDayDefaultValues:
         if price_gel <= 0 or price_gel > 10000:
             raise ValueError("Price must be between 1 and 10000 GEL")
+        if bike_park_price_gel is not None and not 1 <= bike_park_price_gel <= 10000:
+            raise ValueError("Bike park price must be between 1 and 10000 GEL")
         normalized = Settings.validate_booking_deadline(deadline_time)
-        await self._save(price_gel=price_gel, deadline_time=normalized, admin_user_id=admin_user_id)
+        await self._save(
+            price_gel=price_gel,
+            deadline_time=normalized,
+            admin_user_id=admin_user_id,
+            bike_park_price_gel=bike_park_price_gel,
+        )
+        return await self.values()
+
+    async def adjust_bike_park_price(
+        self, delta: int, *, admin_user_id: int
+    ) -> ServiceDayDefaultValues:
+        if delta not in {-PRICE_STEP_GEL, PRICE_STEP_GEL}:
+            raise ValueError("Price changes must be 1 GEL.")
+        # Adjust inside the same lock as every other settings write.
+        await self._save(admin_user_id=admin_user_id, bike_park_delta=delta)
         return await self.values()
 
     async def card(self) -> ServiceDayDefaultsCard:
@@ -110,9 +133,11 @@ class ServiceDayDefaultsStore:
     async def _save(
         self,
         *,
-        price_gel: int,
-        deadline_time: str,
+        price_gel: int | None = None,
+        deadline_time: str | None = None,
         admin_user_id: int,
+        bike_park_price_gel: int | None = None,
+        bike_park_delta: int = 0,
     ) -> None:
         chat_id = self._settings.telegram_target_chat_id
         if chat_id is None:
@@ -130,19 +155,33 @@ class ServiceDayDefaultsStore:
                 .where(ServiceDayDefaults.thread_id == self._settings.telegram_target_thread_id)
                 .with_for_update()
             )
+            park_price = (
+                bike_park_price_gel
+                if bike_park_price_gel is not None
+                else (row.bike_park_price_gel if row is not None else 5)
+            )
+            park_price += bike_park_delta
+            if not 1 <= park_price <= 10000:
+                raise ValueError("Bike park price must be between 1 and 10000 GEL")
             if row is None:
                 row = ServiceDayDefaults(
                     environment=self._settings.app_env,
                     chat_id=chat_id,
                     thread_id=self._settings.telegram_target_thread_id,
-                    price_gel=price_gel,
-                    deadline_time=deadline_time,
+                    price_gel=price_gel
+                    if price_gel is not None
+                    else self._settings.payment_price_gel,
+                    deadline_time=deadline_time or self._settings.booking_deadline_time,
+                    bike_park_price_gel=park_price,
                     updated_by_user_id=admin_user_id,
                 )
                 session.add(row)
             else:
-                row.price_gel = price_gel
-                row.deadline_time = deadline_time
+                if price_gel is not None:
+                    row.price_gel = price_gel
+                if deadline_time is not None:
+                    row.deadline_time = deadline_time
+                row.bike_park_price_gel = park_price
                 row.updated_by_user_id = admin_user_id
                 row.updated_at = datetime.now(UTC)
             await session.commit()
@@ -153,24 +192,30 @@ def render_service_day_defaults(values: ServiceDayDefaultValues) -> ServiceDayDe
         text=(
             "⚙️ Settings\n\n"
             f"💳 Price: {values.price_gel} GEL per seat\n"
+            f"🚵 Bike park: {values.bike_park_price_gel} GEL per lift · payment after riding\n"
             f"⏰ Booking deadline: {values.deadline_time} the evening before each lift day\n"
             f"🌍 Timezone: {values.timezone}\n\n"
             # Said in full, because the two scopes are easy to confuse and the
             # wrong reading is the expensive one.
             "These apply to lift days published from now on.\n"
-            "Days already published keep the price and deadline they opened with."
+            "Days already published keep the price and deadline they opened with.\n"
+            "Bike park polls also keep their published price."
         ),
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text=f"➖ {PRICE_STEP_GEL} GEL",
+                        text=f"🚐 −{PRICE_STEP_GEL} GEL",
                         callback_data="defaults:price:sub",
                     ),
                     InlineKeyboardButton(
-                        text=f"➕ {PRICE_STEP_GEL} GEL",
+                        text=f"🚐 +{PRICE_STEP_GEL} GEL",
                         callback_data="defaults:price:add",
                     ),
+                ],
+                [
+                    InlineKeyboardButton(text="🚵 −1 GEL", callback_data="defaults:bikepark:sub"),
+                    InlineKeyboardButton(text="🚵 +1 GEL", callback_data="defaults:bikepark:add"),
                 ],
                 [
                     InlineKeyboardButton(

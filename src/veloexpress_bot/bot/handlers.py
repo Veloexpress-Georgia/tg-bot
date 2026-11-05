@@ -363,7 +363,7 @@ async def show_start_menu(
     # A day that is happening today beats one that is merely next: on a lift
     # morning that is the only tab worth opening on. With no active day at all
     # the same card renders as the menu, so /start is never a dead end.
-    selected = _preferred_day(await poll_service.status_days(), today=_today(settings))
+    selected = _preferred_day(await poll_service.display_days(), today=_today(settings))
     message_id = await poll_service.open_booking_monitor(
         admin_user_id=message.from_user.id,
         private_chat_id=message.chat.id,
@@ -523,6 +523,11 @@ async def handle_service_day_defaults(
     try:
         if action == "price":
             await service_day_defaults.adjust_price(
+                PRICE_STEP_GEL if value == "add" else -PRICE_STEP_GEL,
+                admin_user_id=callback.from_user.id,
+            )
+        elif action == "bikepark":
+            await service_day_defaults.adjust_bike_park_price(
                 PRICE_STEP_GEL if value == "add" else -PRICE_STEP_GEL,
                 admin_user_id=callback.from_user.id,
             )

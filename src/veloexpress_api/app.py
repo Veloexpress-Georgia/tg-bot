@@ -329,7 +329,7 @@ def create_app(
     @app.get("/api/admin/days")
     async def admin_days(_: Annotated[dict[str, Any], Depends(admin)]):
         result = []
-        for day in await runtime.lifts.status_days():
+        for day in await runtime.lifts.display_days():
             result.append(
                 {
                     **asdict(day),
@@ -352,7 +352,7 @@ def create_app(
     @app.get("/api/admin/days/{service_date}")
     async def admin_day(service_date: date, _: Annotated[dict[str, Any], Depends(admin)]):
         day = next(
-            (d for d in await runtime.lifts.status_days() if d.service_date == service_date), None
+            (d for d in await runtime.lifts.display_days() if d.service_date == service_date), None
         )
         if day is None:
             audit = await runtime.lifts.lift_day_audit(service_date=service_date)
@@ -453,6 +453,20 @@ def create_app(
                 chat_id=config.telegram_target_chat_id or 0,
                 thread_id=config.telegram_target_thread_id,
             ),
+            "bike_parks": [
+                {
+                    "id": park.id,
+                    "service_date": park.service_date,
+                    "start_time": park.start_time,
+                    "price_gel": park.price_gel,
+                    "status": park.status,
+                    "started": park.started,
+                    "rider_count": len(park.riders),
+                    "poll_url": park.poll_url,
+                    "attending": any(r.telegram_user_id == user["uid"] for r in park.riders),
+                }
+                for park in await runtime.lifts.bike_park.list()
+            ],
             "bank_details": bank_details_text(),
         }
 

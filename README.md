@@ -372,3 +372,31 @@ Configure GitHub environments:
 
 
 Cancelling a whole day deletes its native polls as well as its availability card. A restart also removes polls previously left with `stopped` status. Success is persisted; transient failures retry without another cancellation notice. The Bot API's 48-hour deletion limit is respected: older polls are closed and unpinned once, with `delete_expired` recorded for manual deletion rather than endless retries. Poll snapshots and tracked votes remain in the database for history.
+
+## Bike park
+
+`🚵 Bike park` in the bot menu and **Plan → Bike park** in the miniapp publish an
+independent native Telegram poll. Choose a date within seven days and a start
+time; departure is always from Vake. The poll explains the six-rider minimum,
+usually five to seven lifts, and cash/bank settlement for actual lifts afterwards.
+The bike park price starts at 5 GEL and is independently editable alongside the
+ordinary lift price in Settings/Terms. Published polls retain their price.
+
+Bike park appears in the same calendar day as ordinary lifts, with its own
+participants and cancellation. A standalone bike park day is also supported.
+Creating it can optionally replace the last ordinary lift only when that lift
+has not reached its rider minimum. The confirmation shows the cancellation and
+its riders; votes never transfer. Publication happens first, and a lift that
+reaches its minimum during publication is kept. An unfinished replacement is
+reconciled by the normal worker after restart.
+
+Session votes never create ordinary seats, payment obligations, deadline rosters,
+or ride/income statistics. The actual remaining riders and the number of lifts
+are checked on site. On the bike park date, topic messages from signed-up riders
+are not inferred as ordinary-lift payments; riders who also booked ordinary
+lifts are asked to use an explicit payment button for those lifts.
+
+Deleting a park poll manually before its start retires that session on the next
+normal reconciliation. Network/access failures are not deletion evidence. A
+publication with an unknown Telegram outcome is shown for review rather than
+silently duplicated; check the group before cancelling that entry and reposting.

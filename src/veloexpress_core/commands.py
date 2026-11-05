@@ -30,6 +30,8 @@ Action = Literal[
     "plan",
     "post",
     "extra",
+    "bike_park",
+    "cancel_bike_park",
     "terms",
     "schedule",
     "skip",
@@ -39,7 +41,15 @@ Action = Literal[
     "booking_order",
 ]
 USER_ACTIONS = {"claim_payment", "guest", "undo_payment"}
-CONFIRMED_ACTIONS = {"cancel_day", "cancel_lift", "post", "extra", "booking_order"}
+CONFIRMED_ACTIONS = {
+    "cancel_day",
+    "cancel_lift",
+    "post",
+    "extra",
+    "booking_order",
+    "bike_park",
+    "cancel_bike_park",
+}
 
 
 class CommandInput(BaseModel):
@@ -55,6 +65,9 @@ class CommandInput(BaseModel):
     first_lift_time: str | None = None
     last_lift_time: str | None = None
     price_gel: int | None = Field(default=None, gt=0, le=10000)
+    bike_park_price_gel: int | None = Field(default=None, gt=0, le=10000)
+    start_time: str | None = None
+    replace_lift_time: str | None = None
     deadline_time: str | None = None
     enabled: bool | None = None
     creation_weekday: int | None = Field(default=None, ge=0, le=5)
@@ -76,6 +89,8 @@ class CommandInput(BaseModel):
             "plan": ("saturday_enabled", "sunday_enabled", "first_lift_time", "last_lift_time"),
             "extra": ("service_date", "first_lift_time", "last_lift_time"),
             "terms": ("price_gel", "deadline_time"),
+            "bike_park": ("service_date", "start_time"),
+            "cancel_bike_park": ("service_date",),
             "schedule": ("enabled", "creation_weekday", "creation_time", "announce_lead_minutes"),
             "claim_payment": ("service_date",),
             "guest": ("service_date", "lift_time", "delta"),
@@ -108,7 +123,11 @@ class CommandInput(BaseModel):
                 raise ValueError("First lift must precede last lift")
         if self.action == "plan" and not self.saturday_enabled and not self.sunday_enabled:
             raise ValueError("Enable at least one weekend day")
-        for value in (self.deadline_time, self.creation_time):
+        if self.replace_lift_time is not None and (
+            self.action != "bike_park" or self.replace_lift_time not in times
+        ):
+            raise ValueError("Unknown replacement lift")
+        for value in (self.deadline_time, self.creation_time, self.start_time):
             if value is not None:
                 _minutes(value)
         return self
@@ -160,6 +179,53 @@ class Operations:
         }
 
     async def preview(self, spec: CommandInput) -> dict[str, Any]:
+        if spec.action == "bike_park":
+            park = self.runtime.lifts.bike_park
+            details, price = await park.preview(
+                spec.service_date or date.min, spec.start_time or ""
+            )
+            state: dict[str, Any] = {"details": details}
+            if spec.replace_lift_time:
+                day = next(
+                    (
+                        d
+                        for d in await self.runtime.lifts.status_days()
+                        if d.service_date == spec.service_date
+                    ),
+                    None,
+                )
+                active = [lift for lift in day.lifts if not lift.cancelled] if day else []
+                last = max(active, key=lambda lift: _minutes(lift.time)) if active else None
+                if last is None or last.time != spec.replace_lift_time or last.running:
+                    raise ValueError(
+                        "Only the last lift that has not reached its minimum can be replaced."
+                    )
+                cancellation = await self.preview(
+                    spec.model_copy(update={"action": "cancel_lift", "lift_time": last.time})
+                )
+                state["cancellation"] = cancellation
+                details += (
+                    f"\n\nReplace ordinary lift {last.time}. "
+                    "Its riders must vote again for bike park.\n"
+                    f"{cancellation['details']}"
+                )
+                detail = await self.runtime.lifts.lift_detail(
+                    service_date=spec.service_date or date.min, lift_time=last.time
+                )
+                names = [r.label for r in detail[1]] if detail else []
+                if names:
+                    details += "\nAffected riders: " + ", ".join(names)
+            return {"digest": _fingerprint(state), "details": details, "price_gel": price}
+        if spec.action == "cancel_bike_park":
+            parks = await self.runtime.lifts.bike_park.list(service_date=spec.service_date)
+            if not parks or parks[0].started:
+                raise ValueError("This bike park session is no longer cancellable.")
+            park = parks[0]
+            return {
+                "digest": _fingerprint(asdict(park)),
+                "details": f"Cancel bike park {park.service_date} at {park.start_time}.\n"
+                + ", ".join(r.label for r in park.riders),
+            }
         if spec.action == "booking_order":
             return await self.runtime.lifts.preview_booking_order(
                 service_date=spec.service_date or date.min,
@@ -250,6 +316,7 @@ class Operations:
             )
             if day_view is None or day_view.past:
                 raise ValueError("Finished service days cannot be edited")
+        preview: dict[str, Any] = {}
         if spec.action in CONFIRMED_ACTIONS - {"booking_order"}:
             preview = await self.preview(spec)
             if preview["digest"] != spec.expected_digest:
@@ -257,6 +324,36 @@ class Operations:
         rt = self.runtime
         day = spec.service_date or date.min
         lift_time = spec.lift_time or ""
+        if spec.action == "bike_park":
+            park = await rt.lifts.bike_park.create(
+                service_date=day,
+                start_time=spec.start_time or "",
+                expected_price=preview["price_gel"],
+                admin_user_id=actor_user_id,
+                replace_lift_time=spec.replace_lift_time,
+            )
+            warning = await rt.lifts.complete_bike_park_replacements()
+            report = None
+            if spec.replace_lift_time and not warning:
+                report = await rt.payments.cancellation_report(
+                    service_date=day, cancelled_lift_time=spec.replace_lift_time
+                )
+            await rt.lifts.refresh_booking_statuses()
+            return {
+                "message": warning or "Bike park poll published",
+                "session_id": park.id,
+                "report": report,
+            }
+        if spec.action == "cancel_bike_park":
+            parks = await rt.lifts.bike_park.list(service_date=day)
+            await rt.lifts.bike_park.cancel(service_date=day)
+            await rt.lifts._send_tagged_notice(
+                f"❌ Bike park · {day} is cancelled.",
+                {r.telegram_user_id: r.label for r in parks[0].riders} if parks else {},
+                log_label="bike_park_cancel_notice_failed",
+            )
+            await rt.lifts.refresh_booking_statuses()
+            return {"message": "Bike park session cancelled"}
         if spec.action == "booking_order":
             return await rt.lifts.save_booking_order(
                 service_date=day,
@@ -331,6 +428,7 @@ class Operations:
             await rt.terms.set_values(
                 price_gel=spec.price_gel or 0,
                 deadline_time=str(spec.deadline_time),
+                bike_park_price_gel=spec.bike_park_price_gel,
                 admin_user_id=actor_user_id,
             )
         elif spec.action == "schedule":

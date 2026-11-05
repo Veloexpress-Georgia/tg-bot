@@ -1,7 +1,8 @@
 import { CalendarDays, Clock3, Plus, Send, Settings2, ShieldCheck } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
+import { navigate, useRoute } from '../../app/router';
 import { useCommands } from '../../app/commands';
-import { usePlanning } from '../../app/queries';
+import { useLiveDays, usePlanning } from '../../app/queries';
 import { t } from '../../i18n';
 import { addDays, capitalize, cx, dateLabel } from '../../lib';
 import type { Planning, Session } from '../../types';
@@ -19,7 +20,7 @@ import {
 } from '../../ui';
 import './planning.css';
 
-type Part = 'weekend' | 'schedule' | 'terms' | 'extra';
+type Part = 'weekend' | 'schedule' | 'terms' | 'extra' | 'park';
 const weekdayName = (index: number) =>
   capitalize(dateLabel(addDays('2024-01-01', index), { weekday: 'long' })); // 1 Jan 2024 was a Monday.
 
@@ -37,8 +38,20 @@ export function PlanningPage({ session }: { session: Session }) {
 
 function PlanningForms({ data, today }: { data: Planning; today: string }) {
   const { act, busy } = useCommands();
+  const liveDays = useLiveDays();
+  const route = useRoute();
+  const initialDate = route.name === 'planning' ? route.date : undefined;
+  const [parkDate, setParkDate] = useState(initialDate ?? today);
+  const [parkTime, setParkTime] = useState('13:00');
+  const [replacement, setReplacement] = useState('separate');
+  const [parkPrice, setParkPrice] = useState(String(data.terms.bike_park_price_gel));
+  const parkDay = liveDays.data?.find((day) => day.service_date === parkDate);
+  const lastLift = parkDay?.lifts
+    .filter((lift) => !lift.cancelled)
+    .sort((a, b) => Number(b.time.replace(':', '')) - Number(a.time.replace(':', '')))[0];
+  const replaceable = lastLift && !lastLift.running && !parkDay?.past ? lastLift : undefined;
   const wide = useMedia('(min-width: 900px)');
-  const [part, setPart] = useState<Part>('weekend');
+  const [part, setPart] = useState<Part>(initialDate ? 'park' : 'weekend');
   const [saturday, setSaturday] = useState(data.saturday_enabled);
   const [sunday, setSunday] = useState(data.sunday_enabled);
   const [first, setFirst] = useState(data.first_lift_time);
@@ -61,6 +74,7 @@ function PlanningForms({ data, today }: { data: Planning; today: string }) {
     <>
       {!wide && (
         <Segmented
+          chips
           className="planning-tabs"
           label={t.plan.sections}
           value={part}
@@ -70,6 +84,7 @@ function PlanningForms({ data, today }: { data: Planning; today: string }) {
             { value: 'schedule', label: t.plan.parts.schedule },
             { value: 'terms', label: t.plan.parts.terms },
             { value: 'extra', label: t.plan.parts.extra },
+            { value: 'park', label: t.park.title },
           ]}
         />
       )}
@@ -234,7 +249,12 @@ function PlanningForms({ data, today }: { data: Planning; today: string }) {
               className="form"
               onSubmit={(event) => {
                 event.preventDefault();
-                act({ action: 'terms', price_gel: Number(price), deadline_time: deadline });
+                act({
+                  action: 'terms',
+                  price_gel: Number(price),
+                  bike_park_price_gel: Number(parkPrice),
+                  deadline_time: deadline,
+                });
               }}
             >
               <div className="form-grid">
@@ -259,8 +279,22 @@ function PlanningForms({ data, today }: { data: Planning; today: string }) {
                   />
                 </Field>
               </div>
-              <Notice>{t.plan.termsNote}</Notice>
-              <Button type="submit" disabled={busy || Number(price) <= 0}>
+              <Field label={t.park.price}>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min="1"
+                  max="10000"
+                  step="1"
+                  required
+                  value={parkPrice}
+                  onChange={(event) => setParkPrice(event.target.value)}
+                />
+              </Field>
+              <Notice>
+                {t.plan.termsNote} {t.park.priceNote}
+              </Notice>
+              <Button type="submit" disabled={busy || Number(price) <= 0 || Number(parkPrice) <= 0}>
                 {t.plan.saveTerms}
               </Button>
             </form>
@@ -317,6 +351,83 @@ function PlanningForms({ data, today }: { data: Planning; today: string }) {
               <Button type="submit" disabled={busy}>
                 <Plus size={16} />
                 {t.plan.createDay}
+              </Button>
+            </form>
+          </PlanCard>
+        )}
+        {show('park') && (
+          <PlanCard icon={<Plus size={20} />} eyebrow={t.plan.outsideSchedule} title={t.park.title}>
+            <p className="caption">{t.park.place}</p>
+            <Notice>
+              {t.park.perLift(data.terms.bike_park_price_gel + ' ₾')} · {t.park.note}
+            </Notice>
+            <form
+              className="form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                act({
+                  action: 'bike_park',
+                  service_date: parkDate,
+                  start_time: parkTime,
+                  ...(replacement && replaceable?.time === replacement
+                    ? { replace_lift_time: replacement }
+                    : {}),
+                });
+              }}
+            >
+              <div className="form-grid">
+                <Field label={t.plan.date}>
+                  <input
+                    type="date"
+                    required
+                    min={today}
+                    max={addDays(today, 7)}
+                    value={parkDate}
+                    onChange={(event) => {
+                      setParkDate(event.target.value);
+                      setReplacement('separate');
+                    }}
+                  />
+                </Field>
+                <Field label={t.park.start}>
+                  <input
+                    type="time"
+                    required
+                    value={parkTime}
+                    onChange={(event) => setParkTime(event.target.value)}
+                  />
+                </Field>
+              </div>
+              {replaceable && (
+                <Field label={t.park.replacement} group>
+                  <Select
+                    label={t.park.replacement}
+                    value={replacement}
+                    onValueChange={setReplacement}
+                    options={[
+                      { value: 'separate', label: t.park.separate },
+                      { value: replaceable.time, label: t.park.replace(replaceable.time) },
+                    ]}
+                  />
+                </Field>
+              )}
+              {replacement && replaceable?.time === replacement && (
+                <Notice>{t.park.replacementNote}</Notice>
+              )}
+              {parkDay?.bike_park && (
+                <Notice>
+                  {t.park.exists}
+                  <Button
+                    variant="ghost"
+                    onClick={() => navigate({ name: 'day', date: parkDate, tab: 'lifts' })}
+                  >
+                    {t.home.openDay}
+                  </Button>
+                </Notice>
+              )}
+              <Button type="submit" variant="primary" disabled={busy || !!parkDay?.bike_park}>
+                <Send size={16} />
+                {t.park.create}
               </Button>
             </form>
           </PlanCard>

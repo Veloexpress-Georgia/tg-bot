@@ -6,6 +6,7 @@ from datetime import date, datetime
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from veloexpress_bot.polls.defaults import MINIMUM_RIDERS
+from veloexpress_core.bikepark import BikeParkView
 
 EN_SHORT_MONTHS = {
     1: "Jan",
@@ -130,6 +131,7 @@ class BookingMonitorDay:
     guests: tuple[MonitorGuest, ...] = ()
     waitlist: tuple[MonitorWaitlistRider, ...] = ()
     late_exits: tuple[MonitorLateExit, ...] = ()
+    bike_park: BikeParkView | None = None
 
     @property
     def running_count(self) -> int:
@@ -258,8 +260,22 @@ def render_booking_monitor(
         (day for day in days if day.service_date == selected_service_date),
         days[0],
     )
-    lines = [f"📊 {_long_day_label(selected_day.service_date)}", *_summary_lines(selected_day)]
-    lines.extend(("", *_lift_lines(selected_day)))
+    lines = [f"📊 {_long_day_label(selected_day.service_date)}"]
+    if selected_day.lifts:
+        lines.extend(_summary_lines(selected_day))
+        lines.extend(("", *_lift_lines(selected_day)))
+    if selected_day.bike_park:
+        park = selected_day.bike_park
+        lines.extend(
+            (
+                "",
+                f"🚵 Bike park · {park.start_time} · Vake",
+                f"{park.price_gel} GEL per lift · {len(park.riders)} signed up · minimum 6",
+                "Pay for actual lifts afterwards. On-site rider count decides when to stop.",
+            )
+        )
+        if park.status != "posted":
+            lines.append("Publication not confirmed. Check the group before creating another poll.")
     # Each block opens with its own blank line, so a day with nothing to flag does
     # not gather a stack of them.
     lines.extend(_attention_lines(selected_day))
@@ -280,22 +296,41 @@ def render_booking_monitor(
     # Lifts open from here directly. A middle "manage bookings" card listed the
     # same times a second time and cost a tap on the way to every one of them.
     rows.extend(_lift_button_rows(selected_day))
+    if selected_day.bike_park:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🚵 Bike park · participants",
+                    callback_data=f"park:open:{selected_day.service_date}",
+                )
+            ]
+        )
+    else:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🚵 Add bike park", callback_data=f"park:date:{selected_day.service_date}"
+                )
+            ]
+        )
     day_row = [InlineKeyboardButton(text="👥 All riders", callback_data=f"mon:all:{compact_date}")]
     if not selected_day.past and any(not lift.cancelled for lift in selected_day.lifts):
         day_row.append(
             InlineKeyboardButton(
-                text="🚫 Cancel day",
+                text="🚫 Cancel ordinary lifts" if selected_day.bike_park else "🚫 Cancel day",
                 callback_data=f"mon:cancelday:{compact_date}",
             )
         )
-    rows.append(day_row)
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text="🕒 Withdrawals", callback_data=f"mon:withdrawals:{compact_date}:all:0"
-            )
-        ]
-    )
+    if selected_day.lifts:
+        rows.append(day_row)
+    if selected_day.lifts:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🕒 Withdrawals", callback_data=f"mon:withdrawals:{compact_date}:all:0"
+                )
+            ]
+        )
 
     rows.append([InlineKeyboardButton(text="☰ Menu", callback_data="mon:menu")])
 
@@ -319,7 +354,13 @@ def render_admin_menu(
     """
     lines = ["☰ Veloexpress admin", ""]
     if days:
-        lines.extend(_menu_day_line(day) for day in days)
+        lines.extend(_menu_day_line(day) for day in days if day.lifts)
+        lines.extend(
+            f"🚵 {_short_day_label(day.service_date)} · {day.bike_park.start_time} · "
+            f"{len(day.bike_park.riders)} signed up"
+            for day in days
+            if day.bike_park
+        )
     else:
         lines.append("No lift polls are open.")
     if schedule_line:
@@ -332,6 +373,7 @@ def render_admin_menu(
             InlineKeyboardButton(text="📋 Weekend", callback_data="menu:weekend_plan"),
             InlineKeyboardButton(text="➕ Extra lift day", callback_data="menu:extra_day"),
         ],
+        [InlineKeyboardButton(text="🚵 Bike park", callback_data="park:new")],
         [
             InlineKeyboardButton(text="📜 History", callback_data="mon:history"),
             InlineKeyboardButton(text="📈 Statistics", callback_data="stats:30d:0"),

@@ -66,6 +66,12 @@ function DayCard({ day, today }: { day: LiveDay; today: string }) {
         </span>
         <ChevronRight className="row-chevron" size={20} />
       </span>
+      {day.bike_park && (
+        <span className="caption">
+          {t.park.title} · {day.bike_park.start_time} ·{' '}
+          {t.park.signedUp(day.bike_park.riders.length)}
+        </span>
+      )}
       <span className="day-card-lifts">
         {day.lifts.map((lift) => {
           const state = liftState(lift);
@@ -82,7 +88,11 @@ function DayCard({ day, today }: { day: LiveDay; today: string }) {
       </span>
       <span className="day-card-foot">
         <span>{daySubtitle(day)}</span>
-        <span className="tabular">{t.day.reportedOf(money(reported), money(due))}</span>
+        <span className="tabular">
+          {day.lifts.length
+            ? t.day.reportedOf(money(reported), money(due))
+            : t.park.perLift(money(day.bike_park?.price_gel ?? 0))}
+        </span>
       </span>
     </button>
   );

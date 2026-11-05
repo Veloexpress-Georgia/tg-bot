@@ -26,6 +26,8 @@ const CONFIRMED = new Set<CommandSpec['action']>([
   'cancel_lift',
   'post',
   'extra',
+  'bike_park',
+  'cancel_bike_park',
   'booking_order',
 ]);
 const FINISHED = new Set<CommandResult['status']>(['complete', 'failed', 'review']);

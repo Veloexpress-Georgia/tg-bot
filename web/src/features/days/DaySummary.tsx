@@ -18,6 +18,7 @@ import './days.css';
 
 export function daySubtitle(day: LiveDay) {
   const active = activeLiftCount(day);
+  if (!active && day.bike_park) return t.park.signedUp(day.bike_park.riders.length);
   if (!active) return t.day.allCancelled;
   return `${t.day.liftsRunning(runningCount(day), active)} · ${t.day.riders(day.booked_rider_count)}`;
 }

@@ -50,6 +50,7 @@ from veloexpress_bot.db.locking import transaction_lock
 from veloexpress_bot.db.models import (
     ACTIVE_POLL_BATCH_STATUSES,
     AdminBookingMonitor,
+    BikeParkSession,
     CancelledLift,
     DeadlineRoster,
     GuestSeat,
@@ -120,6 +121,7 @@ from veloexpress_bot.polls.schedule import (
 from veloexpress_bot.polls.seating import SeatCandidate, allocate_seats, queue_rank
 from veloexpress_bot.telegram.outbox import TelegramOutboxDispatcher
 from veloexpress_core import booking_order
+from veloexpress_core.bikepark import BikeParkService
 from veloexpress_core.terms import ServiceDayDefaultsStore
 
 
@@ -304,6 +306,12 @@ class PollPostingService:
             settings=settings,
             session_factory=session_factory,
         )
+        self.bike_park = BikeParkService(
+            settings=settings,
+            session_factory=session_factory,
+            telegram_client=telegram_client,
+            defaults=self._service_day_defaults,
+        )
         self._outbox = TelegramOutboxDispatcher(
             environment=settings.app_env,
             session_factory=session_factory,
@@ -484,7 +492,7 @@ class PollPostingService:
             existing_message_id = monitor.telegram_message_id if monitor is not None else None
             stored_date = monitor.selected_service_date if monitor is not None else None
 
-        days = await self._booking_monitor_days()
+        days = await self.display_days(await self._booking_monitor_days())
         selected_date = selected_service_date or stored_date
         available_dates = {day.service_date for day in days}
         if selected_date not in available_dates:
@@ -559,7 +567,7 @@ class PollPostingService:
             return await self.booking_withdrawals_view(
                 service_date=screen.service_date, lift_time=screen.lift_time, page=screen.page
             )
-        days = await self._booking_monitor_days()
+        days = await self.display_days(await self._booking_monitor_days())
         selected = screen.service_date
         if selected not in {day.service_date for day in days}:
             selected = None
@@ -672,7 +680,7 @@ class PollPostingService:
         selected_service_date: date | None = None,
     ) -> BookingMonitorDraft:
         """Render the monitor for in-place edits (day tabs, back from a lift)."""
-        days = await self._booking_monitor_days()
+        days = await self.display_days(await self._booking_monitor_days())
         available_dates = {day.service_date for day in days}
         selected_date = selected_service_date
         if selected_date not in available_dates:
@@ -682,10 +690,27 @@ class PollPostingService:
             )
         return await self._monitor_draft(days, selected_service_date=selected_date)
 
+    async def display_days(
+        self, days: tuple[BookingMonitorDay, ...] | None = None
+    ) -> tuple[BookingMonitorDay, ...]:
+        """Calendar only: park participants never enter financial day queries."""
+        from dataclasses import replace
+
+        result = {
+            day.service_date: day
+            for day in (days if days is not None else await self.status_days())
+        }
+        for park in await self.bike_park.list():
+            day = result.get(
+                park.service_date, BookingMonitorDay(service_date=park.service_date, lifts=())
+            )
+            result[park.service_date] = replace(day, bike_park=park)
+        return tuple(result[key] for key in sorted(result))
+
     async def menu_view(self) -> BookingMonitorDraft:
         """Everything that is not the day in front of the admin."""
         return render_admin_menu(
-            await self._booking_monitor_days(),
+            await self.display_days(await self._booking_monitor_days()),
             schedule_line=await self._schedule_line(),
             history=await self.lift_history(),
         )
@@ -698,6 +723,7 @@ class PollPostingService:
     ) -> BookingMonitorDraft:
         """The monitor card. With no live days it becomes the midweek way in, so
         it needs the schedule line and the last weekend's figures."""
+        days = await self.display_days(days)
         if days:
             # Carried on a live week too, only to decide whether the history
             # button is worth a row. Two indexed reads against a table with one
@@ -1734,12 +1760,47 @@ class PollPostingService:
             await self._refresh_availability(poll_id)
         await self._refresh_booking_monitors()
 
+    async def complete_bike_park_replacements(self) -> str | None:
+        async with self._session_factory() as session:
+            rows = list(
+                await session.scalars(
+                    self.bike_park.scope(select(BikeParkSession)).where(
+                        BikeParkSession.status == "posted",
+                        BikeParkSession.replacement_completed.is_(False),
+                    )
+                )
+            )
+        warning = None
+        for park in rows:
+            if not park.replace_lift_time:
+                continue
+            try:
+                await self._set_lift_cancelled(
+                    service_dates_times=((park.service_date, park.replace_lift_time),),
+                    notice=(
+                        f"❌ {park.replace_lift_time} · {_service_day_label(park.service_date)} "
+                        "is replaced by bike park. Please vote in the bike park poll."
+                    ),
+                    admin_user_id=park.created_by_user_id,
+                    require_unfilled_last=True,
+                )
+            except ValueError:
+                # Votes may arrive while Telegram publishes the new poll. A
+                # now viable lift must remain; never retry that cancellation.
+                warning = (
+                    "Bike park poll published. The ordinary lift changed "
+                    "and was kept; check the day."
+                )
+            await self.bike_park.finish_replacement(park.id)
+        return warning
+
     async def _set_lift_cancelled(
         self,
         *,
         service_dates_times: tuple[tuple[date, str], ...],
         notice: str,
         admin_user_id: int,
+        require_unfilled_last: bool = False,
     ) -> None:
         if self._settings.telegram_target_chat_id is None or not service_dates_times:
             return
@@ -1757,6 +1818,27 @@ class PollPostingService:
                     .where(CancelledLift.lift_time == lift_time)
                 )
                 if existing is None:
+                    if require_unfilled_last:
+                        day = next(
+                            (d for d in await self.status_days() if d.service_date == service_date),
+                            None,
+                        )
+                        active = [lift for lift in day.lifts if not lift.cancelled] if day else []
+                        last = (
+                            max(
+                                active,
+                                key=lambda lift: tuple(int(part) for part in lift.time.split(":")),
+                            )
+                            if active
+                            else None
+                        )
+                        if (
+                            last is None
+                            or last.time != lift_time
+                            or last.running
+                            or lift_departure_at(service_date, lift_time, zone=self._zone) <= now
+                        ):
+                            raise ValueError("The last lift is no longer replaceable.")
                     session.add(
                         CancelledLift(
                             environment=self._settings.app_env,
@@ -2503,6 +2585,14 @@ class PollPostingService:
         full_name: str,
         option_ids: tuple[int, ...],
     ) -> None:
+        if await self.bike_park.track_answer(
+            poll_id=poll_id,
+            telegram_user_id=telegram_user_id,
+            full_name=full_name,
+            option_ids=option_ids,
+        ):
+            await self._refresh_booking_monitors()
+            return
         now = datetime.now(UTC)
         encoded_option_ids = _encode_option_ids(option_ids)
         event: PollVoteEvent | None = None
@@ -2652,6 +2742,8 @@ class PollPostingService:
         return tuple(service_date for service_date, _ in missing)
 
     async def refresh_booking_statuses(self, *, now: datetime | None = None) -> None:
+        await self.bike_park.reconcile()
+        await self.complete_bike_park_replacements()
         await self._close_cancelled_polls()
         today = (now or datetime.now(UTC)).astimezone(self._zone).date()
         async with self._session_factory() as session:
@@ -3114,7 +3206,7 @@ class PollPostingService:
         rows = await self._booking_monitor_rows()
         if not rows:
             return
-        days = await self._booking_monitor_days()
+        days = await self.display_days(await self._booking_monitor_days())
         for row in rows:
             draft = await self._monitor_draft(
                 days,
@@ -3265,7 +3357,7 @@ class PollPostingService:
         moment = (now or datetime.now(UTC)).astimezone(self._zone)
         if moment.time() < MONITOR_REPOST_AT:
             return 0
-        days = await self._booking_monitor_days()
+        days = await self.display_days(await self._booking_monitor_days())
         today = moment.date()
         if today not in {day.service_date for day in days}:
             return 0
@@ -3347,7 +3439,7 @@ class PollPostingService:
         if not monitors:
             return
 
-        days = await self._booking_monitor_days()
+        days = await self.display_days(await self._booking_monitor_days())
         available_dates = {day.service_date for day in days}
         today = datetime.now(UTC).astimezone(self._zone).date()
         for monitor in monitors:

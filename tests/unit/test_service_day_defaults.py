@@ -24,6 +24,7 @@ def test_service_day_defaults_card_explains_snapshot_scope() -> None:
         [button.callback_data for button in row] for row in card.reply_markup.inline_keyboard
     ] == [
         ["defaults:price:sub", "defaults:price:add"],
+        ["defaults:bikepark:sub", "defaults:bikepark:add"],
         ["defaults:deadline:sub", "defaults:deadline:add"],
         # When polls open is a setting too, and this is where an admin looks.
         ["plan:schedule"],
@@ -32,6 +33,6 @@ def test_service_day_defaults_card_explains_snapshot_scope() -> None:
     # A seat costs 15 GEL, so a 5 GEL step moved it by a third and could never
     # land on 16 or 18.
     assert [button.text for button in card.reply_markup.inline_keyboard[0]] == [
-        "➖ 1 GEL",
-        "➕ 1 GEL",
+        "🚐 −1 GEL",
+        "🚐 +1 GEL",
     ]

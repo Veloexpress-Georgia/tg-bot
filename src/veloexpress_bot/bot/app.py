@@ -6,6 +6,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import MenuButtonWebApp, WebAppInfo
 
 from veloexpress_bot.bot.admin_rights import register_default_admin_rights
+from veloexpress_bot.bot.bikepark import router as bike_park_router
 from veloexpress_bot.bot.commands import register_bot_commands
 from veloexpress_bot.bot.handlers import router
 from veloexpress_bot.config import Settings, get_settings
@@ -32,9 +33,12 @@ def build_dispatcher(
     payments_service: PaymentsService,
     service_day_defaults: ServiceDayDefaultsStore,
     history_statistics: HistoryStatistics,
+    operations: Operations | None = None,
 ) -> Dispatcher:
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher.include_router(router)
+    dispatcher.include_router(bike_park_router)
+    dispatcher["operations"] = operations
     dispatcher["history_statistics"] = history_statistics
     dispatcher["settings"] = settings
     dispatcher["poll_service"] = poll_service
@@ -88,6 +92,7 @@ async def run_polling() -> None:
         dispatcher = build_dispatcher(
             settings=settings,
             history_statistics=runtime.history,
+            operations=Operations(settings=settings, runtime=runtime),
             poll_service=poll_service,
             auto_scheduler=auto_scheduler,
             planner=planner,

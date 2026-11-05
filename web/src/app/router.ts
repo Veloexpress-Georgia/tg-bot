@@ -14,7 +14,7 @@ export type Route =
   | { name: 'order'; date: string; time: string }
   | { name: 'analytics' }
   | { name: 'riders' }
-  | { name: 'planning' }
+  | { name: 'planning'; date?: string }
   | { name: 'refunds' }
   | { name: 'audit' }
   | { name: 'myrides' }
@@ -56,6 +56,7 @@ export function parseRoute(hash: string): Route {
       kind === 'payments' || kind === 'requests' || kind === 'withdrawals' ? kind : 'lifts';
     return { name: 'day', date, tab, ...(filter ? { filter } : {}) };
   }
+  if (head === 'planning' && isDate(date)) return { name: 'planning', date };
   if (head && head in aliases) return { name: aliases[head] };
   if ((pages as readonly string[]).includes(head)) return { name: head as (typeof pages)[number] };
   return { name: 'home' };
@@ -64,6 +65,8 @@ export function parseRoute(hash: string): Route {
 export function formatRoute(route: Route): string {
   const query = 'filter' in route && route.filter ? `?f=${encodeURIComponent(route.filter)}` : '';
   switch (route.name) {
+    case 'planning':
+      return `#planning${route.date ? '/' + route.date : ''}`;
     case 'day':
       return `#day/${route.date}${route.tab === 'lifts' ? '' : `/${route.tab}`}${query}`;
     case 'lift':

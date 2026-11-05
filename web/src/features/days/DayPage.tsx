@@ -8,6 +8,7 @@ import { cx, money } from '../../lib';
 import type { HistoricalDay as HistoricalDayData, LiveDay, Session } from '../../types';
 import {
   Badge,
+  Button,
   Card,
   Empty,
   List,
@@ -22,6 +23,7 @@ import {
   Stat,
   StatGrid,
 } from '../../ui';
+import { BikeParkCard } from './BikeParkCard';
 import { AuditList } from '../reports/ReportPages';
 import { AttentionList, LiftBoard, MoneyCard, daySubtitle, useClock } from './DaySummary';
 import { dayAttention, longDate, nextLiftTime, paysCash, relativeDay } from './model';
@@ -83,16 +85,20 @@ function LiveDayView({
         onChange={(tab) => show(tab)}
         options={[
           { value: 'lifts', label: t.day.tabs.lifts },
-          {
-            value: 'withdrawals',
-            label: t.day.tabs.withdrawals,
-            count: day.withdrawals?.length || undefined,
-          },
-          {
-            value: 'payments',
-            label: t.day.tabs.payments,
-            count: attention.unpaid.length || undefined,
-          },
+          ...(day.lifts.length
+            ? [
+                {
+                  value: 'withdrawals' as const,
+                  label: t.day.tabs.withdrawals,
+                  count: day.withdrawals?.length || undefined,
+                },
+                {
+                  value: 'payments' as const,
+                  label: t.day.tabs.payments,
+                  count: attention.unpaid.length || undefined,
+                },
+              ]
+            : []),
           {
             value: 'requests',
             label: t.day.tabs.requests,
@@ -102,35 +108,45 @@ function LiveDayView({
       />
       {route.tab === 'lifts' && (
         <>
-          <Section title={t.home.lifts}>
-            <LiftBoard
-              day={day}
-              next={nextLiftTime(day, session.today, minutes)}
-              onOpen={(time) => navigate({ name: 'lift', date, time })}
-            />
-          </Section>
-          <Section title={t.home.payments}>
-            <MoneyCard
-              day={day}
-              attention={attention}
-              onOpen={() => show('payments', attention.unpaid.length ? 'unpaid' : undefined)}
-            />
-          </Section>
-          <AttentionList
-            timezone={session.timezone}
-            attention={attention}
-            onRequests={() => show('requests')}
-            onLift={(time) => navigate({ name: 'lift', date, time })}
-          />
-          {!day.past && (
+          {day.bike_park && <BikeParkCard park={day.bike_park} admin />}
+          {day.lifts.length > 0 && (
+            <>
+              <Section title={t.home.lifts}>
+                <LiftBoard
+                  day={day}
+                  next={nextLiftTime(day, session.today, minutes)}
+                  onOpen={(time) => navigate({ name: 'lift', date, time })}
+                />
+              </Section>
+              <Section title={t.home.payments}>
+                <MoneyCard
+                  day={day}
+                  attention={attention}
+                  onOpen={() => show('payments', attention.unpaid.length ? 'unpaid' : undefined)}
+                />
+              </Section>
+              <AttentionList
+                timezone={session.timezone}
+                attention={attention}
+                onRequests={() => show('requests')}
+                onLift={(time) => navigate({ name: 'lift', date, time })}
+              />
+            </>
+          )}
+          {!day.bike_park && !day.past && (
+            <Section title={t.park.title}>
+              <Button onClick={() => navigate({ name: 'planning', date })}>{t.park.create}</Button>
+            </Section>
+          )}
+          {!day.past && day.lifts.length > 0 && (
             <Section title={t.day.manage}>
               <Card flush>
                 <List>
                   <Row
                     leading={<Ban size={19} />}
                     tone="danger"
-                    title={t.day.cancelDay}
-                    subtitle={t.day.cancelDayHint}
+                    title={day.bike_park ? t.park.cancelOrdinary : t.day.cancelDay}
+                    subtitle={day.bike_park ? t.park.cancelOrdinaryHint : t.day.cancelDayHint}
                     disabled={busy}
                     onClick={() => act({ action: 'cancel_day', service_date: date })}
                   />

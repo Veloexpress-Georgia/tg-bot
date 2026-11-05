@@ -14,6 +14,7 @@ import {
   relativeDay,
   shortDate,
 } from '../days/model';
+import { BikeParkCard } from '../days/BikeParkCard';
 import './home.css';
 
 /**
@@ -65,45 +66,50 @@ function FocusDay({
         title={longDate(date)}
         subtitle={daySubtitle(day)}
       />
-      <Section
-        title={t.home.lifts}
-        action={
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => navigate({ name: 'day', date, tab: 'lifts' })}
+      {day.bike_park && <BikeParkCard park={day.bike_park} admin />}
+      {day.lifts.length > 0 && (
+        <>
+          <Section
+            title={t.home.lifts}
+            action={
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => navigate({ name: 'day', date, tab: 'lifts' })}
+              >
+                {t.home.openDay}
+                <ArrowRight size={16} />
+              </Button>
+            }
           >
-            {t.home.openDay}
-            <ArrowRight size={16} />
-          </Button>
-        }
-      >
-        <LiftBoard
-          day={day}
-          next={nextLiftTime(day, session.today, minutes)}
-          onOpen={(time) => navigate({ name: 'lift', date, time })}
-        />
-      </Section>
-      <Section title={t.home.payments}>
-        <MoneyCard
-          day={day}
-          attention={attention}
-          onOpen={() =>
-            navigate({
-              name: 'day',
-              date,
-              tab: 'payments',
-              ...(attention.unpaid.length ? { filter: 'unpaid' } : {}),
-            })
-          }
-        />
-      </Section>
-      <AttentionList
-        timezone={session.timezone}
-        attention={attention}
-        onRequests={() => navigate({ name: 'day', date, tab: 'requests' })}
-        onLift={(time) => navigate({ name: 'lift', date, time })}
-      />
+            <LiftBoard
+              day={day}
+              next={nextLiftTime(day, session.today, minutes)}
+              onOpen={(time) => navigate({ name: 'lift', date, time })}
+            />
+          </Section>
+          <Section title={t.home.payments}>
+            <MoneyCard
+              day={day}
+              attention={attention}
+              onOpen={() =>
+                navigate({
+                  name: 'day',
+                  date,
+                  tab: 'payments',
+                  ...(attention.unpaid.length ? { filter: 'unpaid' } : {}),
+                })
+              }
+            />
+          </Section>
+          <AttentionList
+            timezone={session.timezone}
+            attention={attention}
+            onRequests={() => navigate({ name: 'day', date, tab: 'requests' })}
+            onLift={(time) => navigate({ name: 'lift', date, time })}
+          />
+        </>
+      )}
       {others.length > 0 && (
         <Section title={t.home.otherDays}>
           <Card flush>

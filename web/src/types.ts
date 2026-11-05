@@ -124,7 +124,18 @@ export interface BookingWithdrawal {
   changed_at: string;
   after_deadline: boolean;
 }
+export interface BikePark {
+  id: number;
+  service_date: string;
+  start_time: string;
+  price_gel: number;
+  status: string;
+  riders: { telegram_user_id: number; label: string }[];
+  poll_url: string | null;
+  started: boolean;
+}
 export interface LiveDay {
+  bike_park?: BikePark | null;
   service_date: string;
   lifts: Lift[];
   booked_rider_count: number;
@@ -192,7 +203,12 @@ export interface Planning {
     announce_lead_minutes: number;
     skip_week_start: string | null;
   };
-  terms: { price_gel: number; deadline_time: string; timezone: string };
+  terms: {
+    price_gel: number;
+    bike_park_price_gel: number;
+    deadline_time: string;
+    timezone: string;
+  };
 }
 export type Action =
   | 'manual'
@@ -203,6 +219,8 @@ export type Action =
   | 'plan'
   | 'post'
   | 'extra'
+  | 'bike_park'
+  | 'cancel_bike_park'
   | 'terms'
   | 'schedule'
   | 'skip'
@@ -243,6 +261,9 @@ export interface CommandSpec {
   first_lift_time?: string;
   last_lift_time?: string;
   price_gel?: number;
+  bike_park_price_gel?: number;
+  start_time?: string;
+  replace_lift_time?: string;
   deadline_time?: string;
   enabled?: boolean;
   creation_weekday?: number;
@@ -276,6 +297,7 @@ export interface Preview extends Partial<BookingOrderProposal> {
   service_date?: string;
 }
 export interface MyDays {
+  bike_parks?: (Omit<BikePark, 'riders'> & { rider_count: number; attending: boolean })[];
   days: {
     service_date: string;
     past: boolean;

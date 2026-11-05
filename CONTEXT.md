@@ -43,3 +43,15 @@ _Avoid_: Running lift, full lift
 **Cash on site**:
 A rider's report that they pay Misho in cash on site on a service day. It is recorded and counted like a transfer report; a cancellation never refunds it, because nothing was handed over in advance.
 _Avoid_: Cash promise, cash to collect
+
+**Bike park session**:
+An event with a date and one start time, always from Vake. Riders sign up for the
+start in an independent native Telegram poll. Each lift costs the session's
+published price (default 5 GEL); at least six riders must remain on site. Usually
+there are five to seven lifts, but the actual number is decided on site and may
+differ per rider. Votes are neither attendance nor billable seats. Actual lifts
+and payment afterwards are outside the bot's ledger and ride statistics.
+
+**Bike park price default**:
+The independently editable price copied into a bike park session when published.
+Changing it does not change existing sessions or the ordinary lift price.

@@ -478,11 +478,57 @@ class ServiceDayDefaults(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger)
     thread_id: Mapped[int | None] = mapped_column(BigInteger)
     price_gel: Mapped[int] = mapped_column(Integer)
+    bike_park_price_gel: Mapped[int] = mapped_column(Integer, default=5, server_default="5")
     deadline_time: Mapped[str] = mapped_column(String(16))
     updated_by_user_id: Mapped[int] = mapped_column(BigInteger)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
+
+
+class BikeParkSession(Base):
+    __tablename__ = "bike_park_session"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    start_time: Mapped[str] = mapped_column(String(5))
+    price_gel: Mapped[int] = mapped_column(Integer)
+    created_by_user_id: Mapped[int] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    status: Mapped[str] = mapped_column(String(32), default="posting")
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    poll_id: Mapped[str | None] = mapped_column(Text, unique=True)
+    replace_lift_time: Mapped[str | None] = mapped_column(String(16))
+    replacement_completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    poll_closed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class BikeParkVote(Base):
+    __tablename__ = "bike_park_vote"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("bike_park_session.id", ondelete="CASCADE"))
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger)
+    full_name: Mapped[str] = mapped_column(Text)
+    attending: Mapped[bool] = mapped_column(Boolean)
+
+
+Index(
+    "uq_bike_park_active_day",
+    BikeParkSession.environment,
+    BikeParkSession.chat_id,
+    func.coalesce(BikeParkSession.thread_id, 0),
+    BikeParkSession.service_date,
+    unique=True,
+    postgresql_where=BikeParkSession.status.in_(("posting", "posted", "sent_unconfirmed")),
+    sqlite_where=BikeParkSession.status.in_(("posting", "posted", "sent_unconfirmed")),
+)
+Index("uq_bike_park_voter", BikeParkVote.session_id, BikeParkVote.telegram_user_id, unique=True)
 
 
 class PaymentEntry(Base):

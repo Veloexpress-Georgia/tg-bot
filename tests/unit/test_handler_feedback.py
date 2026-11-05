@@ -301,7 +301,7 @@ async def test_admin_start_opens_live_monitor_and_cleans_previous_menu(monkeypat
     state = AsyncMock()
     state.get_data.return_value = {"menu_message_ids": [55]}
     service = AsyncMock()
-    service.status_days.return_value = [SimpleNamespace(service_date=date(2099, 1, 1), past=False)]
+    service.display_days.return_value = [SimpleNamespace(service_date=date(2099, 1, 1), past=False)]
     service.open_booking_monitor.return_value = 66
     await show_start_menu(message, state, settings(), service)
     message.answer.assert_not_awaited()

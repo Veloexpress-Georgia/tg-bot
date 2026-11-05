@@ -250,7 +250,12 @@ export const demoPlanning: Planning = {
     announce_lead_minutes: 120,
     skip_week_start: null,
   },
-  terms: { price_gel: 20, deadline_time: '20:00', timezone: 'Asia/Tbilisi' },
+  terms: {
+    price_gel: 20,
+    bike_park_price_gel: 5,
+    deadline_time: '20:00',
+    timezone: 'Asia/Tbilisi',
+  },
 };
 
 const PRICE = 20;
@@ -452,12 +457,36 @@ function buildDay(service_date: string): LiveDay {
 }
 
 export const demoDays: LiveDay[] = [buildDay('2026-10-04')];
+// Synthetic session; demo commands never write to the production bot.
+demoDays[0].bike_park = {
+  id: 1,
+  service_date: '2026-10-04',
+  start_time: '16:00',
+  price_gel: 5,
+  status: 'posted',
+  started: false,
+  poll_url: null,
+  riders: names.slice(0, 6).map((label, index) => ({ telegram_user_id: 1000 + index, label })),
+};
 const demoSummaryDays = demoDays.map(({ riders: _riders, commands: _commands, ...day }) => ({
   ...day,
   lifts: day.lifts.map(({ riders: _liftRiders, ...lift }) => lift),
 }));
 
 export const demoMyDays: MyDays = {
+  bike_parks: [
+    {
+      id: 1,
+      service_date: '2026-10-04',
+      start_time: '16:00',
+      price_gel: 5,
+      status: 'posted',
+      started: false,
+      poll_url: null,
+      rider_count: 6,
+      attending: true,
+    },
+  ],
   days: demoDays.map((day) => ({
     service_date: day.service_date,
     past: day.past,
