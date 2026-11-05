@@ -1165,12 +1165,12 @@ class PaymentsService:
         )
 
     async def record_topic_post(self, *, telegram_user_id: int, posted_at: datetime) -> None:
-        """Treat a rider writing in the payments topic as their payment report.
+        """Note that a rider wrote in the payments topic — who and when, nothing more.
 
-        The bot never reads what they wrote — the group convention is that you
-        post there when you have paid, so presence is the whole signal. The
-        trade-off is deliberate: a question posted in the topic also counts, and
-        an admin can clear it from the monitor.
+        A post is not a payment. Inferring one from presence alone recorded money
+        for questions asked in the topic, which Misho then could not find in his
+        bank. The timestamp only keeps the bot from posting a second line about
+        a rider who already reported their payment in their own words.
         """
         if not self.enabled:
             return
@@ -1197,96 +1197,6 @@ class PaymentsService:
             else:
                 row.last_posted_at = posted_at
             await session.commit()
-
-        await self._claim_from_topic_post(telegram_user_id=telegram_user_id, posted_at=posted_at)
-
-    async def _claim_from_topic_post(self, *, telegram_user_id: int, posted_at: datetime) -> None:
-        """Mark the rider paid for the soonest running day they are booked on.
-
-        Only one day, and only the nearest: a single message cannot be read as
-        paying for a whole weekend, and guessing wide would overstate what Misho
-        has received.
-        """
-        today = posted_at.astimezone(self._zone).date()
-        async with self._session_factory() as session:
-            paying_cash = await session.scalar(
-                select(PaymentClaim.id)
-                .where(
-                    PaymentClaim.environment == self._settings.app_env,
-                    PaymentClaim.chat_id == self._require_chat_id(),
-                    PaymentClaim.thread_id == self._settings.telegram_target_thread_id,
-                    PaymentClaim.telegram_user_id == telegram_user_id,
-                    PaymentClaim.service_date >= today,
-                    PaymentClaim.cash_amount_gel > 0,
-                )
-                .limit(1)
-            )
-        if paying_cash is not None:
-            # A topic post names neither the day nor the method. It must not turn
-            # cash reported for Sunday into a Saturday transfer.
-            return
-        for day in await self._active_days(today=today):
-            if day.cancelled or telegram_user_id not in day.lift_times_by_user:
-                continue
-            if posted_at < day.polls_created_at:
-                # Written before this day's poll existed, so it cannot be about it.
-                continue
-            async with self._session_factory() as session:
-                if (
-                    await self._claim_row(
-                        session=session,
-                        service_date=day.service_date,
-                        telegram_user_id=telegram_user_id,
-                    )
-                    is not None
-                ):
-                    return
-                # The claim lookup holds the day lock. Refresh the seat allocation
-                # after acquiring it: a vote or admin correction may have committed
-                # while this topic report was waiting.
-                fresh_day = await self._day(day.service_date)
-                if fresh_day is None or fresh_day.cancelled:
-                    continue
-                day = fresh_day
-                if posted_at < day.polls_created_at:
-                    return
-                username, full_name = day.labels_by_user.get(telegram_user_id, (None, "Rider"))
-                seats = len(day.confirmed_lift_times(telegram_user_id)) + day.guest_seats(
-                    telegram_user_id
-                )
-                if not seats:
-                    continue
-                amount_gel = seats * day.price_gel
-                session.add(
-                    PaymentClaim(
-                        environment=self._settings.app_env,
-                        chat_id=self._require_chat_id(),
-                        thread_id=self._settings.telegram_target_thread_id,
-                        service_date=day.service_date,
-                        telegram_user_id=telegram_user_id,
-                        username=username,
-                        full_name=full_name,
-                        seats=seats,
-                        amount_gel=amount_gel,
-                        cash_amount_gel=0,
-                    )
-                )
-                session.add(
-                    PaymentEntry(
-                        environment=self._settings.app_env,
-                        chat_id=self._require_chat_id(),
-                        thread_id=self._settings.telegram_target_thread_id,
-                        service_date=day.service_date,
-                        telegram_user_id=telegram_user_id,
-                        amount_gel=amount_gel,
-                        method=None,
-                        kind="received",
-                        recorded_at=posted_at,
-                    )
-                )
-                await session.commit()
-            await self._refresh_board(day)
-            return
 
     async def _announce_claim(self, day: DayBookings, telegram_user_id: int) -> None:
         """Post the rider's payment line, unless they already wrote it themselves."""

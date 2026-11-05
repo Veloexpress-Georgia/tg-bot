@@ -86,26 +86,10 @@ async def test_payment_button_records_only_two_real_seats(db: SharedDatabase):
         assert sum(row.amount_gel for row in entries) == 40
 
 
-async def test_topic_payment_inference_records_only_real_seats(db: SharedDatabase):
-    from datetime import UTC, datetime
-
-    _polls, payments, _client, _poll_id, _day = await partial_day(db)
-    await payments.record_topic_post(telegram_user_id=999, posted_at=datetime.now(UTC))
-    async with db.session() as session:
-        claim = await session.scalar(
-            select(PaymentClaim).where(PaymentClaim.telegram_user_id == 999)
-        )
-        assert claim is not None and claim.amount_gel == 40
-
-
-@pytest.mark.parametrize("source", ["button", "topic"])
 async def test_payment_rechecks_seats_after_waiting_for_day_lock(
     db: SharedDatabase,
     monkeypatch: pytest.MonkeyPatch,
-    source: str,
 ):
-    from datetime import UTC, datetime
-
     polls, payments, _client, poll_id, day = await partial_day(db)
     original = payments._claim_row
     changed = False
@@ -124,16 +108,13 @@ async def test_payment_rechecks_seats_after_waiting_for_day_lock(
         return await original(**kwargs)
 
     monkeypatch.setattr(payments, "_claim_row", changed_before_lock)
-    if source == "button":
-        await payments.claim(
-            service_date=day,
-            telegram_user_id=999,
-            username="de02vd83ads",
-            full_name="Vlad",
-            acknowledged=True,
-        )
-    else:
-        await payments.record_topic_post(telegram_user_id=999, posted_at=datetime.now(UTC))
+    await payments.claim(
+        service_date=day,
+        telegram_user_id=999,
+        username="de02vd83ads",
+        full_name="Vlad",
+        acknowledged=True,
+    )
     async with db.session() as session:
         claim = await session.scalar(
             select(PaymentClaim).where(PaymentClaim.telegram_user_id == 999)

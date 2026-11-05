@@ -4,7 +4,6 @@ import asyncio
 import json
 import os
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -71,11 +70,9 @@ async def test_competing_booking_corrections_commit_only_one_reviewed_order(
     assert [r["user_id"] for r in final["riders"]] == json.loads(audit[0].after_order)
 
 
-@pytest.mark.parametrize("source", ["button", "topic"])
 async def test_receipts_wait_for_queue_edit_and_do_not_charge_a_new_waitlist(
     pg: helpers.SharedDatabase,
     monkeypatch: pytest.MonkeyPatch,
-    source: str,
 ):
     polls, payments, _client, poll_id, day = await helpers._setup(pg)
     await helpers._fill(polls, poll_id, 0, riders=11)
@@ -93,8 +90,6 @@ async def test_receipts_wait_for_queue_edit_and_do_not_charge_a_new_waitlist(
             payments.claim(
                 service_date=day, telegram_user_id=100, username="test", full_name="Test"
             )
-            if source == "button"
-            else payments.record_topic_post(telegram_user_id=100, posted_at=datetime.now(UTC))
         )
         await asyncio.wait_for(entered.wait(), 5)
         assert not task.done()
@@ -266,31 +261,6 @@ async def test_concurrent_undo_and_claim_keep_projection_equal_to_ledger(
             select(PaymentClaim).where(PaymentClaim.environment == payments._settings.app_env)
         )
     assert total == 0 and claim is None
-
-
-async def test_topic_report_and_button_cannot_both_record_payment(
-    pg: helpers.SharedDatabase,
-) -> None:
-    polls, payments, _, poll_id, day = await helpers._setup(pg)
-    await helpers._fill(polls, poll_id, 0)
-    payments._announce_claim = AsyncMock()
-    payments._refresh_board = AsyncMock()
-    await asyncio.wait_for(
-        asyncio.gather(
-            payments.record_topic_post(telegram_user_id=100, posted_at=datetime.now(UTC)),
-            payments.claim(
-                service_date=day, telegram_user_id=100, username="test", full_name="Test"
-            ),
-        ),
-        5,
-    )
-    async with pg.session() as session:
-        total = await session.scalar(
-            select(func.sum(PaymentEntry.amount_gel)).where(
-                PaymentEntry.environment == payments._settings.app_env
-            )
-        )
-    assert total == 15
 
 
 async def test_two_dispatchers_skip_a_message_being_sent(pg: helpers.SharedDatabase) -> None:
