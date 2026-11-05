@@ -635,24 +635,6 @@ async def test_batched_rider_views_match_reading_each_rider(db: SharedDatabase) 
     assert await payments.rider_days(service_dates=[], telegram_user_id=100) == {}
 
 
-async def test_topic_message_does_not_turn_cash_into_a_transfer(db: SharedDatabase) -> None:
-    polls, payments, _client, poll_id, day = await _setup(db)
-    await _fill(polls, poll_id, 0, riders=5)
-    await payments.claim(
-        service_date=day,
-        telegram_user_id=100,
-        username="rider100",
-        full_name="Rider",
-        method=CASH_METHOD,
-    )
-    await payments.record_topic_post(telegram_user_id=100, posted_at=datetime.now(UTC))
-    async with db.session() as session:
-        claim = await session.scalar(select(PaymentClaim))
-        entries = list(await session.scalars(select(PaymentEntry)))
-    assert claim is not None and claim.method == CASH_METHOD
-    assert [(entry.amount_gel, entry.method) for entry in entries] == [(15, CASH_METHOD)]
-
-
 async def test_cash_report_is_undone_like_a_transfer(db: SharedDatabase) -> None:
     polls, payments, _client, poll_id, day = await _setup(db)
     await _fill(polls, poll_id, 0, riders=5)
@@ -722,29 +704,6 @@ async def test_cash_after_a_transfer_only_corrects_the_method(db: SharedDatabase
         (15, "transfer", "received"),
         (0, CASH_METHOD, "method_change"),
     ]
-
-
-async def test_topic_message_about_sunday_cash_cannot_mark_saturday_paid(
-    db: SharedDatabase,
-) -> None:
-    polls, payments, _client, poll_id, saturday = await _setup(db)
-    await _fill(polls, poll_id, 0, riders=5)
-    sunday = saturday + timedelta(days=1)
-    second = await polls.create_poll(
-        PollSetup(service_date=sunday, created_by_user_id=1), pin_after_send=False
-    )
-    await _fill(polls, second.poll_id or "", 0, riders=5)
-    await payments.claim(
-        service_date=sunday,
-        telegram_user_id=100,
-        username="rider100",
-        full_name="Rider",
-        method=CASH_METHOD,
-    )
-    await payments.record_topic_post(telegram_user_id=100, posted_at=datetime.now(UTC))
-    async with db.session() as session:
-        claims = list(await session.scalars(select(PaymentClaim)))
-    assert [(claim.service_date, claim.method) for claim in claims] == [(sunday, CASH_METHOD)]
 
 
 async def test_cash_reports_count_as_paid_at_the_deadline(db: SharedDatabase) -> None:
@@ -843,27 +802,6 @@ async def test_mixed_payment_returns_only_the_transferred_part(db: SharedDatabas
     assert whole_day is not None
     assert "@rider100</a> — 15 GEL back" in whole_day
     assert "Paid 15 · rides 0 GEL" in whole_day
-
-
-async def test_the_bot_stays_quiet_when_the_rider_already_wrote_in_the_topic(
-    db: SharedDatabase,
-) -> None:
-    poll_service, payments, client, poll_id, saturday = await _setup(db)
-    await _fill(poll_service, poll_id, 0, riders=5)
-    await payments.sync_boards()
-    before = len(client.payments_sends())
-
-    await payments.record_topic_post(telegram_user_id=100, posted_at=datetime.now(UTC))
-    await payments.claim(
-        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
-    )
-
-    # The claim is recorded, but the rider already spoke for themselves.
-    async with db.session() as session:
-        claim = await session.scalar(select(PaymentClaim))
-    assert claim is not None
-    assert claim.posted_message_id is None
-    assert len(client.payments_sends()) == before
 
 
 async def test_booking_status_keeps_payment_in_topic(db: SharedDatabase) -> None:
@@ -1192,43 +1130,6 @@ async def test_a_rider_cannot_change_an_admin_verified_payment_method(
     assert claim is not None
     assert claim.method == CASH_METHOD
     assert len(entries) == 1
-
-
-async def test_writing_in_the_payments_topic_records_no_payment(db: SharedDatabase) -> None:
-    """A post is not a payment: questions in the topic used to be booked as money."""
-    poll_service, payments, client, poll_id, _saturday = await _setup(db)
-    await _fill(poll_service, poll_id, 0, riders=5)
-    await payments.sync_boards()
-    board = client.payments_sends()[-1]
-    sends_before = len(client.payments_sends())
-
-    await payments.record_topic_post(telegram_user_id=100, posted_at=datetime.now(UTC))
-
-    async with db.session() as session:
-        assert await session.scalar(select(PaymentClaim)) is None
-        assert await session.scalar(select(PaymentEntry)) is None
-    assert len(client.payments_sends()) == sends_before
-    assert not any(message_id == board.message_id for message_id, _ in client.edits)
-
-
-async def test_an_older_topic_post_does_not_count_for_this_weekend(db: SharedDatabase) -> None:
-    poll_service, payments, _client, poll_id, saturday = await _setup(db)
-    await _fill(poll_service, poll_id, 0, riders=5)
-    await payments.sync_boards()
-
-    # Written before the polls for this weekend existed, so it cannot be about them.
-    await payments.record_topic_post(
-        telegram_user_id=100,
-        posted_at=datetime.now(UTC) - timedelta(days=9),
-    )
-    await payments.claim(
-        service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
-    )
-
-    async with db.session() as session:
-        claim = await session.scalar(select(PaymentClaim))
-    assert claim is not None
-    assert claim.posted_message_id is not None
 
 
 async def test_a_guest_seat_edits_the_posted_line_instead_of_adding_one(

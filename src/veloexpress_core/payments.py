@@ -23,7 +23,6 @@ from veloexpress_bot.db.models import (
     PaymentClaim,
     PaymentEntry,
     PaymentsBoard,
-    PaymentsTopicPost,
     PollBatch,
     PollMessage,
     PollOptionSnapshot,
@@ -1164,42 +1163,8 @@ class PaymentsService:
             extra={"service_date": service_date.isoformat()},
         )
 
-    async def record_topic_post(self, *, telegram_user_id: int, posted_at: datetime) -> None:
-        """Note that a rider wrote in the payments topic — who and when, nothing more.
-
-        A post is not a payment. Inferring one from presence alone recorded money
-        for questions asked in the topic, which Misho then could not find in his
-        bank. The timestamp only keeps the bot from posting a second line about
-        a rider who already reported their payment in their own words.
-        """
-        if not self.enabled:
-            return
-        async with self._session_factory() as session:
-            await transaction_lock(
-                session,
-                f"payment-post:{self._settings.app_env}:{self._require_chat_id()}:{telegram_user_id}",
-            )
-            row = await session.scalar(
-                select(PaymentsTopicPost)
-                .where(PaymentsTopicPost.environment == self._settings.app_env)
-                .where(PaymentsTopicPost.chat_id == self._require_chat_id())
-                .where(PaymentsTopicPost.telegram_user_id == telegram_user_id)
-            )
-            if row is None:
-                session.add(
-                    PaymentsTopicPost(
-                        environment=self._settings.app_env,
-                        chat_id=self._require_chat_id(),
-                        telegram_user_id=telegram_user_id,
-                        last_posted_at=posted_at,
-                    )
-                )
-            else:
-                row.last_posted_at = posted_at
-            await session.commit()
-
     async def _announce_claim(self, day: DayBookings, telegram_user_id: int) -> None:
-        """Post the rider's payment line, unless they already wrote it themselves."""
+        """Post the rider's payment line, or edit the one already posted."""
         async with self._session_factory() as session:
             claim = await self._claim_row(
                 session=session,
@@ -1214,14 +1179,6 @@ class PaymentsService:
             cash = claim.method == CASH_METHOD
             cash_gel = claim.cash_amount_gel
             posted_message_id = claim.posted_message_id
-            self_posted = await self._posted_in_topic_since(
-                session=session,
-                telegram_user_id=telegram_user_id,
-                since=day.polls_created_at,
-            )
-
-        if self_posted and posted_message_id is None:
-            return
 
         text = render_payment_post(
             label=label,
@@ -2236,23 +2193,6 @@ class PaymentsService:
             .where(PaymentClaim.service_date == service_date)
             .where(PaymentClaim.telegram_user_id == telegram_user_id)
         )
-
-    async def _posted_in_topic_since(
-        self,
-        *,
-        session: AsyncSession,
-        telegram_user_id: int,
-        since: datetime,
-    ) -> bool:
-        last_posted_at = await session.scalar(
-            select(PaymentsTopicPost.last_posted_at)
-            .where(PaymentsTopicPost.environment == self._settings.app_env)
-            .where(PaymentsTopicPost.chat_id == self._require_chat_id())
-            .where(PaymentsTopicPost.telegram_user_id == telegram_user_id)
-        )
-        if last_posted_at is None:
-            return False
-        return _as_utc(last_posted_at) >= since
 
     def _payment_link(self, service_date: date, prefix: str) -> str:
         if not self._settings.payments_via_private_chat:

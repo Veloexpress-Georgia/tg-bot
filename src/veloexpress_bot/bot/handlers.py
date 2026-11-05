@@ -1558,51 +1558,6 @@ async def cleanup_bot_pin_notice(
     )
 
 
-# Registered after the narrower message handlers on purpose: this one matches any
-# forum-topic message, and the first matching handler ends propagation.
-@router.message(F.message_thread_id, F.from_user, ~F.pinned_message)
-async def watch_payments_topic(
-    message: Message,
-    bot: Bot,
-    settings: Settings,
-    payments_service: PaymentsService,
-) -> None:
-    """Note that a rider wrote in the payments topic — who and when, nothing more.
-
-    A rider who reported their own payment should not then get a second line
-    posted about them by the bot.
-    """
-    actor = message.from_user
-    if actor is None or not _is_payments_topic_post(
-        chat_id=message.chat.id,
-        thread_id=message.message_thread_id,
-        actor_user_id=actor.id,
-        bot_user_id=bot.id,
-        settings=settings,
-    ):
-        return
-    await payments_service.record_topic_post(
-        telegram_user_id=actor.id,
-        posted_at=message.date,
-    )
-
-
-def _is_payments_topic_post(
-    *,
-    chat_id: int,
-    thread_id: int | None,
-    actor_user_id: int,
-    bot_user_id: int,
-    settings: Settings,
-) -> bool:
-    return (
-        settings.telegram_payments_thread_id is not None
-        and chat_id == settings.telegram_target_chat_id
-        and thread_id == settings.telegram_payments_thread_id
-        and actor_user_id != bot_user_id
-    )
-
-
 @router.callback_query(
     F.data.startswith("day:toggle:")
     | F.data.startswith("lift:toggle:")

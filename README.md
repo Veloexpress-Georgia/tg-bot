@@ -152,11 +152,11 @@ When the setting is on, arriving by one of those links settles up immediately, u
 
 Riders act on the board with inline buttons. `💸 I paid` and `💵 I'll pay cash` append the outstanding amount to the rider's day ledger with that method. The acknowledgement shows the date, added amount and reported total; repeats explicitly add nothing, and choosing the other method after reporting corrects the method without moving money. `Undo` follows the receipt reversal rules for both. Admins do not record payments: the cabinet shows who reported, by which method, and who still owes.
 
-When a rider reports payment, the bot posts their day and amount to the payments topic on their behalf, without a fixed lift list: coverage follows their current bookings before the deadline. If that rider already wrote in the payments topic since the poll was created, the bot stays silent and records the report only once.
+When a rider reports payment, the bot posts their day and amount to the payments topic on their behalf, without a fixed lift list: coverage follows their current bookings before the deadline. It posts the line for every report, whatever the rider wrote in the topic themselves.
 
 Cancelling something people already paid for sends the admin a compact refund estimate: each rider's total to return, amount received, and amount retained for rides. Riders with no refund are omitted. Each report is cumulative for the service day, including amounts shown in earlier reports; actual payouts are not tracked. Generating a report never records money as returned. Reports are saved as snapshots and available through `🧾 Past refunds`. Cancelling a whole day archives its payment projection so a fresh poll starts empty, while immutable received-payment entries remain. Nobody paid means no message.
 
-A message in the payments topic is not a payment report. The bot used to infer one from presence alone, which booked questions asked in the topic as money Misho could not find in his bank. It now only notes when the rider last wrote there, so a later button tap does not add a second line about them.
+A message in the payments topic is not a payment report. The bot used to infer one from presence alone, which booked questions asked in the topic as money Misho could not find in his bank. Watching the topic also hid the bot's own receipt for any rider who had written there, even a question, so the bot no longer reads the topic at all.
 
 The board tags whoever still owes rather than printing a count. Editing a message sends no Telegram notification, so the names show the gap without nagging anybody.
 
@@ -205,8 +205,6 @@ The one exemption is walking away unpaid. Booking and cancelling stay free after
 The receipt the bot posts in the payments topic names no lifts, only the day and the amount. Payment covers the day, and a receipt listing lifts would go stale the moment the rider changed slots; the live breakdown belongs on the board.
 
 Riders can hold a booked seat without paying for it, and the bot does not chase them; the gap is visible on the board and in the admin monitor. Telegram poll votes cannot be withdrawn by a bot, so a rider who pays for fewer seats than they booked still occupies those slots — the availability count and the paid count can legitimately disagree.
-
-The bot must be able to see ordinary messages in the payments topic for the "already wrote it themselves" check. Group admins receive all messages, which the bot is; if the check never triggers, disable privacy mode for the bot in BotFather.
 
 The test bot needs permission to send polls. To fully test MVP behavior, also allow it to delete its setup messages and pin/unpin messages. Before deleting an old bot-managed poll, the bot unpins it; when a new weekend batch is pinned, older tracked poll pins are retired while both current service-day polls remain pinned. The bot also removes its own Telegram “pinned …” service notices from the configured lift topic so they do not later become “pinned Deleted message”; pin notices created manually by admins are preserved.
 

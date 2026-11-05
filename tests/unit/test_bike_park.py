@@ -255,57 +255,6 @@ def test_session_copy_and_dates():
     assert len(draft.question) <= 300
 
 
-async def test_topic_posts_on_a_park_day_record_no_payment(park_setup):
-    from datetime import datetime, time
-
-    db, _, _, runtime, operations, day = park_setup
-    regular = await runtime.lifts.create_poll(
-        PollSetup(
-            service_date=day,
-            created_by_user_id=1,
-            cancelled_lift_times=cancelled_lift_times_for_range("13:30", "13:30"),
-        )
-    )
-    for uid in range(100, 105):
-        await runtime.lifts.track_poll_answer(
-            poll_id=regular.poll_id or "",
-            telegram_user_id=uid,
-            username=None,
-            full_name=f"Rider {uid}",
-            option_ids=(0,),
-        )
-    await publish(operations, day)
-    async with db.session() as session:
-        park_poll = await session.scalar(select(BikeParkSession.poll_id))
-    await runtime.lifts.track_poll_answer(
-        poll_id=park_poll or "",
-        telegram_user_id=100,
-        username=None,
-        full_name="Rider 100",
-        option_ids=(0,),
-    )
-    from tests.unit.test_payments_service import FakeTelegramClient as PaymentClient
-
-    runtime.payments._telegram_client = PaymentClient()
-    posted = datetime.combine(day, time(16), runtime.lifts.bike_park.zone)
-    await runtime.payments.record_topic_post(telegram_user_id=100, posted_at=posted)
-    await runtime.payments.record_topic_post(telegram_user_id=101, posted_at=posted)
-    async with db.session() as session:
-        assert await session.scalar(select(func.count()).select_from(PaymentEntry)) == 0
-    # A deliberate ordinary-lift payment remains available to the park rider.
-    await runtime.payments.claim(
-        service_date=day,
-        telegram_user_id=100,
-        username=None,
-        full_name="Rider 100",
-        method="transfer",
-    )
-    async with db.session() as session:
-        rows = list(await session.scalars(select(PaymentEntry)))
-        assert [row.telegram_user_id for row in rows] == [100]
-        assert rows[0].amount_gel == (await runtime.terms.values()).price_gel
-
-
 async def test_lift_reaching_minimum_during_park_publication_is_not_cancelled(
     park_setup, monkeypatch
 ):

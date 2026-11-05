@@ -666,10 +666,10 @@ class PaymentsBoard(Base):
 
 
 class PaymentsTopicPost(Base):
-    """When a rider last wrote in the payments topic — user id and time only.
+    """When a rider last wrote in the payments topic. No longer written.
 
-    The bot deliberately does not read what they wrote. Its only question is
-    whether the rider already spoke for themselves, so it can stay quiet.
+    The bot used to stay quiet about riders who had written there, which hid
+    receipts for anyone who only asked a question. The table is kept for history.
     """
 
     __tablename__ = "payments_topic_post"
