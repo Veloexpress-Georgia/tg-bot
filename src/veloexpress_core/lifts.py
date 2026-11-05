@@ -2761,7 +2761,7 @@ class PollPostingService:
                             (PollBatch.status == "posted")
                             & (PollBatch.service_date >= today - timedelta(days=1)),
                             (PollBatch.status == "cancelled")
-                            & (PollMessage.cleanup_status != "deleted"),
+                            & PollMessage.cleanup_status.not_in(("deleted", "delete_expired")),
                         )
                     )
                     .distinct()
@@ -2806,7 +2806,7 @@ class PollPostingService:
             if batch.status == "cancelled":
                 # Keep the cancellation notice, not a second cancelled status card.
                 # Persist cleanup so late votes cannot restore or re-delete it.
-                if availability_message.cleanup_status == "deleted":
+                if availability_message.cleanup_status in {"deleted", "delete_expired"}:
                     return
                 message_id = availability_message.telegram_message_id
                 if not await self._telegram_client.clear_keyboard(
@@ -2816,6 +2816,16 @@ class PollPostingService:
                 if not await self._telegram_client.unpin_message(
                     chat_id=batch.chat_id, message_id=message_id
                 ):
+                    return
+                created_at = availability_message.created_at
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=UTC)
+                if datetime.now(UTC) - created_at >= timedelta(hours=48):
+                    # Telegram refuses to let bots delete messages this old. Without
+                    # buttons or a pin the card is inert, so stop retrying every tick.
+                    availability_message.cleanup_status = "delete_expired"
+                    availability_message.pinned = False
+                    await session.commit()
                     return
                 deleted = await self._telegram_client.delete_message(
                     chat_id=batch.chat_id, message_id=message_id

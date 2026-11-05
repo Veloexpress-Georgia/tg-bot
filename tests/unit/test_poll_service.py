@@ -2941,6 +2941,49 @@ async def test_cancellation_deletes_status_and_retries_cleanup_without_another_n
     assert sum("All lifts on" in text for text in client.sent_texts) == 1
 
 
+async def test_an_old_cancelled_status_card_stops_retrying_delete(db: SharedDatabase) -> None:
+    """Telegram refuses to delete bot messages older than 48 hours, so a failed
+    cleanup must not be retried on every scheduler tick forever."""
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    saturday, _ = _upcoming_weekend()
+    poll = await service.create_poll(
+        PollSetup(service_date=saturday, created_by_user_id=1), pin_after_send=False
+    )
+    card_id = poll.availability_message_id
+    attempts: list[int] = []
+    delete = client.delete_message
+
+    async def refuse_card(*, chat_id: int, message_id: int) -> bool:
+        if message_id == card_id:
+            attempts.append(message_id)
+            return False
+        return await delete(chat_id=chat_id, message_id=message_id)
+
+    client.delete_message = refuse_card  # type: ignore[method-assign]
+    await service.cancel_day(service_date=saturday, admin_user_id=1)
+    assert attempts == [card_id]
+    async with db.session() as session:
+        card = await session.scalar(
+            select(PollMessage).where(PollMessage.telegram_message_id == card_id)
+        )
+        assert card is not None and card.cleanup_status == "delete_failed"
+        card.created_at = datetime.now(UTC) - timedelta(days=3)
+        await session.commit()
+
+    await service.refresh_booking_statuses()
+    await service.refresh_booking_statuses()
+
+    assert attempts == [card_id]
+    async with db.session() as session:
+        card = await session.scalar(
+            select(PollMessage).where(PollMessage.telegram_message_id == card_id)
+        )
+        assert card is not None and card.cleanup_status == "delete_expired"
+
+
 async def test_a_screen_the_admin_opened_is_not_overwritten_by_a_refresh(
     db: SharedDatabase,
 ) -> None:
