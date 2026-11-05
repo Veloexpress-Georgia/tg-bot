@@ -88,7 +88,7 @@ def _state(lift: LiftAvailability, *, deadline_passed: bool) -> tuple[str, str, 
         return f"WAITLIST +{lift.seat_count - lift.capacity}", ORANGE, PANEL
     if lift.seat_count >= lift.capacity:
         return "FULL", INK, PANEL
-    if lift.seat_count < MINIMUM_RIDERS:
+    if not lift.running:
         if deadline_passed:
             return "BELOW MINIMUM", MUTED, PAST_DEADLINE_PANEL
         return f"NEEDS {MINIMUM_RIDERS - lift.seat_count} MORE", QUIET_GOLD, QUIET_PANEL
@@ -333,7 +333,9 @@ def render_availability_card(
         draw.text((44, y + 8), f"RUNNING · {len(full_rows)}", font=_font(38, bold=True), fill=GREEN)
         y += 60
         if not full_rows:
-            draw.text((44, y + 5), "No lifts reached five seats.", font=_font(32), fill=MUTED)
+            draw.text(
+                (44, y + 5), f"No lifts reached {MINIMUM_RIDERS} seats.", font=_font(32), fill=MUTED
+            )
             y += 65
     for lift, lines, breakdown, row_height in full_rows:
         _draw_full_row(

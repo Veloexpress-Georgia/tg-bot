@@ -78,6 +78,8 @@ export interface Demand {
     }[];
   })[];
 }
+/** A seat's state from the server's day ledger, shared with the group board. */
+export type SeatState = 'paid' | 'partial' | 'unpaid' | 'pending' | 'waitlist' | 'none';
 export interface LiftRider {
   telegram_user_id: number;
   label: string;
@@ -85,6 +87,10 @@ export interface LiftRider {
   cash: boolean;
   guests: number;
   waitlisted: boolean;
+  paid_gel: number;
+  state: SeatState;
+  /** Unpaid seats on this lift times the price; 0 while the lift is filling. */
+  due_gel: number;
 }
 export interface Lift {
   time: string;
@@ -239,6 +245,8 @@ export interface BookingOrder {
     paid_gel: number;
     /** The seat's payment was reported as cash, handed over on site. */
     cash: boolean;
+    state: SeatState;
+    due_gel: number;
   }[];
   previous_positions: Record<string, number>;
   deadline_closed: boolean;

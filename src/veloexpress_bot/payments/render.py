@@ -31,9 +31,9 @@ class RiderPayment:
     due_gel: int = 0
     cash: bool = False
     cash_gel: int = 0
-    # True when the rider still holds a booking that has not filled. Paying ahead and
+    # The part of any credit that covers lifts still filling. Paying ahead and
     # overpaying are the same arithmetic but opposite meanings.
-    prepaid: bool = False
+    prepaid_gel: int = 0
 
     @property
     def gap_gel(self) -> int:
@@ -249,7 +249,12 @@ def _payment_line(payment: RiderPayment) -> str:
         gap = f" · +{payment.gap_gel} due"
     elif payment.gap_gel < 0:
         # A free amount is an estimate, not a completed or promised bank payout.
-        gap = f" · {-payment.gap_gel} {'prepaid' if payment.prepaid else 'unallocated'}"
+        prepaid = min(payment.prepaid_gel, -payment.gap_gel)
+        unallocated = -payment.gap_gel - prepaid
+        if prepaid:
+            gap += f" · {prepaid} prepaid"
+        if unallocated:
+            gap += f" · {unallocated} unallocated"
     return f"✓ {html.escape(payment.label)} — {payment.amount_gel} GEL{seats}{cash}{gap}"
 
 

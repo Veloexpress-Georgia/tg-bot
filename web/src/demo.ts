@@ -355,13 +355,26 @@ function buildDay(service_date: string): LiveDay {
   const liftRiders = (lift: (typeof lifts)[number]): LiftRider[] => [
     ...[...lift.seated, ...lift.waiting].map((label) => {
       const rider = byLabel.get(label)!;
+      const waitlisted = lift.waiting.includes(label);
+      const paid = rider.paid_gel > 0 && rider.paid_gel >= rider.due_now_gel;
+      // Mirrors the server ledger: nothing is owed until the lift fills.
+      const state: LiftRider['state'] = waitlisted
+        ? 'waitlist'
+        : paid
+          ? 'paid'
+          : lift.running
+            ? 'unpaid'
+            : 'pending';
       return {
         telegram_user_id: rider.user_id,
         label,
-        paid: rider.paid_gel > 0 && rider.paid_gel >= rider.due_now_gel,
+        paid,
         cash: rider.payment_method === 'cash',
         guests: label === hostOfGuest ? lift.guests : 0,
-        waitlisted: lift.waiting.includes(label),
+        waitlisted,
+        paid_gel: rider.paid_gel,
+        state,
+        due_gel: state === 'unpaid' ? PRICE : 0,
       };
     }),
   ];
@@ -556,6 +569,8 @@ export function demoGet(path: string): unknown {
         paid: r.paid,
         paid_gel: riders.find((person) => person.user_id === r.telegram_user_id)?.paid_gel ?? 0,
         cash: r.cash,
+        state: r.state,
+        due_gel: r.due_gel,
       })),
       previous_positions: lift?.time === '11:45' ? { [String(idOf('@temo_v'))]: 3 } : {},
       deadline_closed: true,

@@ -1,15 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { demoDays } from '../../demo';
 import type { LiveDay } from '../../types';
-import {
-  dayAttention,
-  dayMoney,
-  focusDay,
-  liftState,
-  nextLiftTime,
-  relativeDay,
-  seatPaymentState,
-} from './model';
+import { dayAttention, dayMoney, focusDay, liftState, nextLiftTime, relativeDay } from './model';
 
 const day = () => structuredClone(demoDays[0]);
 const summary = (service_date: string, past = false) => ({ ...day(), service_date, past });
@@ -97,21 +89,5 @@ describe('day money', () => {
     const value = { ...day(), expected_gel: 480, owed_gel: 600 };
     expect(dayMoney(value)).toEqual({ reported: 480, due: 600, missing: 120 });
     expect(dayMoney({ ...value, expected_gel: 700 }).missing).toBe(0);
-  });
-});
-
-describe('seat payment state', () => {
-  const rider = { paid: false, cash: false };
-  const running = { running: true, cancelled: false };
-  it('owes nothing on a lift still short of the minimum, as on the board', () => {
-    expect(seatPaymentState(rider, running)).toBe('unpaid');
-    expect(seatPaymentState(rider, { ...running, running: false })).toBe('none');
-    expect(seatPaymentState(rider, { ...running, cancelled: true })).toBe('none');
-  });
-  it('keeps money already covering the seat visible', () => {
-    expect(seatPaymentState({ paid: true, cash: false }, { ...running, running: false })).toBe(
-      'paid',
-    );
-    expect(seatPaymentState({ paid: true, cash: true }, running)).toBe('cash');
   });
 });

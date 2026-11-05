@@ -20,14 +20,8 @@ import {
   Skeleton,
   Stepper,
 } from '../../ui';
-import {
-  liftState,
-  liftStateLabel,
-  liftTone,
-  relativeDay,
-  seatPaymentState,
-  shortDate,
-} from './model';
+import { liftState, liftStateLabel, liftTone, relativeDay, shortDate } from './model';
+import { owesNow, seatPayment } from '../../booking-order';
 import { PaymentMark } from './PaymentMark';
 import { WithdrawalList } from './WithdrawalList';
 import './days.css';
@@ -78,7 +72,7 @@ function LiftView({
   const riders = lift.riders;
   const seated = riders?.filter((rider) => !rider.waitlisted) ?? [];
   const waiting = riders?.filter((rider) => rider.waitlisted) ?? [];
-  const unpaid = seated.filter((rider) => seatPaymentState(rider, lift) === 'unpaid');
+  const unpaid = seated.filter(owesNow);
   const filter = (route.filter as RosterFilter | undefined) ?? 'all';
   const date = day.service_date;
   // Friends of the club who are not in Telegram: an admin holds their seat by hand.
@@ -128,7 +122,6 @@ function LiftView({
           <Skeleton height={220} />
         ) : (
           <Roster
-            lift={lift}
             seated={filter === 'waitlist' ? [] : filter === 'unpaid' ? unpaid : seated}
             waiting={filter === 'all' || filter === 'waitlist' ? waiting : []}
           />
@@ -188,15 +181,7 @@ function LiftView({
   );
 }
 
-function Roster({
-  lift,
-  seated,
-  waiting,
-}: {
-  lift: Lift;
-  seated: LiftRider[];
-  waiting: LiftRider[];
-}) {
+function Roster({ seated, waiting }: { seated: LiftRider[]; waiting: LiftRider[] }) {
   if (!seated.length && !waiting.length)
     return (
       <Card>
@@ -207,20 +192,20 @@ function Roster({
     <Card flush>
       <List>
         {seated.map((rider) => (
-          <RosterRow key={rider.telegram_user_id} lift={lift} rider={rider} />
+          <RosterRow key={rider.telegram_user_id} rider={rider} />
         ))}
         {waiting.length > 0 && (
           <li className="list-divider">{t.lift.waitlistHeader(waiting.length)}</li>
         )}
         {waiting.map((rider, index) => (
-          <RosterRow key={rider.telegram_user_id} lift={lift} rider={rider} position={index + 1} />
+          <RosterRow key={rider.telegram_user_id} rider={rider} position={index + 1} />
         ))}
       </List>
     </Card>
   );
 }
 
-function RosterRow({ lift, rider, position }: { lift: Lift; rider: LiftRider; position?: number }) {
+function RosterRow({ rider, position }: { rider: LiftRider; position?: number }) {
   return (
     <Row
       title={rider.label}
@@ -229,7 +214,7 @@ function RosterRow({ lift, rider, position }: { lift: Lift; rider: LiftRider; po
         rider.waitlisted ? (
           <PaymentMark state="waitlist" position={position} />
         ) : (
-          <PaymentMark state={seatPaymentState(rider, lift)} />
+          <PaymentMark {...seatPayment(rider)} />
         )
       }
     />

@@ -1,6 +1,6 @@
 import { t } from '../../i18n';
 import { capitalize, dateLabel, daysBetween, liftMinutes } from '../../lib';
-import type { Lift, LiftRider, LiveDay } from '../../types';
+import type { Lift, LiveDay } from '../../types';
 import type { Tone } from '../../ui';
 
 /** Cash is reported like a transfer; it is only handed over on site. */
@@ -19,19 +19,6 @@ export function dayAttention(day: LiveDay) {
       ['pending', 'running', 'review', 'failed'].includes(c.status),
     ),
   };
-}
-
-/**
- * A seat's mark on the lift roster. Money is owed only once a lift reaches the
- * minimum, as on the group board: a seat on a lift still short of it is not
- * unpaid, there is just nothing to pay for yet.
- */
-export function seatPaymentState(
-  rider: Pick<LiftRider, 'paid' | 'cash'>,
-  lift: Pick<Lift, 'running' | 'cancelled'>,
-): 'paid' | 'cash' | 'unpaid' | 'none' {
-  if (rider.paid) return rider.cash ? 'cash' : 'paid';
-  return lift.running && !lift.cancelled ? 'unpaid' : 'none';
 }
 
 export type LiftState = 'cancelled' | 'below' | 'waitlist' | 'full' | 'running';

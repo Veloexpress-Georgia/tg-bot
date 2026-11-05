@@ -69,6 +69,11 @@ class LiftRider:
     guests: int = 0
     waitlisted: bool = False
     paid_gel: int = 0
+    # This seat's state from the day ledger: paid, partial, unpaid, pending
+    # (lift still filling, nothing owed yet), waitlist or none.
+    state: str = "none"
+    # Unpaid seats on this lift times the price.
+    due_gel: int = 0
 
 
 @dataclass(frozen=True)

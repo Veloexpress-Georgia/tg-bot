@@ -38,10 +38,12 @@ class LiftSignal:
     seats: int
     cancelled: bool = False
     covered_seats: int = 0
+    # Had the minimum when booking closed: still happening after late drop-outs.
+    running_locked: bool = False
 
     @property
     def running(self) -> bool:
-        return not self.cancelled and self.seats >= MINIMUM_RIDERS
+        return not self.cancelled and (self.seats >= MINIMUM_RIDERS or self.running_locked)
 
 
 @dataclass(frozen=True)
@@ -81,7 +83,7 @@ def decide_lift_signal(
     """Decide at most one event for a lift; never repeats an announcement."""
     if signal.cancelled:
         return LiftDecision(memory=memory)
-    if signal.seats >= MINIMUM_RIDERS:
+    if signal.running:
         return _decide_running(
             signal,
             memory,
@@ -205,8 +207,7 @@ def decide_deadline_reminder(
     if already_reminded:
         return False
     if not any(
-        not signal.cancelled
-        and (signal.seats < MINIMUM_RIDERS or signal.covered_seats < MINIMUM_RIDERS)
+        not signal.cancelled and (not signal.running or signal.covered_seats < MINIMUM_RIDERS)
         for signal in signals
     ):
         # Every active lift has enough riders and paid seats.
@@ -251,9 +252,10 @@ def render_deadline_reminder(
 def _reminder_line(signal: LiftSignal) -> str:
     if signal.cancelled:
         return f"{signal.lift_time} — ❌ cancelled"
-    if signal.seats < MINIMUM_RIDERS:
+    if not signal.running:
         # Still "needs N more" after the deadline: it is literally true, and a late
-        # rider can still save the lift if Misho allows it.
+        # rider can still save the lift if Misho allows it. A lift that had the
+        # minimum when booking closed is happening, so it never reads short.
         missing = MINIMUM_RIDERS - signal.seats
         return f"{signal.lift_time} — {signal.seats}/{MINIMUM_RIDERS} · needs {missing} more"
     if signal.covered_seats < MINIMUM_RIDERS:
@@ -266,7 +268,7 @@ def _reminder_line(signal: LiftSignal) -> str:
 
 
 def _is_short(signal: LiftSignal) -> bool:
-    return not signal.cancelled and signal.seats < MINIMUM_RIDERS
+    return not signal.cancelled and not signal.running
 
 
 def lift_departure_at(service_date: date, lift_time: str, *, zone: tzinfo) -> datetime:

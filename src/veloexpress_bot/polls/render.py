@@ -108,6 +108,13 @@ class LiftAvailability:
     guests: tuple[GuestParty, ...] = ()
     cancelled: bool = False
     waitlist: tuple[WaitlistRider, ...] = ()
+    # Had the minimum when booking closed. It stays running however many leave
+    # overnight, as on the group board and in the admin monitor.
+    running_locked: bool = False
+
+    @property
+    def running(self) -> bool:
+        return not self.cancelled and (self.seat_count >= MINIMUM_RIDERS or self.running_locked)
 
     @property
     def guest_count(self) -> int:
@@ -210,7 +217,7 @@ def render_availability_status(
     lines = [header, ""]
     if deadline_passed:
         running, short, cancelled = partition_availability_lifts(lifts)
-        lines.append(f"✅ 5+ seats booked · {len(running)} lifts")
+        lines.append(f"✅ {MINIMUM_RIDERS}+ seats booked · {len(running)} lifts")
         for lift in running:
             lines.extend(_availability_lines(lift))
         if short:
@@ -233,10 +240,8 @@ def partition_availability_lifts(
     tuple[LiftAvailability, ...], tuple[LiftAvailability, ...], tuple[LiftAvailability, ...]
 ]:
     """Keep chronological order within the three post-deadline groups."""
-    running = tuple(
-        lift for lift in lifts if not lift.cancelled and lift.seat_count >= MINIMUM_RIDERS
-    )
-    short = tuple(lift for lift in lifts if not lift.cancelled and lift.seat_count < MINIMUM_RIDERS)
+    running = tuple(lift for lift in lifts if lift.running)
+    short = tuple(lift for lift in lifts if not lift.cancelled and not lift.running)
     cancelled = tuple(lift for lift in lifts if lift.cancelled)
     return running, short, cancelled
 
@@ -289,7 +294,7 @@ def _availability_tag(lift: LiftAvailability) -> str:
         return f"waitlist +{over}"
     if lift.seat_count >= lift.capacity:
         return "full"
-    if lift.seat_count < MINIMUM_RIDERS:
+    if not lift.running:
         return f"needs {MINIMUM_RIDERS - lift.seat_count} more"
     return f"{lift.capacity - lift.seat_count} left"
 

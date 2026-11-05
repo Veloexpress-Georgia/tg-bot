@@ -1,14 +1,30 @@
-import type { BookingOrder, BookingOrderProposal } from './types';
+import type { BookingOrder, BookingOrderProposal, LiftRider } from './types';
 
-/** How the rider's seat stands: paid by transfer or in cash, money ahead while waiting, or nothing. */
-export function seatPayment(rider: BookingOrder['riders'][number]): {
-  state: 'paid' | 'cash' | 'prepaid' | 'unpaid';
-  amount: number;
-} {
-  if (rider.paid) return { state: rider.cash ? 'cash' : 'paid', amount: rider.paid_gel };
-  if (rider.waitlisted && rider.paid_gel > 0) return { state: 'prepaid', amount: rider.paid_gel };
-  return { state: 'unpaid', amount: 0 };
+/**
+ * How one seat stands, read from the server's day ledger so every screen agrees
+ * with the group board. Nothing is owed on a lift still short of the minimum.
+ */
+export function seatPayment(
+  rider: Pick<LiftRider, 'state' | 'cash' | 'paid_gel' | 'due_gel' | 'waitlisted'>,
+): { state: 'paid' | 'cash' | 'prepaid' | 'due' | 'unpaid' | 'none'; amount: number } {
+  switch (rider.state) {
+    case 'paid':
+      return { state: rider.cash ? 'cash' : 'paid', amount: rider.paid_gel };
+    case 'partial':
+      return { state: 'due', amount: rider.due_gel };
+    case 'unpaid':
+      return { state: 'unpaid', amount: 0 };
+    default:
+      // Waiting for a seat or for the lift to fill: money already in is held, not owed.
+      return rider.waitlisted && rider.paid_gel > 0
+        ? { state: 'prepaid', amount: rider.paid_gel }
+        : { state: 'none', amount: 0 };
+  }
 }
+
+/** A seat that still owes money now: unpaid or only partly paid. */
+export const owesNow = (rider: Pick<LiftRider, 'state'>) =>
+  rider.state === 'unpaid' || rider.state === 'partial';
 
 export function moveBefore(ids: number[], source: number, target: number | null): number[] {
   if (!ids.includes(source) || source === target || (target !== null && !ids.includes(target)))

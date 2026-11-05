@@ -71,7 +71,10 @@ class RiderDayView:
 
     @property
     def waitlisted(self) -> bool:
-        return bool(self.rows) and all(row.waitlisted for row in self.rows)
+        """Holds nothing: every own vote is queued and no guest holds a seat."""
+        return (
+            bool(self.rows) and all(row.waitlisted for row in self.rows) and not self.total_guests
+        )
 
 
 @dataclass(frozen=True)

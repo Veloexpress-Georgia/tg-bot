@@ -177,6 +177,8 @@ async def load_order(
             "paid": r.paid,
             "paid_gel": r.paid_gel,
             "cash": r.cash,
+            "state": r.state,
+            "due_gel": r.due_gel,
         }
         for r in detail[1]
     }
@@ -229,7 +231,8 @@ def proposal(
     holders_after = set(ordered_user_ids[: state.available])
     promoted = [uid for uid in ordered_user_ids if uid in holders_after - holders_before]
     demoted = [uid for uid in current if uid in holders_before - holders_after]
-    paid_demoted = [uid for uid in demoted if state.payments[uid]["paid"]]
+    # Partly paid counts: money already sits on that seat.
+    paid_demoted = [uid for uid in demoted if state.payments[uid]["state"] in {"paid", "partial"}]
     labels = {r.telegram_user_id: r.label for r in state.ordered}
     lines = ["Confirm booking order", ""]
     if paid_demoted:
@@ -274,6 +277,10 @@ def proposal(
 def payment_label(payment: dict[str, Any]) -> str:
     if payment["paid"]:
         return "cash on site" if payment["cash"] else "payment reported"
+    if payment.get("state") == "partial":
+        return f"partly paid · {payment['due_gel']} GEL still due"
+    if payment.get("state") == "pending":
+        return "lift not filled yet · nothing due"
     amount = payment["paid_gel"]
     note = f" · {amount} GEL reported for the day" if amount else ""
     return f"payment not reported{note}"

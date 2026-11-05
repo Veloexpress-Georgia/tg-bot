@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { moveBefore, moveTo, proposeOrder, seatPayment } from './booking-order';
+import { moveBefore, owesNow, moveTo, proposeOrder, seatPayment } from './booking-order';
 import type { BookingOrder } from './types';
 
 describe('booking order', () => {
@@ -29,6 +29,8 @@ describe('booking order', () => {
         paid: i === 0,
         paid_gel: i === 0 ? 20 : 0,
         cash: false,
+        state: i === 0 ? ('paid' as const) : ('waitlist' as const),
+        due_gel: 0,
       })),
     };
     const result = proposeOrder(order, [3, 1, 2]);
@@ -37,23 +39,29 @@ describe('booking order', () => {
     expect(result.paid_demoted).toEqual([1]);
     expect(proposeOrder(order, [1, 3, 2]).promoted).toEqual([]);
   });
-  it('reads a seat as paid, paid in cash, prepaid while waiting, or unpaid', () => {
+  it('reads a seat from the ledger state, as the group board does', () => {
     const rider = {
-      user_id: 1,
-      label: 'Rider',
       waitlisted: false,
-      paid: false,
       paid_gel: 0,
       cash: false,
+      state: 'unpaid' as const,
+      due_gel: 20,
     };
     expect(seatPayment(rider).state).toBe('unpaid');
-    expect(seatPayment({ ...rider, paid: true, paid_gel: 20 }).state).toBe('paid');
-    expect(seatPayment({ ...rider, paid: true, paid_gel: 20, cash: true }).state).toBe('cash');
-    // Money for another lift does not pay for this seat.
-    expect(seatPayment({ ...rider, paid_gel: 20 }).state).toBe('unpaid');
-    expect(seatPayment({ ...rider, waitlisted: true, paid_gel: 20 })).toEqual({
+    expect(seatPayment({ ...rider, state: 'paid', paid_gel: 20 }).state).toBe('paid');
+    expect(seatPayment({ ...rider, state: 'paid', paid_gel: 20, cash: true }).state).toBe('cash');
+    // A host who paid for themselves but not their guest still owes on this lift.
+    expect(seatPayment({ ...rider, state: 'partial', paid_gel: 20 })).toEqual({
+      state: 'due',
+      amount: 20,
+    });
+    // Nothing is owed on a lift that has not filled, paid or not.
+    expect(seatPayment({ ...rider, state: 'pending' }).state).toBe('none');
+    expect(seatPayment({ ...rider, waitlisted: true, state: 'waitlist', paid_gel: 20 })).toEqual({
       state: 'prepaid',
       amount: 20,
     });
+    expect(owesNow({ state: 'partial' })).toBe(true);
+    expect(owesNow({ state: 'pending' })).toBe(false);
   });
 });

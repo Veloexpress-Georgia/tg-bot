@@ -360,8 +360,11 @@ def create_app(
                 raise HTTPException(404, "Day not found")
             return {"historical": True, **asdict(audit)}
         details = []
+        ledger = await runtime.lifts.day_ledger(service_date)
         for lift in day.lifts:
-            detail = await runtime.lifts.lift_detail(service_date=service_date, lift_time=lift.time)
+            detail = await runtime.lifts.lift_detail(
+                service_date=service_date, lift_time=lift.time, ledger=ledger
+            )
             details.append(
                 {
                     **asdict(lift),
