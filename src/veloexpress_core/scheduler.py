@@ -164,6 +164,14 @@ class PollAutoScheduler:
                 logger.exception("payments_board_sync_failed")
                 failures.append("payments_board_sync")
 
+        # After the roster freeze: the running lifts at the deadline decide
+        # whether the weekend poll's bike park has a free slot.
+        try:
+            await self._poll_service.decide_weekend_bike_parks(now=now_local)
+        except Exception:
+            logger.exception("weekend_bike_park_decision_failed")
+            failures.append("weekend_bike_park_decision")
+
         # On a lift-day morning the admin's monitor is put back at the bottom of
         # their chat, where they can actually reach it.
         try:

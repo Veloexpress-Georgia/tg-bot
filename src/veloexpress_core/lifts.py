@@ -53,6 +53,7 @@ from veloexpress_bot.db.models import (
     ACTIVE_POLL_BATCH_STATUSES,
     AdminBookingMonitor,
     BikeParkSession,
+    BikeParkVote,
     CancelledLift,
     DeadlineRoster,
     GuestSeat,
@@ -82,8 +83,17 @@ from veloexpress_bot.payments.controls import payment_keyboard
 from veloexpress_bot.payments.myday import deep_link
 from veloexpress_bot.payments.roster import DeadlineSnapshot, RosterSeat
 from veloexpress_bot.polls.autoschedule import render_schedule_summary, state_from_row
-from veloexpress_bot.polls.card import render_availability_card
+from veloexpress_bot.polls.bikepark import (
+    WEEKEND_BIKE_PARK_WINDOW,
+    choose_weekend_bike_park_start,
+    is_weekend_bike_park_day,
+    lifts_replaced_by_bike_park,
+    render_weekend_bike_park_notice,
+)
+from veloexpress_bot.polls.card import BikeParkCardRow, render_availability_card
 from veloexpress_bot.polls.defaults import (
+    BIKE_PARK_MINIMUM,
+    BIKE_PARK_OPTION,
     DEFAULT_CANCELLED_LIFT_TIMES,
     DEFAULT_LIFTS,
     MINIMUM_RIDERS,
@@ -1699,6 +1709,215 @@ class PollPostingService:
             await self._refresh_availability(poll_id)
         await self._refresh_booking_monitors()
 
+    def _offers_bike_park(self, service_date: date) -> bool:
+        return self._settings.weekend_bike_park_option and is_weekend_bike_park_day(service_date)
+
+    @staticmethod
+    def _bike_park_window(draft: PollDraft) -> tuple[str, str] | None:
+        return WEEKEND_BIKE_PARK_WINDOW if BIKE_PARK_OPTION in draft.options else None
+
+    async def _bike_park_option(
+        self, *, session: AsyncSession, service_date: date | None = None, poll_id: str | None = None
+    ) -> tuple[PollOptionSnapshot, date] | None:
+        """The bike park answer of the day's active lift poll, if it has one."""
+        query = (
+            select(PollOptionSnapshot, PollBatch.service_date)
+            .join(PollBatch, PollBatch.id == PollOptionSnapshot.batch_id)
+            .where(PollBatch.environment == self._settings.app_env)
+            .where(PollBatch.chat_id == self._settings.telegram_target_chat_id)
+            .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
+            .where(PollBatch.status == "posted")
+            .where(PollOptionSnapshot.label == BIKE_PARK_OPTION)
+            .order_by(PollBatch.id.desc())
+            .limit(1)
+        )
+        if service_date is not None:
+            query = query.where(PollBatch.service_date == service_date)
+        if poll_id is not None:
+            query = query.where(PollOptionSnapshot.poll_id == poll_id)
+        row = (await session.execute(query)).first()
+        return (row[0], row[1]) if row is not None else None
+
+    async def decide_weekend_bike_parks(self, *, now: datetime | None = None) -> None:
+        """At the booking deadline, run the poll's bike park if it has the votes.
+
+        Decided once per day. Below the minimum, or with no free slot left by the
+        running lifts, nothing is posted: only a running bike park is announced.
+        """
+        if self._settings.telegram_target_chat_id is None:
+            return
+        moment = (now or datetime.now(UTC)).astimezone(self._zone)
+        for day in await self.status_days():
+            if day.past or day.service_date <= moment.date():
+                continue
+            if not is_weekend_bike_park_day(day.service_date):
+                continue
+            terms = await self._payment_terms(service_date=day.service_date)
+            if moment < booking_deadline_at(day.service_date, terms.deadline_time, zone=self._zone):
+                continue
+            await self._decide_weekend_bike_park(day)
+
+    async def _decide_weekend_bike_park(self, day: BookingMonitorDay) -> None:
+        async with self._session_factory() as session:
+            decided = await session.scalar(
+                self.bike_park.scope(select(BikeParkSession.id)).where(
+                    BikeParkSession.service_date == day.service_date
+                )
+            )
+            if decided is not None:
+                # Already decided, or the admin made a separate bike park poll.
+                return
+            option = await self._bike_park_option(session=session, service_date=day.service_date)
+            if option is None:
+                return
+            snapshot, _ = option
+            votes = (
+                await session.scalars(
+                    select(PollVote)
+                    .where(PollVote.poll_id == snapshot.poll_id)
+                    .order_by(PollVote.id)
+                )
+            ).all()
+        riders = {
+            vote.telegram_user_id: vote.full_name or _rider_label(vote)
+            for vote in votes
+            if snapshot.option_index in decode_option_ids(vote.option_ids)
+        }
+        active = [lift for lift in day.lifts if not lift.cancelled]
+        start = choose_weekend_bike_park_start(
+            frozenset(lift.time for lift in active if lift.running)
+        )
+        price = (await self._service_day_defaults.values()).bike_park_price_gel
+        running = start is not None and len(riders) >= BIKE_PARK_MINIMUM
+        if running:
+            assert start is not None
+            replaced = lifts_replaced_by_bike_park(
+                start, tuple(lift.time for lift in active if not lift.running)
+            )
+            mentions = dict(riders)
+            for lift_time in replaced:
+                for user_id, label in await self._lift_voters(
+                    service_date=day.service_date, lift_time=lift_time
+                ):
+                    mentions.setdefault(user_id, label)
+            if replaced:
+                await self._set_lift_cancelled(
+                    service_dates_times=tuple((day.service_date, time) for time in replaced),
+                    notice="",
+                    admin_user_id=0,
+                    notify=False,
+                )
+            await self._send_tagged_notice(
+                render_weekend_bike_park_notice(
+                    day.service_date,
+                    start,
+                    price_gel=price,
+                    rider_count=len(riders),
+                    replaced_lift_times=replaced,
+                ),
+                mentions,
+                log_label="weekend_bike_park_notice_failed",
+            )
+        async with self._session_factory() as session:
+            await transaction_lock(
+                session,
+                f"bikepark:{self._settings.app_env}:{self._settings.telegram_target_chat_id}:"
+                f"{self._settings.telegram_target_thread_id}:{day.service_date}",
+            )
+            if await session.scalar(
+                self.bike_park.scope(select(BikeParkSession.id)).where(
+                    BikeParkSession.service_date == day.service_date
+                )
+            ):
+                return
+            # Not reached is stored too, so the decision is made exactly once.
+            park = BikeParkSession(
+                environment=self._settings.app_env,
+                chat_id=self._settings.telegram_target_chat_id,
+                thread_id=self._settings.telegram_target_thread_id,
+                service_date=day.service_date,
+                start_time=start or "",
+                price_gel=price,
+                created_by_user_id=0,
+                status="posted" if running else "not_reached",
+                replacement_completed=True,
+                poll_closed=True,
+            )
+            session.add(park)
+            await session.flush()
+            if running:
+                session.add_all(
+                    BikeParkVote(
+                        session_id=park.id,
+                        telegram_user_id=user_id,
+                        full_name=label,
+                        attending=True,
+                    )
+                    for user_id, label in riders.items()
+                )
+            await session.commit()
+        if running:
+            await self._refresh_availability(snapshot.poll_id)
+        logger.info(
+            "weekend_bike_park_decided date=%s riders=%s start=%s running=%s",
+            day.service_date,
+            len(riders),
+            start,
+            running,
+        )
+        await self._refresh_booking_monitors()
+
+    async def _bike_park_card_row(self, service_date: date) -> BikeParkCardRow | None:
+        parks = [
+            park
+            for park in await self.bike_park.list(service_date=service_date)
+            if park.status == "posted"
+        ]
+        if not parks:
+            return None
+        return BikeParkCardRow(start_time=parks[0].start_time)
+
+    async def _sync_weekend_bike_park_vote(
+        self, *, poll_id: str, telegram_user_id: int, full_name: str, option_ids: tuple[int, ...]
+    ) -> None:
+        """A bike park already announced keeps its rider list current."""
+        async with self._session_factory() as session:
+            option = await self._bike_park_option(session=session, poll_id=poll_id)
+            if option is None:
+                return
+            snapshot, service_date = option
+            park = await session.scalar(
+                self.bike_park.scope(select(BikeParkSession)).where(
+                    BikeParkSession.service_date == service_date,
+                    BikeParkSession.status == "posted",
+                    BikeParkSession.poll_id.is_(None),
+                )
+            )
+            if park is None:
+                return
+            vote = await session.scalar(
+                select(BikeParkVote).where(
+                    BikeParkVote.session_id == park.id,
+                    BikeParkVote.telegram_user_id == telegram_user_id,
+                )
+            )
+            attending = snapshot.option_index in option_ids
+            if vote is None:
+                if not attending:
+                    return
+                session.add(
+                    BikeParkVote(
+                        session_id=park.id,
+                        telegram_user_id=telegram_user_id,
+                        full_name=full_name,
+                        attending=True,
+                    )
+                )
+            else:
+                vote.attending = attending
+                vote.full_name = full_name
+            await session.commit()
+
     async def complete_bike_park_replacements(self) -> str | None:
         async with self._session_factory() as session:
             rows = list(
@@ -1740,6 +1959,7 @@ class PollPostingService:
         notice: str,
         admin_user_id: int,
         require_unfilled_last: bool = False,
+        notify: bool = True,
     ) -> None:
         if self._settings.telegram_target_chat_id is None or not service_dates_times:
             return
@@ -1791,7 +2011,8 @@ class PollPostingService:
                     )
             await session.commit()
 
-        await self._notify_cancelled_lifts(notice, service_dates_times)
+        if notify:
+            await self._notify_cancelled_lifts(notice, service_dates_times)
 
         poll_ids: set[str] = set()
         for service_date, lift_time in service_dates_times:
@@ -1892,10 +2113,21 @@ class PollPostingService:
                 continue
             self._reconciled_notice_batch_ids.add(batch_id)
             terms = await self._payment_terms(service_date=service_date)
+            async with self._session_factory() as session:
+                has_park = await session.scalar(
+                    select(PollOptionSnapshot.id)
+                    .where(PollOptionSnapshot.batch_id == batch_id)
+                    .where(PollOptionSnapshot.label == BIKE_PARK_OPTION)
+                    .limit(1)
+                )
             if await self._telegram_client.edit_text(
                 chat_id=self._settings.telegram_target_chat_id,
                 message_id=message.telegram_message_id,
-                text=render_poll_notice(StartLocation(location), terms=terms),
+                text=render_poll_notice(
+                    StartLocation(location),
+                    terms=terms,
+                    bike_park_window=WEEKEND_BIKE_PARK_WINDOW if has_park else None,
+                ),
                 parse_mode=PAYMENT_TERMS_PARSE_MODE,
             ):
                 updated += 1
@@ -2295,6 +2527,7 @@ class PollPostingService:
             PollRenderInput(
                 service_date=setup.service_date,
                 cancelled_lift_times=setup.cancelled_lift_times,
+                bike_park=self._offers_bike_park(setup.service_date),
             )
         )
         manual_counts = await self._manual_booking_counts_for_date(setup.service_date)
@@ -2419,6 +2652,7 @@ class PollPostingService:
                         text=render_poll_notice(
                             setup.first_lift_location,
                             terms=await self._payment_terms(service_date=setup.service_date),
+                            bike_park_window=self._bike_park_window(draft),
                         ),
                         parse_mode=PAYMENT_TERMS_PARSE_MODE,
                     )
@@ -2616,6 +2850,12 @@ class PollPostingService:
             )
         else:
             _log_vote_event(event)
+            await self._sync_weekend_bike_park_vote(
+                poll_id=poll_id,
+                telegram_user_id=telegram_user_id,
+                full_name=full_name,
+                option_ids=option_ids,
+            )
             await self._refresh_availability(poll_id)
             await self._refresh_booking_monitors()
 
@@ -2878,6 +3118,7 @@ class PollPostingService:
                 batch.service_date,
                 availability,
                 deadline_passed=deadline_passed,
+                bike_park=await self._bike_park_card_row(batch.service_date),
             )
             payment_board = await session.scalar(
                 select(PaymentsBoard)

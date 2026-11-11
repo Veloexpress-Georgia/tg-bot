@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     payment_price_gel: int = 20
     # Riders must be booked and paid by this time the evening before a lift day.
     booking_deadline_time: str = "20:00"
+    # Saturday and Sunday polls offer a bike park answer, decided at the deadline.
+    weekend_bike_park_option: bool = True
     # Route the board's 💸/💵 buttons through the bot's private chat instead of
     # recording in place. Off by default: a callback records the payment the
     # instant it is tapped, while a link records it only once the rider gets

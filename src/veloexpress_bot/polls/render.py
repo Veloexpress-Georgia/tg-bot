@@ -4,6 +4,8 @@ from datetime import date
 
 from veloexpress_bot.payment_copy import CASH_ON_SITE_TEXT
 from veloexpress_bot.polls.defaults import (
+    BIKE_PARK_MINIMUM,
+    BIKE_PARK_OPTION,
     CHECK_ANSWERS_OPTION,
     DEFAULT_LIFTS,
     MINIMUM_RIDERS,
@@ -71,6 +73,7 @@ EN_SHORT_MONTHS: dict[int, str] = {
 class PollRenderInput:
     service_date: date
     cancelled_lift_times: tuple[str, ...] = ()
+    bike_park: bool = False
 
 
 @dataclass(frozen=True)
@@ -134,11 +137,17 @@ def render_poll(render_input: PollRenderInput) -> PollDraft:
     day = DAY_LABELS.get(render_input.service_date.weekday(), "Lift day")
     question = f"🚐 {day} · {_en_date(render_input.service_date)}"
 
-    options = (*(_format_lift_option(lift) for lift in lifts), CHECK_ANSWERS_OPTION)
+    park = (BIKE_PARK_OPTION,) if render_input.bike_park else ()
+    options = (*(_format_lift_option(lift) for lift in lifts), *park, CHECK_ANSWERS_OPTION)
     return PollDraft(question=question, options=options)
 
 
-def render_poll_notice(first_lift_location: StartLocation, *, terms: PaymentTerms) -> str:
+def render_poll_notice(
+    first_lift_location: StartLocation,
+    *,
+    terms: PaymentTerms,
+    bike_park_window: tuple[str, str] | None = None,
+) -> str:
     if first_lift_location == StartLocation.VAKE:
         route_notice = (
             '📍 <a href="https://maps.app.goo.gl/nSNiv7GnNiQt5J64A">Opposite Vake Park</a>'
@@ -158,7 +167,16 @@ def render_poll_notice(first_lift_location: StartLocation, *, terms: PaymentTerm
     ]
     if terms.link:
         links.insert(0, terms.pay_link("Where to pay"))
-    return "\n".join((route_notice, payment_notice, f"💵 {CASH_ON_SITE_TEXT}", " · ".join(links)))
+    lines = [route_notice, payment_notice, f"💵 {CASH_ON_SITE_TEXT}"]
+    if bike_park_window is not None:
+        earliest, latest = bike_park_window
+        lines.append(
+            f"🚵 Bike park runs with {BIKE_PARK_MINIMUM}+ votes at {terms.deadline_time}: "
+            f"from Vake after the last running lift ({earliest}–{latest}). "
+            "The start time is posted then; pay per lift on site."
+        )
+    lines.append(" · ".join(links))
+    return "\n".join(lines)
 
 
 def render_availability_caption(lifts: tuple[LiftAvailability, ...]) -> str:

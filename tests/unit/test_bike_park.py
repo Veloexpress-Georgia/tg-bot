@@ -385,3 +385,140 @@ async def test_replacing_a_prepaid_unfilled_lift_keeps_the_normal_refund_report(
     assert len(reports) == 1 and reports[0].lift_time == "13:30"
     async with db.session() as session:
         assert await session.scalar(select(func.sum(PaymentEntry.amount_gel))) == 15
+
+
+def test_weekend_bike_park_start_follows_the_last_running_lift():
+    from veloexpress_bot.polls.bikepark import (
+        choose_weekend_bike_park_start,
+        lifts_replaced_by_bike_park,
+    )
+
+    assert choose_weekend_bike_park_start(frozenset()) == "11:45"
+    assert choose_weekend_bike_park_start({"8:30"}) == "11:45"
+    assert choose_weekend_bike_park_start({"8:30", "10:00"}) == "11:45"
+    assert choose_weekend_bike_park_start({"10:00", "11:45"}) == "13:30"
+    assert choose_weekend_bike_park_start({"13:30"}) is None
+    assert lifts_replaced_by_bike_park("11:45", ("8:30", "11:45", "13:30")) == ("11:45", "13:30")
+
+
+def test_weekend_poll_offers_bike_park_without_a_lift_time():
+    from datetime import date
+
+    from veloexpress_bot.polls.render import PollRenderInput, render_poll
+    from veloexpress_core.lifts import _option_lift_time
+
+    saturday = date(2026, 11, 14)
+    draft = render_poll(PollRenderInput(service_date=saturday, bike_park=True))
+    assert draft.options[-2:] == ("🚵 Bike park", "👀 Check answers")
+    assert _option_lift_time(draft.options[-2]) is None
+    assert "🚵 Bike park" not in render_poll(PollRenderInput(service_date=saturday)).options
+
+
+def _next_saturday(today):
+    return today + timedelta(days=(5 - today.weekday()) % 7 or 7)
+
+
+async def _weekend_day_with_votes(runtime, *, park_votes: int, start: str = "8:30"):
+    from datetime import datetime
+
+    today = runtime.lifts.bike_park.now().date()
+    day = _next_saturday(today)
+    result = await runtime.lifts.create_poll(
+        PollSetup(
+            service_date=day,
+            created_by_user_id=1,
+            cancelled_lift_times=cancelled_lift_times_for_range(start, "13:30"),
+        ),
+        include_notice=True,
+    )
+    poll_id = result.poll_id or ""
+    # 8:30, 10:00, 11:45, 13:30, bike park, check answers
+    for uid in range(1, 6):
+        await runtime.lifts.track_poll_answer(
+            poll_id=poll_id,
+            telegram_user_id=uid,
+            username=None,
+            full_name=f"R{uid}",
+            option_ids=(1,),
+        )
+    await runtime.lifts.track_poll_answer(
+        poll_id=poll_id, telegram_user_id=50, username=None, full_name="Late", option_ids=(3,)
+    )
+    for uid in range(100, 100 + park_votes):
+        await runtime.lifts.track_poll_answer(
+            poll_id=poll_id,
+            telegram_user_id=uid,
+            username=None,
+            full_name=f"P{uid}",
+            option_ids=(1, 4) if uid == 100 else (4,),
+        )
+    deadline = datetime.combine(day - timedelta(days=1), datetime.min.time()).replace(
+        hour=20, minute=1, tzinfo=runtime.lifts.bike_park.zone
+    )
+    return day, poll_id, deadline
+
+
+async def test_weekend_bike_park_runs_after_last_running_lift_at_the_deadline(park_setup):
+    _, _, telegram, runtime, _, _ = park_setup
+    _, poll_id, deadline = await _weekend_day_with_votes(runtime, park_votes=6)
+    assert "🚵 Bike park" in telegram.sent[0].options
+    assert any("Bike park runs with 6+ votes" in text for text in telegram.sent_texts)
+    texts_before = len(telegram.sent_texts)
+
+    await runtime.lifts.decide_weekend_bike_parks(now=deadline - timedelta(minutes=2))
+    assert await runtime.lifts.bike_park.list() == ()
+
+    await runtime.lifts.decide_weekend_bike_parks(now=deadline)
+    park = (await runtime.lifts.bike_park.list())[0]
+    assert (park.start_time, len(park.riders)) == ("11:45", 6)
+    lifts = {lift.time: lift for lift in (await runtime.lifts.status_days())[0].lifts}
+    assert lifts["10:00"].running and not lifts["10:00"].cancelled
+    assert lifts["11:45"].cancelled and lifts["13:30"].cancelled
+    assert lifts["10:00"].total_count == 6  # bike park votes never become seats
+    notices = [t for t in telegram.sent_texts[texts_before:] if "Bike park is on" in t]
+    assert len(notices) == 1
+    assert "11:45" in notices[0] and "Lifts 11:45, 13:30 are cancelled" in notices[0]
+    assert "tg://user?id=105" in notices[0] and "tg://user?id=50" in notices[0]
+
+    await runtime.lifts.decide_weekend_bike_parks(now=deadline + timedelta(hours=1))
+    assert sum("Bike park is on" in t for t in telegram.sent_texts) == 1
+
+    await runtime.lifts.track_poll_answer(
+        poll_id=poll_id, telegram_user_id=105, username=None, full_name="P105", option_ids=()
+    )
+    await runtime.lifts.track_poll_answer(
+        poll_id=poll_id, telegram_user_id=200, username=None, full_name="New", option_ids=(4,)
+    )
+    riders = {r.telegram_user_id for r in (await runtime.lifts.bike_park.list())[0].riders}
+    assert 105 not in riders and 200 in riders
+
+
+async def test_weekend_bike_park_below_minimum_stays_silent(park_setup):
+    _, _, telegram, runtime, _, _ = park_setup
+    _, _, deadline = await _weekend_day_with_votes(runtime, park_votes=5)
+    texts_before = len(telegram.sent_texts)
+    await runtime.lifts.decide_weekend_bike_parks(now=deadline)
+    assert await runtime.lifts.bike_park.list() == ()
+    assert len(telegram.sent_texts) == texts_before
+    assert not any(lift.cancelled for lift in (await runtime.lifts.status_days())[0].lifts)
+
+
+def test_availability_card_shows_a_confirmed_bike_park():
+    from datetime import date
+    from io import BytesIO
+
+    from PIL import Image
+
+    from veloexpress_bot.polls.card import BikeParkCardRow, render_availability_card
+    from veloexpress_bot.polls.render import LiftAvailability
+
+    lifts = (LiftAvailability("10:00", 5), LiftAvailability("11:45", 2, cancelled=True))
+    plain = render_availability_card(date(2026, 11, 14), lifts, deadline_passed=True)
+    with_park = render_availability_card(
+        date(2026, 11, 14),
+        lifts,
+        deadline_passed=True,
+        bike_park=BikeParkCardRow(start_time="11:45"),
+    )
+    height = lambda png: Image.open(BytesIO(png)).height  # noqa: E731
+    assert height(with_park) > height(plain)

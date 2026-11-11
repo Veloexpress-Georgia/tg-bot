@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from io import BytesIO
 from pathlib import Path
@@ -33,11 +34,29 @@ PURPLE = "#C5A6FF"
 # "external seats", a purple WAITLIST as "guests".
 ORANGE = "#FFA46E"
 QUIET_RED = "#AF858C"
+# Its own colour: purple already means guests in the seat legend.
+BIKE_PARK = "#FF8FB1"
 QUIET_VOTE = "#7EAE98"
 QUIET_GUEST = "#A594BA"
 QUIET_OFFLINE = "#7D9FBE"
 SEAT_GAP = 6
 THRESHOLD_GAP = 20
+BIKE_PARK_ROW_HEIGHT = 112
+
+
+@dataclass(frozen=True)
+class BikeParkCardRow:
+    """A confirmed bike park on the lift day; shown only once it is running.
+
+    No count: votes are not attendance, and the number of lifts is decided on site.
+    """
+
+    start_time: str
+
+
+def _minutes(value: str) -> int:
+    hour, minute = (int(part) for part in value.split(":"))
+    return hour * 60 + minute
 
 
 def _font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -257,11 +276,27 @@ def _short_summary(lift: LiftAvailability) -> str:
     return f"{sources}  ·  needs {MINIMUM_RIDERS - lift.seat_count} more"
 
 
-def _draw_cancelled_row(draw: ImageDraw.ImageDraw, lift: LiftAvailability, *, y: int) -> None:
+def _draw_bike_park_row(draw: ImageDraw.ImageDraw, park: BikeParkCardRow, *, y: int) -> None:
+    left, right = PADDING, WIDTH - PADDING
+    draw.rounded_rectangle((left, y, right, y + BIKE_PARK_ROW_HEIGHT), radius=28, fill=PANEL)
+    draw.rounded_rectangle(
+        (left, y + 25, left + 8, y + BIKE_PARK_ROW_HEIGHT - 25), radius=4, fill=BIKE_PARK
+    )
+    time_font = _font(62, bold=True)
+    draw.text((left + 30, y + 19), park.start_time, font=time_font, fill=INK)
+    label_x = left + 30 + round(draw.textlength(park.start_time, font=time_font)) + 28
+    draw.text(
+        (label_x, y + 34), "BIKE PARK · TURTLE LAKE", font=_font(40, bold=True), fill=BIKE_PARK
+    )
+
+
+def _draw_cancelled_row(
+    draw: ImageDraw.ImageDraw, lift: LiftAvailability, *, y: int, for_bike_park: bool = False
+) -> None:
     left, right = PADDING, WIDTH - PADDING
     draw.rounded_rectangle((left, y, right, y + 78), radius=22, fill=PAST_DEADLINE_PANEL)
     draw.text((left + 26, y + 10), lift.time, font=_font(45, bold=True), fill=MUTED)
-    label = "CANCELLED"
+    label = "BIKE PARK INSTEAD" if for_bike_park else "CANCELLED"
     font = _font(32, bold=True)
     draw.text(
         (right - 26 - draw.textlength(label, font=font), y + 19), label, font=font, fill=QUIET_RED
@@ -273,6 +308,7 @@ def render_availability_card(
     lifts: tuple[LiftAvailability, ...],
     *,
     deadline_passed: bool = False,
+    bike_park: BikeParkCardRow | None = None,
 ) -> bytes:
     """Return a PNG sized for a legible Telegram chat preview."""
     note_font = _font(37)
@@ -304,6 +340,8 @@ def render_availability_card(
             height += 23 + 55 + len(short_lifts) * 150
         if cancelled_lifts:
             height += 20 + 55 + len(cancelled_lifts) * 88
+    if bike_park is not None:
+        height += BIKE_PARK_ROW_HEIGHT + 12
     height += 42
     image = Image.new("RGB", (WIDTH, height), BACKGROUND)
     draw = ImageDraw.Draw(image)
@@ -353,6 +391,9 @@ def render_availability_card(
             note_font=note_font,
         )
         y += row_height + 12
+    if bike_park is not None:
+        _draw_bike_park_row(draw, bike_park, y=y)
+        y += BIKE_PARK_ROW_HEIGHT + 12
     if short_lifts:
         y += 23
         draw.text((44, y + 7), "BELOW MINIMUM", font=_font(36, bold=True), fill=MUTED)
@@ -365,7 +406,13 @@ def render_availability_card(
         draw.text((44, y + 7), "CANCELLED", font=_font(36, bold=True), fill=QUIET_RED)
         y += 55
         for lift in cancelled_lifts:
-            _draw_cancelled_row(draw, lift, y=y)
+            _draw_cancelled_row(
+                draw,
+                lift,
+                y=y,
+                for_bike_park=bike_park is not None
+                and _minutes(lift.time) >= _minutes(bike_park.start_time),
+            )
             y += 88
 
     output = BytesIO()

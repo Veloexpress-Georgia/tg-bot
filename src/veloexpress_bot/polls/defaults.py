@@ -34,6 +34,11 @@ DEFAULT_CANCELLED_LIFT_TIMES: tuple[str, ...] = (EXTRA_LIFT_TIME,)
 
 CHECK_ANSWERS_OPTION = "👀 Check answers"
 
+# Weekend polls carry one extra answer for the Vake bike park. It has no lift
+# time, so it never books a seat or asks for money; it only counts interest.
+BIKE_PARK_OPTION = "🚵 Bike park"
+BIKE_PARK_MINIMUM = 6
+
 
 @dataclass(frozen=True)
 class PaymentTerms:

@@ -382,6 +382,13 @@ usually five to seven lifts, and cash/bank settlement for actual lifts afterward
 The bike park price starts at 5 GEL and is independently editable alongside the
 ordinary lift price in Settings/Terms. Published polls retain their price.
 
+Saturday and Sunday lift polls also offer `🚵 Bike park`
+(`WEEKEND_BIKE_PARK_OPTION=false` turns it off). The answer never books a seat.
+At the booking deadline the bot decides once: with six or more votes and a free
+slot between 11:45 and 13:30 after the last running lift, it records a bike park
+session from those votes, cancels the below-minimum lifts from that slot on,
+and posts one message tagging everyone concerned. Otherwise it posts nothing.
+
 Bike park appears in the same calendar day as ordinary lifts, with its own
 participants and cancellation. A standalone bike park day is also supported.
 Creating it can optionally replace the last ordinary lift only when that lift
