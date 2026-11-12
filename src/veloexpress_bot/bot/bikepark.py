@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from veloexpress_bot.bot.handlers import _admin_private_message, _show_frozen, _show_menu
 from veloexpress_bot.config import Settings
 from veloexpress_bot.polls.bikepark import normalize_start_time, render_bike_park_poll
+from veloexpress_bot.polls.extraday import extra_day_kind_row
 from veloexpress_core.commands import CommandInput, Operations
 from veloexpress_core.lifts import PollPostingService
 
@@ -147,6 +148,7 @@ async def handle_bike_park(
                 rows = [[button("🚀 Publish poll", "park:post")], [button("⬅️ Back", "park:edit")]]
             else:
                 rows = [
+                    extra_day_kind_row(selected, bike_park=True),
                     [
                         button("−30 min", "park:time:-30"),
                         button(f"🕒 {start}", "park:edit"),
@@ -181,7 +183,7 @@ async def handle_bike_park(
                         ]
                     )
                 rows += [
-                    [button("📅 Change date", "park:new")],
+                    [button("📅 Change date", "menu:extra_day")],
                     [button("Preview", "park:preview")],
                 ]
         rows.append([button("☰ Menu", "park:menu")])

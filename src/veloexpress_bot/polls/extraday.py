@@ -39,7 +39,7 @@ def render_extra_day_card(
 ) -> ExtraDayCardDraft:
     if view == "date" or state.selected_date is None:
         return ExtraDayCardDraft(
-            text="➕ Extra lift day\n\nPick a date — polls post to the group immediately.",
+            text="➕ Extra day\n\nPick a date, then lifts or bike park.",
             reply_markup=_date_picker_keyboard(today, selected_date=state.selected_date),
         )
     if view in {"first", "last"}:
@@ -64,7 +64,7 @@ def _card_text(selected_date: date, cancelled_lift_times: tuple[str, ...]) -> st
     lift_count = enabled_lift_count(cancelled_lift_times)
     lift_label = "lift" if lift_count == 1 else "lifts"
     return (
-        f"➕ Extra lift day · {_date_label(selected_date)}\n"
+        f"➕ Extra day · {_date_label(selected_date)}\n"
         "\n"
         f"🚲 Lifts: {first_time} → {last_time} · {lift_count} {lift_label}\n"
         "🚀 Posts to the group immediately."
@@ -101,6 +101,7 @@ def _main_keyboard(
                     callback_data="extra:view:date",
                 )
             ],
+            extra_day_kind_row(selected_date, bike_park=False),
             [
                 InlineKeyboardButton(
                     text=f"▶️ First · {first_time}", callback_data="extra:view:first"
@@ -111,6 +112,22 @@ def _main_keyboard(
             [InlineKeyboardButton(text="⬅️ Menu", callback_data="extra:menu")],
         ]
     )
+
+
+def extra_day_kind_row(selected_date: date, *, bike_park: bool) -> list[InlineKeyboardButton]:
+    """Switch the same date between the lift and bike park editors."""
+    return [
+        InlineKeyboardButton(
+            text=("🚐 Lifts" if bike_park else "✅ 🚐 Lifts"),
+            callback_data=f"extra:date:{selected_date.isoformat()}"
+            if bike_park
+            else "extra:view:main",
+        ),
+        InlineKeyboardButton(
+            text=("✅ 🚵 Bike park" if bike_park else "🚵 Bike park"),
+            callback_data="park:edit" if bike_park else f"park:date:{selected_date.isoformat()}",
+        ),
+    ]
 
 
 def _range_picker_keyboard(

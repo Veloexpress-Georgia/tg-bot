@@ -194,8 +194,10 @@ def test_extra_day_card_main_view_offers_post() -> None:
         today=date(2026, 7, 20),
     )
 
-    assert "➕ Extra lift day · Wed 22 Jul" in card.text
+    assert "➕ Extra day · Wed 22 Jul" in card.text
     assert "🚲 Lifts: 8:30 → 13:30 · 4 lifts" in card.text
     buttons = button_map(card.reply_markup)
     assert buttons["extra:post"] == "🚀 Post polls"
+    # Bike park is the same extra day, switched on the card with the date kept.
+    assert buttons["park:date:2026-07-22"] == "🚵 Bike park"
     assert buttons["extra:view:date"].startswith("📅 Wed 22 Jul")

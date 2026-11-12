@@ -375,7 +375,7 @@ Cancelling a whole day deletes its native polls as well as its availability card
 
 ## Bike park
 
-`🚵 Bike park` in the bot menu and **Plan → Bike park** in the miniapp publish an
+`➕ Extra day` → `🚵 Bike park` in the bot menu and **Plan → Bike park** in the miniapp publish an
 independent native Telegram poll. Choose a date within seven days and a start
 time; departure is always from Vake. The poll explains the six-rider minimum,
 usually five to seven lifts, and cash/bank settlement for actual lifts afterwards.

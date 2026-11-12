@@ -330,6 +330,11 @@ async def test_bot_creation_uses_the_same_preview_and_published_price(park_setup
     for action in ("park:new", f"park:date:{day}", "park:preview"):
         callback.data = action
         await bikepark.handle_bike_park(callback, state, config, runtime.lifts, operations)
+        if action.startswith("park:date"):
+            editor = [
+                b.callback_data for row in show.call_args.args[5].inline_keyboard for b in row
+            ]
+            assert f"extra:date:{day}" in editor and "menu:extra_day" in editor
     assert not telegram.sent
     assert "5 GEL" in show.call_args.args[4]
     callback.data = "park:post"

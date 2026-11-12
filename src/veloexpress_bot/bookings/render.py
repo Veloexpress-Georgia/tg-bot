@@ -376,9 +376,9 @@ def render_admin_menu(
     rows = [
         [
             InlineKeyboardButton(text="📋 Weekend", callback_data="menu:weekend_plan"),
-            InlineKeyboardButton(text="➕ Extra lift day", callback_data="menu:extra_day"),
+            # One entry for any extra day; lifts or bike park is chosen on the card.
+            InlineKeyboardButton(text="➕ Extra day", callback_data="menu:extra_day"),
         ],
-        [InlineKeyboardButton(text="🚵 Bike park", callback_data="park:new")],
         [
             InlineKeyboardButton(text="📜 History", callback_data="mon:history"),
             InlineKeyboardButton(text="📈 Statistics", callback_data="stats:30d:0"),

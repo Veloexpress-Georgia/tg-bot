@@ -370,7 +370,7 @@ def test_menu_opens_with_what_is_live_and_the_three_places_to_go() -> None:
     ]
     buttons = _button_map(draft.reply_markup)
     assert buttons["menu:weekend_plan"] == "📋 Weekend"
-    assert buttons["menu:extra_day"] == "➕ Extra lift day"
+    assert buttons["menu:extra_day"] == "➕ Extra day"
     assert buttons["mon:history"] == "📜 History"
     assert buttons["stats:30d:0"] == "📈 Statistics"
     assert buttons["menu:service_defaults"] == "⚙️ Settings"
@@ -436,7 +436,7 @@ def test_a_quiet_week_turns_the_monitor_into_the_way_in() -> None:
     assert "🚐 6 lifts · 54 seats · 810 GEL" in draft.text
     buttons = _button_map(draft.reply_markup)
     assert buttons["menu:weekend_plan"] == "📋 Weekend"
-    assert buttons["menu:extra_day"] == "➕ Extra lift day"
+    assert buttons["menu:extra_day"] == "➕ Extra day"
     assert buttons["mon:history"] == "📜 History"
 
 
