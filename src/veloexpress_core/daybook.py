@@ -29,6 +29,7 @@ from veloexpress_bot.polls.defaults import DEFAULT_LIFTS, MINIMUM_RIDERS
 from veloexpress_bot.polls.liftsignals import lift_minutes
 from veloexpress_bot.polls.seating import SeatCandidate, allocate_seats, queue_rank
 from veloexpress_core.lifts import SessionFactory, decode_option_ids, vote_booked_at
+from veloexpress_core.seat_hold import held_waitlists
 
 
 @dataclass
@@ -202,6 +203,7 @@ async def load_day_bookings(
                 .where(CancelledLift.service_date.in_(service_dates))
             )
         ).all()
+        held_by_lift = await held_waitlists(session, settings=settings, service_dates=service_dates)
         roster_rows = (
             await session.scalars(
                 select(DeadlineRoster)
@@ -338,6 +340,7 @@ async def load_day_bookings(
                 ),
                 capacity=capacity,
                 reserved=manual_total + guest_total,
+                held_back=held_by_lift.get((service_date, lift_time), frozenset()),
             )
             day.seat_holders_by_lift[lift_time] = tuple(
                 candidate.telegram_user_id for candidate in allocation.holders

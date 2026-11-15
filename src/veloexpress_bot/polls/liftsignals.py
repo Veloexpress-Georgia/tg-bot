@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, tzinfo
-from html import escape
 from typing import Literal
 
 from veloexpress_bot.payment_copy import CASH_ON_SITE_TEXT
@@ -220,26 +219,20 @@ def render_deadline_reminder(
     signals: Iterable[LiftSignal],
     *,
     terms: PaymentTerms,
-    deadline_passed: bool = False,
 ) -> str:
-    """Kept fresh, because this is the message people act on.
+    """Kept fresh until the deadline, because this is the message people act on.
 
     A one-shot snapshot goes stale within the hour — riders book after it — and a
-    stale count is worse than none. It stays live past the deadline too: nothing
-    actually stops a late booking, so only the call to action changes.
+    stale count is worse than none. At the deadline the message is deleted: the
+    poll and the live card already say everything after that, and a second list
+    reading "deadline has passed" made late riders think booking was shut.
     """
     day = SHORT_DAY_LABELS.get(service_date.weekday(), "Lift day")
     month = EN_SHORT_MONTHS[service_date.month]
-    if deadline_passed:
-        # The poll remains open, so simply mark that the payment deadline passed.
-        headline = (
-            f"🚐 {day}, {service_date.day} {month} — {terms.deadline_time} deadline has passed."
-        )
-    else:
-        headline = (
-            f"⏳ Tomorrow · {day}, {service_date.day} {month} — "
-            f"book and transfer by {terms.deadline_time}."
-        )
+    headline = (
+        f"⏳ Tomorrow · {day}, {service_date.day} {month} — "
+        f"book and transfer by {terms.deadline_time}."
+    )
     lines = [headline, ""]
     ordered = sorted(signals, key=lambda signal: lift_minutes(signal.lift_time))
     lines.extend(_reminder_line(signal) for signal in ordered)
@@ -253,9 +246,8 @@ def _reminder_line(signal: LiftSignal) -> str:
     if signal.cancelled:
         return f"{signal.lift_time} — ❌ cancelled"
     if not signal.running:
-        # Still "needs N more" after the deadline: it is literally true, and a late
-        # rider can still save the lift if Misho allows it. A lift that had the
-        # minimum when booking closed is happening, so it never reads short.
+        # A lift that had the minimum when booking closed is happening, so it
+        # never reads short.
         missing = MINIMUM_RIDERS - signal.seats
         return f"{signal.lift_time} — {signal.seats}/{MINIMUM_RIDERS} · needs {missing} more"
     if signal.covered_seats < MINIMUM_RIDERS:
@@ -348,51 +340,6 @@ def _departure_notice(events: list[LiftEvent]) -> str:
     lines = ["🚐 First lift of the day, leaving soon — please be on time.", ""]
     lines.extend(_lift_label(event) for event in events)
     return "\n".join(lines)
-
-
-@dataclass(frozen=True)
-class SeatPromotion:
-    """Riders who moved off a lift's waitlist because a seat came free."""
-
-    service_date: date
-    lift_time: str
-    riders: tuple[tuple[int, str], ...]
-
-
-def render_seat_promotions(promotions: Iterable[SeatPromotion]) -> str:
-    """Say a seat opened, and tag the person it opened for.
-
-    Tagged inline rather than in a block at the end: with two lifts freeing
-    seats, a list of names underneath does not say who got which. This is also
-    one of the few messages that must actually reach somebody — the availability
-    board already shows the new order, but editing it notifies nobody.
-    """
-    ordered = sorted(
-        promotions,
-        key=lambda promotion: (promotion.service_date, lift_minutes(promotion.lift_time)),
-    )
-    if len(ordered) == 1:
-        promotion = ordered[0]
-        return (
-            f"🎟 A seat opened on {_promotion_label(promotion)} — "
-            f"you are off the waitlist: {_mentions(promotion)}"
-        )
-    lines = ["🎟 Seats opened — you are off the waitlist:", ""]
-    lines.extend(f"{_promotion_label(p)} — {_mentions(p)}" for p in ordered)
-    return "\n".join(lines)
-
-
-def _promotion_label(promotion: SeatPromotion) -> str:
-    day = SHORT_DAY_LABELS.get(promotion.service_date.weekday(), "Lift day")
-    month = EN_SHORT_MONTHS[promotion.service_date.month]
-    return f"{promotion.lift_time} · {day}, {promotion.service_date.day} {month}"
-
-
-def _mentions(promotion: SeatPromotion) -> str:
-    return " ".join(
-        f'<a href="tg://user?id={user_id}">{escape(label)}</a>'
-        for user_id, label in promotion.riders
-    )
 
 
 def _needs_phrase(seats: int) -> str:

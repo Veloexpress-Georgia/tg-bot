@@ -25,6 +25,7 @@ from veloexpress_bot.db.models import (
     PollMessage,
     RefundReport,
     RiderCard,
+    SeatOffer,
     ServiceDayNotice,
 )
 from veloexpress_bot.payments.myday import (
@@ -60,10 +61,20 @@ from veloexpress_bot.payments.roster import (
 )
 from veloexpress_bot.polls.defaults import MINIMUM_RIDERS
 from veloexpress_bot.polls.liftsignals import (
-    SeatPromotion,
     booking_deadline_at,
+    lift_departure_at,
     lift_minutes,
-    render_seat_promotions,
+)
+from veloexpress_bot.polls.seating import WAITLIST_FREEZE_LEAD
+from veloexpress_bot.polls.seatoffer import (
+    ACCEPTED_TEXT,
+    DECLINED_TEXT,
+    GONE_TEXT,
+    NOT_FOR_YOU_TEXT,
+    offer_keyboard,
+    render_seat_offer,
+    render_seat_taken,
+    widen_due,
 )
 from veloexpress_core.daybook import DayBookings, load_day_bookings
 from veloexpress_core.daybook import as_utc as _as_utc
@@ -1398,42 +1409,28 @@ class PaymentsService:
             today=today,
         )
 
-    async def announce_seat_promotions(self, *, now: datetime | None = None) -> None:
-        """Tell riders who came off a waitlist that they are riding.
+    async def offer_freed_seats(self, *, now: datetime | None = None) -> None:
+        """Offer every freed seat to the lift's waitlist, and pace who is asked.
 
-        Somebody cancelling is not bad news — it is a seat for whoever was
-        waiting — but only if they hear about it. The availability board shows
-        the new order and a Telegram edit notifies nobody, so the person it
-        matters to most is the one who would miss it. This keeps working past
-        the booking deadline, where late cancellations actually happen.
+        A waitlisted rider no longer moves into a seat on their own. The vote may
+        be days old; silence used to mean "riding and billed", and a tag minutes
+        before departure reached nobody who could still make it. Now the first
+        rider waiting is tagged with two buttons, the offer widens to the next
+        one while nobody answers, and the seat belongs to nobody until a tap.
         """
         if not self.enabled:
             return
         moment = (now or datetime.now(UTC)).astimezone(self._zone)
-        promotions: list[SeatPromotion] = []
         for day in await self._active_days(today=moment.date()):
-            if day.cancelled:
-                continue
-            promotions.extend(await self._promotions_for_day(day, now=moment))
-        if not promotions:
-            return
-        await self._send_lift_topic_text(
-            render_seat_promotions(promotions),
-            log_label="seat_promotion_notice_failed",
-        )
+            for offer_id in await self._scan_seat_offers(day, now=moment):
+                await self._publish_seat_offer(offer_id, labels=day.labels_by_user)
 
-    async def _promotions_for_day(
-        self,
-        day: DayBookings,
-        *,
-        now: datetime,
-    ) -> list[SeatPromotion]:
-        promotions: list[SeatPromotion] = []
+    async def _scan_seat_offers(self, day: DayBookings, *, now: datetime) -> list[int]:
+        """Bring one day's held lists and offers up to date; return offers to publish."""
+        touched: list[int] = []
+        lifts = {} if day.cancelled else day.current_seat_holders_by_lift
         async with self._session_factory() as session:
-            await transaction_lock(
-                session,
-                f"payment-day:{self._settings.app_env}:{self._require_chat_id()}:{day.service_date}",
-            )
+            await transaction_lock(session, self._seat_lock_key(day.service_date))
             rows = {
                 row.lift_time: row
                 for row in (
@@ -1446,64 +1443,285 @@ class PaymentsService:
                     )
                 ).all()
             }
-            for lift_time, holders in day.current_seat_holders_by_lift.items():
-                waitlist = day.waitlist_by_lift.get(lift_time, ())
+            offers = {
+                offer.lift_time: offer
+                for offer in (
+                    await session.scalars(
+                        select(SeatOffer)
+                        .where(SeatOffer.environment == self._settings.app_env)
+                        .where(SeatOffer.chat_id == self._require_chat_id())
+                        .where(SeatOffer.thread_id == self._settings.telegram_target_thread_id)
+                        .where(SeatOffer.service_date == day.service_date)
+                        .where(SeatOffer.status == "open")
+                    )
+                ).all()
+            }
+            for lift_time, live_holders in lifts.items():
+                holders = tuple(live_holders)
+                waitlist = tuple(day.waitlist_by_lift.get(lift_time, ()))
                 row = rows.get(lift_time)
                 if row is None:
-                    # First sight of this lift: record the order and stay quiet.
-                    # Nobody was promoted, the bot simply started watching.
-                    session.add(
-                        LiftSeatState(
+                    # First sight of this lift: whoever is waiting waits for an offer.
+                    row = LiftSeatState(
+                        environment=self._settings.app_env,
+                        chat_id=self._require_chat_id(),
+                        thread_id=self._settings.telegram_target_thread_id,
+                        service_date=day.service_date,
+                        lift_time=lift_time,
+                        held_waitlist_ids=_encode_ids(waitlist),
+                        declined_ids="",
+                    )
+                    session.add(row)
+                elif _as_utc(row.updated_at) > now.astimezone(UTC):
+                    # A vote, a tap or an admin correction committed after this
+                    # cycle took its booking snapshot. Leave it; retry next cycle.
+                    offers.pop(lift_time, None)
+                    continue
+                else:
+                    voters = {*holders, *waitlist}
+                    held = (
+                        _decode_ids(row.held_waitlist_ids or "")
+                        | _decode_ids(row.waitlist_ids)
+                        | set(waitlist)
+                    ) & voters
+                    # Somebody who was waiting last tick and holds a seat now moved
+                    # up between ticks without accepting anything. Back they go:
+                    # they were never asked, so they must not end up on the bill.
+                    slipped = tuple(user_id for user_id in holders if user_id in held)
+                    holders = tuple(user_id for user_id in holders if user_id not in held)
+                    waitlist = (*slipped, *waitlist)
+                    row.held_waitlist_ids = _encode_ids(tuple(sorted(held)))
+                    row.declined_ids = _encode_ids(
+                        tuple(sorted(_decode_ids(row.declined_ids or "") & voters))
+                    )
+                row.holder_ids = _encode_ids(holders)
+                row.waitlist_ids = _encode_ids(waitlist)
+                row.updated_at = now.astimezone(UTC)
+
+                declined = _decode_ids(row.declined_ids or "")
+                queue = [user_id for user_id in waitlist if user_id not in declined]
+                free = _free_seats(day, lift_time, waiting=len(waitlist))
+                departure_at = lift_departure_at(day.service_date, lift_time, zone=self._zone)
+                offer = offers.pop(lift_time, None)
+                # Close to departure nobody new is asked: a tag that late reaches
+                # nobody who can still make it. Riders already asked may still tap.
+                asking = now < departure_at - WAITLIST_FREEZE_LEAD
+                if offer is None:
+                    if free and queue and asking:
+                        offer = SeatOffer(
                             environment=self._settings.app_env,
                             chat_id=self._require_chat_id(),
                             thread_id=self._settings.telegram_target_thread_id,
                             service_date=day.service_date,
                             lift_time=lift_time,
-                            holder_ids=_encode_ids(holders),
-                            waitlist_ids=_encode_ids(waitlist),
-                            updated_at=now.astimezone(UTC),
+                            status="open",
+                            seats=min(free, len(queue)),
+                            offered_ids=_encode_ids(tuple(queue[:free])),
+                            claimed_ids="",
+                            text="",
+                            created_at=now.astimezone(UTC),
+                            widened_at=now.astimezone(UTC),
                         )
-                    )
+                        session.add(offer)
+                        await session.flush()
+                        touched.append(offer.id)
                     continue
-                if _as_utc(row.updated_at) > now.astimezone(UTC):
-                    # An admin correction committed after this cycle took its
-                    # booking snapshot. Keep its final distribution; retry next cycle.
-                    continue
-                # Promoted means exactly this: was waiting, now holds a seat. A
-                # rider who simply booked into a free seat is not news to them.
-                was_waiting = _decode_ids(row.waitlist_ids)
-                promoted = tuple(user_id for user_id in holders if user_id in was_waiting)
-                row.holder_ids = _encode_ids(holders)
-                row.waitlist_ids = _encode_ids(waitlist)
-                row.updated_at = now.astimezone(UTC)
-                if promoted:
-                    promotions.append(
-                        SeatPromotion(
-                            service_date=day.service_date,
-                            lift_time=lift_time,
-                            riders=tuple(
-                                (
-                                    user_id,
-                                    _rider_label(*day.labels_by_user.get(user_id, (None, "Rider"))),
-                                )
-                                for user_id in promoted
-                            ),
+                offered = [u for u in _decode_id_list(offer.offered_ids) if u in queue]
+                waiting = [user_id for user_id in queue if user_id not in offered]
+                widened = False
+                if asking and now < departure_at:
+                    while len(offered) < free and waiting:
+                        offered.append(waiting.pop(0))
+                        widened = True
+                    if (
+                        waiting
+                        and not widened
+                        and widen_due(
+                            now=now,
+                            widened_at=_as_utc(offer.widened_at).astimezone(self._zone),
+                            departure_at=departure_at,
                         )
-                    )
+                    ):
+                        offered.append(waiting.pop(0))
+                        widened = True
+                if not free or not offered or now >= departure_at:
+                    offer.status = "closed"
+                else:
+                    offer.seats = min(free, len(offered))
+                    offer.offered_ids = _encode_ids(tuple(offered))
+                    if widened:
+                        offer.widened_at = now.astimezone(UTC)
+                        # A new rider is only pinged by a new message, not an edit.
+                        offer.text = ""
+                touched.append(offer.id)
+            for offer in offers.values():
+                # The lift was cancelled, or the whole day was.
+                offer.status = "closed"
+                touched.append(offer.id)
             await session.commit()
-        return promotions
+        return touched
 
-    async def _send_lift_topic_text(self, text: str, *, log_label: str) -> None:
-        """Seats are a lift matter, so this goes where the poll and board live."""
-        try:
-            await self._telegram_client.send_text(
-                chat_id=self._require_chat_id(),
-                message_thread_id=self._settings.telegram_target_thread_id,
-                text=text,
-                parse_mode=PAYMENTS_PARSE_MODE,
+    async def respond_to_seat_offer(
+        self,
+        *,
+        offer_id: int,
+        telegram_user_id: int,
+        accept: bool,
+    ) -> str:
+        """A tagged rider takes the seat or passes. Returns the toast for them."""
+        if not self.enabled:
+            return GONE_TEXT
+        labels: dict[int, tuple[str | None, str]] = {}
+        async with self._session_factory() as session:
+            offer = await session.get(SeatOffer, offer_id)
+            if (
+                offer is None
+                or offer.environment != self._settings.app_env
+                or offer.chat_id != self._require_chat_id()
+            ):
+                return GONE_TEXT
+            service_date, lift_time = offer.service_date, offer.lift_time
+            await transaction_lock(session, self._seat_lock_key(service_date))
+            await session.refresh(offer)
+            day = await self._day(service_date)
+            if offer.status != "open" or day is None or day.cancelled:
+                return GONE_TEXT
+            labels = day.labels_by_user
+            offered = _decode_id_list(offer.offered_ids)
+            waitlist = tuple(day.waitlist_by_lift.get(lift_time, ()))
+            row = await session.scalar(
+                select(LiftSeatState)
+                .where(LiftSeatState.environment == self._settings.app_env)
+                .where(LiftSeatState.chat_id == self._require_chat_id())
+                .where(LiftSeatState.thread_id == self._settings.telegram_target_thread_id)
+                .where(LiftSeatState.service_date == service_date)
+                .where(LiftSeatState.lift_time == lift_time)
             )
-        except Exception:
-            logger.exception(log_label)
+            if telegram_user_id not in offered or telegram_user_id not in waitlist or row is None:
+                return NOT_FOR_YOU_TEXT
+            free = _free_seats(day, lift_time, waiting=len(waitlist))
+            declined = set(_decode_ids(row.declined_ids or ""))
+            offered.remove(telegram_user_id)
+            if accept:
+                if free <= 0:
+                    return GONE_TEXT
+                held = set(_decode_ids(row.held_waitlist_ids or ""))
+                held.discard(telegram_user_id)
+                row.held_waitlist_ids = _encode_ids(tuple(sorted(held)))
+                row.waitlist_ids = _encode_ids(
+                    tuple(user_id for user_id in waitlist if user_id != telegram_user_id)
+                )
+                row.holder_ids = _encode_ids((*_decode_id_list(row.holder_ids), telegram_user_id))
+                offer.claimed_ids = _encode_ids(
+                    (*_decode_id_list(offer.claimed_ids), telegram_user_id)
+                )
+                free -= 1
+            else:
+                declined.add(telegram_user_id)
+                row.declined_ids = _encode_ids(tuple(sorted(declined)))
+            row.updated_at = datetime.now(UTC)
+            still_waiting = [
+                user_id
+                for user_id in waitlist
+                if user_id != telegram_user_id and user_id not in declined
+            ]
+            offer.offered_ids = _encode_ids(tuple(offered))
+            if free <= 0 or not still_waiting:
+                offer.status = "closed"
+            else:
+                offer.seats = min(free, max(len(offered), 1))
+            await session.commit()
+        await self._publish_seat_offer(offer_id, labels=labels)
+        logger.info(
+            "seat_offer_answered offer_id=%s telegram_user_id=%s accepted=%s",
+            offer_id,
+            telegram_user_id,
+            accept,
+            extra={"offer_id": offer_id, "telegram_user_id": telegram_user_id, "accepted": accept},
+        )
+        return ACCEPTED_TEXT if accept else DECLINED_TEXT
+
+    def _seat_lock_key(self, service_date: date) -> str:
+        return f"payment-day:{self._settings.app_env}:{self._require_chat_id()}:{service_date}"
+
+    async def _publish_seat_offer(
+        self,
+        offer_id: int,
+        *,
+        labels: dict[int, tuple[str | None, str]],
+    ) -> None:
+        """Make the group message say what the offer row says. Safe to repeat."""
+
+        def label(user_id: int) -> str:
+            return _rider_label(*labels.get(user_id, (None, "Rider")))
+
+        async with self._session_factory() as session:
+            offer = await session.get(SeatOffer, offer_id)
+            if offer is None:
+                return
+            chat_id = self._require_chat_id()
+            message_id = offer.message_id
+            offered = _decode_id_list(offer.offered_ids)
+            claimed = _decode_id_list(offer.claimed_ids)
+            try:
+                if offer.status == "open" and offered:
+                    text = render_seat_offer(
+                        offer.service_date,
+                        offer.lift_time,
+                        seats=offer.seats,
+                        riders=[(user_id, label(user_id)) for user_id in offered],
+                    )
+                    if text == offer.text and message_id is not None:
+                        return
+                    if offer.text and message_id is not None:
+                        # Same riders, different wording: an edit is enough.
+                        await self._telegram_client.edit_text(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            text=text,
+                            reply_markup=offer_keyboard(offer.id),
+                            parse_mode=PAYMENTS_PARSE_MODE,
+                        )
+                    else:
+                        sent = await self._telegram_client.send_text(
+                            chat_id=chat_id,
+                            message_thread_id=self._settings.telegram_target_thread_id,
+                            text=text,
+                            reply_markup=offer_keyboard(offer.id),
+                            parse_mode=PAYMENTS_PARSE_MODE,
+                        )
+                        if message_id is not None:
+                            await self._telegram_client.delete_message(
+                                chat_id=chat_id, message_id=message_id
+                            )
+                        offer.message_id = sent.message_id
+                    offer.text = text
+                elif message_id is not None:
+                    if claimed:
+                        text = render_seat_taken(
+                            offer.service_date,
+                            offer.lift_time,
+                            labels=[label(user_id) for user_id in claimed],
+                        )
+                        if text == offer.text:
+                            return
+                        await self._telegram_client.edit_text(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            text=text,
+                            parse_mode=PAYMENTS_PARSE_MODE,
+                        )
+                        offer.text = text
+                    else:
+                        # Nobody took it: the board already shows the free seat.
+                        await self._telegram_client.delete_message(
+                            chat_id=chat_id, message_id=message_id
+                        )
+                        offer.message_id = None
+            except Exception:
+                logger.exception("seat_offer_publish_failed", extra={"offer_id": offer_id})
+                return
+            await session.commit()
 
     async def capture_deadline_rosters(self, *, now: datetime | None = None) -> None:
         """Freeze each day's roster once its booking deadline passes.
@@ -2010,6 +2228,17 @@ def _waitlist_position(day: DayBookings, lift_time: str, telegram_user_id: int) 
 
 def _encode_ids(user_ids: tuple[int, ...]) -> str:
     return ",".join(str(user_id) for user_id in user_ids)
+
+
+def _decode_id_list(value: str) -> list[int]:
+    """Order matters here: it is the order riders were asked in."""
+    return [int(part) for part in value.split(",") if part]
+
+
+def _free_seats(day: DayBookings, lift_time: str, *, waiting: int) -> int:
+    """Seats nobody holds: capacity minus everyone booked who is not waiting."""
+    taken = day.seats_by_lift.get(lift_time, 0) - waiting
+    return max(day.capacity_by_lift.get(lift_time, 10) - taken, 0)
 
 
 def _decode_ids(value: str) -> frozenset[int]:

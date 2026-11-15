@@ -990,13 +990,14 @@ async def test_the_deadline_reminder_goes_out_once_and_names_no_one(db: SharedDa
     assert len([text for text in client.sent_texts if "⏳ Tomorrow" in text]) == 1
 
 
-async def test_the_deadline_reminder_stays_fresh_and_never_claims_booking_is_shut(
+async def test_the_deadline_reminder_stays_fresh_then_goes_away_at_the_deadline(
     db: SharedDatabase,
 ) -> None:
     """People book after the reminder lands, and this is the message they act on.
 
     Nothing actually closes at the deadline — the Telegram poll stays open and the
-    bot enforces nothing — so past it only the call to action changes.
+    bot enforces nothing. A reminder left saying "deadline has passed" read as
+    "booking is shut", so past the deadline it is deleted instead.
     """
     client = FakeTelegramClient()
     service = PollPostingService(
@@ -1026,11 +1027,16 @@ async def test_the_deadline_reminder_stays_fresh_and_never_claims_booking_is_shu
     assert "8:30 — 5 riders · 0/5 paid" in edits[-1]
     assert len([text for text in client.sent_texts if "⏳ Tomorrow" in text]) == 1
 
+    edit_count = len(client.edited_texts)
     await service.evaluate_lift_signals(now=deadline + timedelta(minutes=5))
-    edits = [text for message_id, text in client.edited_texts if message_id == reminder_id]
-    assert "deadline has passed." in edits[-1]
-    assert "Late changes are up to Misho" not in edits[-1]
-    assert "closed" not in edits[-1]
+    assert client.deleted.count(reminder_id) == 1
+    await _fill_lift(service, poll_id, riders=6)
+    await service.evaluate_lift_signals(now=deadline + timedelta(minutes=10))
+    assert client.deleted.count(reminder_id) == 1, "deleted once, not every tick"
+    assert not [
+        text for message_id, text in client.edited_texts[edit_count:] if message_id == reminder_id
+    ]
+    assert not [text for text in client.sent_texts if "deadline has passed" in text]
 
 
 async def test_full_unpaid_day_still_gets_a_deadline_reminder(

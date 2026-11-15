@@ -48,6 +48,9 @@ from veloexpress_bot.polls.schedule import (
     normalize_cancelled_lift_times,
     select_lift_range_boundary,
 )
+from veloexpress_bot.polls.seatoffer import CALLBACK_PREFIX as SEAT_OFFER_PREFIX
+from veloexpress_bot.polls.seatoffer import GONE_TEXT as SEAT_GONE_TEXT
+from veloexpress_bot.polls.seatoffer import parse_offer_callback
 from veloexpress_bot.polls.weekendplan import PlanCardView
 from veloexpress_bot.telegram.errors import TelegramPollPostError, TelegramTargetForbiddenError
 from veloexpress_core.history import HistoryStatistics, Period
@@ -1534,6 +1537,25 @@ async def handle_payment_button(
 
     # Money needs an acknowledgement that stays until dismissed. A disappearing
     # toast made a saved report look like a dead button, especially on repeat taps.
+    await callback.answer(notice, show_alert=True)
+
+
+@router.callback_query(F.data.startswith(f"{SEAT_OFFER_PREFIX}:"))
+async def handle_seat_offer(
+    callback: CallbackQuery,
+    payments_service: PaymentsService,
+) -> None:
+    """`✅ I'm in` / `🙅 Skip` under a freed seat. Only the tagged riders count."""
+    parsed = parse_offer_callback(callback.data)
+    if parsed is None:
+        await callback.answer(SEAT_GONE_TEXT, show_alert=True)
+        return
+    action, offer_id = parsed
+    notice = await payments_service.respond_to_seat_offer(
+        offer_id=offer_id,
+        telegram_user_id=callback.from_user.id,
+        accept=action == "in",
+    )
     await callback.answer(notice, show_alert=True)
 
 

@@ -560,7 +560,7 @@ async def test_queue_only_correction_notifies_the_right_rider_on_next_vacancy(db
 
     service, payments, client, poll_id, day = await _setup(cast(PaymentsDatabase, db))
     await _fill_lift(service, poll_id, riders=12)
-    await payments.announce_seat_promotions()
+    await payments.offer_freed_seats()
     cycle_started = datetime.now(UTC)
     stale_day = await payments.day_bookings(day)
     assert stale_day is not None
@@ -576,18 +576,19 @@ async def test_queue_only_correction_notifies_the_right_rider_on_next_vacancy(db
         admin_user_id=1,
     )
     assert not any("Booking order updated" in record.text for record in client.sent)
-    assert await payments._promotions_for_day(stale_day, now=cycle_started) == []
+    assert await payments._scan_seat_offers(stale_day, now=cycle_started) == []
     await service.track_poll_answer(
         poll_id=poll_id, telegram_user_id=109, username=None, full_name="Rider 9", option_ids=()
     )
-    await payments.announce_seat_promotions()
-    notices = [r.text for r in client.sent if "off the waitlist" in r.text]
+    await payments.offer_freed_seats()
+    notices = [r.text for r in client.sent if "seat freed up" in r.text]
     assert len(notices) == 1 and "tg://user?id=111" in notices[0]
     assert "tg://user?id=110" not in notices[0]
+    # Offered, not seated: 111 is first in line until they tap.
     view = await payments.rider_day(service_date=day, telegram_user_id=111)
-    assert view is not None and view.rows[0].waitlist_position == 0
-    view = await payments.rider_day(service_date=day, telegram_user_id=110)
     assert view is not None and view.rows[0].waitlist_position == 1
+    view = await payments.rider_day(service_date=day, telegram_user_id=110)
+    assert view is not None and view.rows[0].waitlist_position == 2
 
 
 async def test_correction_keeps_payments_and_deadline_roster_and_sends_no_duplicate_ping(
@@ -608,7 +609,7 @@ async def test_correction_keeps_payments_and_deadline_roster_and_sends_no_duplic
     before_day = await payments.day_bookings(day)
     assert before_day is not None
     await payments._capture_roster(before_day, now=datetime.now(UTC), deadline_at=datetime.now(UTC))
-    await payments.announce_seat_promotions()
+    await payments.offer_freed_seats()
     async with db.session() as session:
         ledger = [
             (p.id, p.telegram_user_id, p.amount_gel)
@@ -630,11 +631,11 @@ async def test_correction_keeps_payments_and_deadline_roster_and_sends_no_duplic
         expected_digest=preview["digest"],
         admin_user_id=1,
     )
-    await payments.announce_seat_promotions()
+    await payments.offer_freed_seats()
     notices = [
         r.text
         for r in client.sent
-        if "Booking order updated" in r.text or "off the waitlist" in r.text
+        if "Booking order updated" in r.text or "seat freed up" in r.text
     ]
     assert len(notices) == 1
     async with db.session() as session:

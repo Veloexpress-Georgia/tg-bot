@@ -130,10 +130,16 @@ from veloexpress_bot.polls.schedule import (
     normalize_cancelled_lift_times,
     suggested_cancelled_lift_times,
 )
-from veloexpress_bot.polls.seating import SeatCandidate, allocate_seats, queue_rank
+from veloexpress_bot.polls.seating import (
+    WAITLIST_FREEZE_LEAD,
+    SeatCandidate,
+    allocate_seats,
+    queue_rank,
+)
 from veloexpress_bot.telegram.outbox import TelegramOutboxDispatcher
 from veloexpress_core import booking_order
 from veloexpress_core.bikepark import BikeParkService
+from veloexpress_core.seat_hold import apply_vote_to_waitlists, held_waitlist, held_waitlists
 from veloexpress_core.terms import ServiceDayDefaultsStore
 
 
@@ -1317,8 +1323,15 @@ class PollPostingService:
             )
             for vote in votes
         ]
-        before = allocate_seats(candidates, capacity=capacity, reserved=manual_before + guests)
-        after = allocate_seats(candidates, capacity=capacity, reserved=manual_after + guests)
+        held = await held_waitlist(
+            session, settings=self._settings, service_date=service_date, lift_time=lift_time
+        )
+        before = allocate_seats(
+            candidates, capacity=capacity, reserved=manual_before + guests, held_back=held
+        )
+        after = allocate_seats(
+            candidates, capacity=capacity, reserved=manual_after + guests, held_back=held
+        )
         held_after = {candidate.telegram_user_id for candidate in after.holders}
         lost = [
             candidate
@@ -1471,6 +1484,12 @@ class PollPostingService:
                 ),
                 capacity=capacity,
                 reserved=manual_count + guest_count,
+                held_back=await held_waitlist(
+                    session,
+                    settings=self._settings,
+                    service_date=service_date,
+                    lift_time=lift_time,
+                ),
             )
             waitlisted_ids = {rider.telegram_user_id for rider in allocation.waitlist}
             position_by_user = {
@@ -2156,14 +2175,19 @@ class PollPostingService:
         return tuple(events)
 
     async def _remind_booking_deadline(self, day: BookingMonitorDay, *, now: datetime) -> None:
-        """Nudge the group once, then keep that message honest until the deadline.
+        """Nudge the group once, keep that message honest, and remove it at the deadline.
 
         A one-shot snapshot is stale within the hour, and this is the message people
-        act on. After the deadline it stops moving and stands as the final list.
+        act on. Past the deadline it has nothing left to ask for: booking stays open
+        while seats are free, and the poll and the live card already show who is
+        riding. Left in place, "deadline has passed" read as "booking is shut".
         """
         signals = _day_signals(day)
         terms = await self._payment_terms(service_date=day.service_date)
         deadline_at = booking_deadline_at(day.service_date, terms.deadline_time, zone=self._zone)
+        if now > deadline_at:
+            await self._retire_deadline_reminder(day.service_date, now=now)
+            return
         async with self._session_factory() as session:
             notice = await self._service_day_notice(session=session, service_date=day.service_date)
             already_reminded = notice is not None and notice.deadline_reminded_at is not None
@@ -2200,13 +2224,7 @@ class PollPostingService:
             if link:
                 terms = replace(terms, link=link)
 
-        deadline_passed = now > deadline_at
-        text = render_deadline_reminder(
-            day.service_date,
-            signals,
-            terms=terms,
-            deadline_passed=deadline_passed,
-        )
+        text = render_deadline_reminder(day.service_date, signals, terms=terms)
 
         if already_reminded:
             await self._refresh_deadline_reminder(
@@ -2244,6 +2262,34 @@ class PollPostingService:
             day.service_date.isoformat(),
             extra={"service_date": day.service_date.isoformat()},
         )
+
+    async def _retire_deadline_reminder(self, service_date: date, *, now: datetime) -> None:
+        """Delete the reminder once, then forget its id so later ticks skip it."""
+        async with self._session_factory() as session:
+            notice = await self._service_day_notice(session=session, service_date=service_date)
+            message_id = notice.deadline_message_id if notice is not None else None
+        if message_id is None:
+            return
+        deleted = await self._telegram_client.delete_message(
+            chat_id=self._require_target_chat_id(),
+            message_id=message_id,
+        )
+        if not deleted:
+            logger.warning(
+                "booking_deadline_reminder_delete_failed service_date=%s message_id=%s",
+                service_date.isoformat(),
+                message_id,
+                extra={"service_date": service_date.isoformat(), "message_id": message_id},
+            )
+        async with self._session_factory() as session:
+            notice = await self._service_day_notice(session=session, service_date=service_date)
+            if notice is None or notice.deadline_message_id != message_id:
+                return
+            # Even when Telegram refuses: retrying every tick would not change its mind.
+            notice.deadline_message_id = None
+            notice.updated_at = now.astimezone(UTC)
+            await session.commit()
+        self._deadline_reminder_texts.pop(service_date, None)
 
     async def _refresh_deadline_reminder(
         self,
@@ -2430,6 +2476,12 @@ class PollPostingService:
                 ),
                 capacity=capacity,
                 reserved=manual + (guests or 0),
+                held_back=await held_waitlist(
+                    session,
+                    settings=self._settings,
+                    service_date=service_date,
+                    lift_time=lift_time,
+                ),
             )
             return [
                 (candidate.telegram_user_id, candidate.label) for candidate in allocation.holders
@@ -2769,6 +2821,7 @@ class PollPostingService:
         now = datetime.now(UTC)
         encoded_option_ids = _encode_option_ids(option_ids)
         event: PollVoteEvent | None = None
+        batch: PollBatch | None = None
         async with self._session_factory() as session:
             poll_snapshot = await _poll_snapshot(session=session, poll_id=poll_id)
             if poll_snapshot is not None:
@@ -2825,6 +2878,42 @@ class PollPostingService:
                 vote.option_ids = encoded_option_ids
                 vote.option_booked_at = option_booked_at
                 vote.updated_at = now
+            if poll_snapshot is not None and batch is not None:
+                lift_time_by_option = {
+                    snapshot.option_index: snapshot.lift_time
+                    for snapshot in (
+                        await session.scalars(
+                            select(PollOptionSnapshot).where(PollOptionSnapshot.poll_id == poll_id)
+                        )
+                    ).all()
+                    if snapshot.lift_time is not None
+                }
+                previous = set(decode_option_ids(old_option_ids))
+                current = set(option_ids)
+                await apply_vote_to_waitlists(
+                    session,
+                    settings=self._settings,
+                    service_date=batch.service_date,
+                    telegram_user_id=telegram_user_id,
+                    # Close to departure nobody waiting is asked any more, so a
+                    # seat still free then is for whoever books it now.
+                    joined=(
+                        lift_time_by_option[i]
+                        for i in current - previous
+                        if i in lift_time_by_option
+                        and now.astimezone(self._zone)
+                        < lift_departure_at(
+                            batch.service_date, lift_time_by_option[i], zone=self._zone
+                        )
+                        - WAITLIST_FREEZE_LEAD
+                    ),
+                    left=(
+                        lift_time_by_option[i]
+                        for i in previous - current
+                        if i in lift_time_by_option
+                    ),
+                    now=now,
+                )
             try:
                 await session.commit()
             except IntegrityError:
@@ -3072,6 +3161,9 @@ class PollPostingService:
             locked_times = await self._deadline_running_times(
                 session=session, service_date=batch.service_date
             )
+            held_by_lift = await held_waitlists(
+                session, settings=self._settings, service_dates=(batch.service_date,)
+            )
             availability = tuple(
                 LiftAvailability(
                     time=snapshot.lift_time,
@@ -3094,6 +3186,9 @@ class PollPostingService:
                             capacity=capacity_by_time.get(snapshot.lift_time, 10),
                             reserved=manual_by_time.get(snapshot.lift_time, 0)
                             + guests_by_time.get(snapshot.lift_time, 0),
+                            held_back=held_by_lift.get(
+                                (batch.service_date, snapshot.lift_time), frozenset()
+                            ),
                         )
                     ),
                 )
@@ -3776,6 +3871,9 @@ class PollPostingService:
                     .order_by(PollVoteEvent.created_at)
                 )
             ).all()
+            held_by_lift = await held_waitlists(
+                session, settings=self._settings, service_dates=selected_dates
+            )
 
         votes_by_poll: dict[str, list[PollVote]] = {}
         for vote in votes:
@@ -3862,6 +3960,9 @@ class PollPostingService:
                     ),
                     capacity=capacity,
                     reserved=manual_count + guest_count,
+                    held_back=held_by_lift.get(
+                        (batch.service_date, snapshot.lift_time), frozenset()
+                    ),
                 )
                 for holder in allocation.holders:
                     held_lifts_by_user.setdefault(holder.telegram_user_id, []).append(
@@ -4436,6 +4537,7 @@ def _waitlist_for(
     option_index: int,
     capacity: int,
     reserved: int,
+    held_back: frozenset[int] = frozenset(),
 ) -> tuple[WaitlistRider, ...]:
     allocation = allocate_seats(
         (
@@ -4449,6 +4551,7 @@ def _waitlist_for(
         ),
         capacity=capacity,
         reserved=reserved,
+        held_back=held_back,
     )
     return tuple(
         WaitlistRider(telegram_user_id=candidate.telegram_user_id, label=candidate.label)

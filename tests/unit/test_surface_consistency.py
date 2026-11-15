@@ -153,7 +153,6 @@ def test_a_lift_locked_at_the_deadline_stays_running_after_a_drop_out() -> None:
             ),
         ),
         terms=PaymentTerms(price_gel=PRICE, deadline_time="20:00"),
-        deadline_passed=True,
     )
     line = next(text for text in reminder.splitlines() if text.startswith("10:00"))
     # Counted as a lift that is happening, short of paid seats, not of riders.

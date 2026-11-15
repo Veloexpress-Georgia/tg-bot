@@ -326,12 +326,15 @@ class RiderCard(Base):
 
 
 class LiftSeatState(Base):
-    """The seat allocation the bot last saw for one lift.
+    """The seat allocation the bot last saw for one lift, and who must wait.
 
-    Kept for one purpose: telling a rider they came off the waitlist. The board
-    shows the current allocation, but a Telegram edit sends no notification, so
-    the one person the change matters to would never learn about it. Ids are
-    stored comma-separated because nothing ever queries inside them.
+    A waitlisted rider never moves into a freed seat on their own: the vote may
+    be days old, and silence used to mean "riding and billed". `held_waitlist_ids`
+    are the riders who must wait until they accept a seat offer; allocation keeps
+    them behind everyone else. `declined_ids` said no and are offered nothing more
+    on this lift until they vote for it again. `holder_ids`/`waitlist_ids` are the
+    last tick's picture, kept to notice who slipped into a seat between ticks.
+    Ids are stored comma-separated because nothing ever queries inside them.
     """
 
     __tablename__ = "lift_seat_state"
@@ -344,7 +347,40 @@ class LiftSeatState(Base):
     lift_time: Mapped[str] = mapped_column(String(16))
     holder_ids: Mapped[str] = mapped_column(Text, default="")
     waitlist_ids: Mapped[str] = mapped_column(Text, default="")
+    held_waitlist_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
+    declined_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class SeatOffer(Base):
+    """A freed seat being offered to the waitlist, one open offer per lift.
+
+    The offer widens instead of passing on: a rider who stays silent keeps the
+    right to tap, the next rider is tagged as well, and the first tap takes the
+    seat. Nobody loses their place by being asleep.
+    """
+
+    __tablename__ = "seat_offer"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    lift_time: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16), default="open")
+    seats: Mapped[int] = mapped_column(Integer, default=1)
+    offered_ids: Mapped[str] = mapped_column(Text, default="")
+    claimed_ids: Mapped[str] = mapped_column(Text, default="")
+    message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # What the message currently says, so an unchanged tick edits nothing.
+    text: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    widened_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
 

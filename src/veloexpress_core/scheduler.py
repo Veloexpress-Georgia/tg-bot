@@ -146,13 +146,13 @@ class PollAutoScheduler:
                 logger.exception("lift_day_results_freeze_failed")
                 failures.append("lift_day_results_freeze")
 
-            # A freed seat is good news for whoever was waiting, but only if they
-            # hear it — the board that shows the new order is edited silently.
+            # A freed seat is offered to whoever is waiting, and the offer widens
+            # to the next rider while nobody answers.
             try:
-                await self._payments_service.announce_seat_promotions(now=now_local)
+                await self._payments_service.offer_freed_seats(now=now_local)
             except Exception:
-                logger.exception("seat_promotion_announce_failed")
-                failures.append("seat_promotion_announce")
+                logger.exception("seat_offer_scan_failed")
+                failures.append("seat_offer_scan")
 
             # Boards next: the "lift is running" notice links to that day's board,
             # and on the tick a lift crosses the minimum the board is created here.

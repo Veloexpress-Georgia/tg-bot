@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -27,8 +27,16 @@ from veloexpress_bot.db.models import (
     ServiceDayTerms,
 )
 from veloexpress_bot.payments.myday import RiderSeason
-from veloexpress_bot.polls.liftsignals import booking_deadline_at
+from veloexpress_bot.polls.liftsignals import booking_deadline_at, lift_departure_at
 from veloexpress_bot.polls.render import PollDraft
+from veloexpress_bot.polls.seatoffer import (
+    ACCEPTED_TEXT,
+    DECLINED_TEXT,
+    GONE_TEXT,
+    NOT_FOR_YOU_TEXT,
+    lift_label,
+    parse_offer_callback,
+)
 from veloexpress_core.lifts import (
     PollPostingService,
     PollSetup,
@@ -230,8 +238,10 @@ def settings(
 
 
 def _saturday() -> date:
+    # Never today: on a Saturday the morning lifts are already past their waitlist
+    # freeze, and every promotion test would silently test the freeze instead.
     today = datetime.now(UTC).astimezone(ZoneInfo("Asia/Tbilisi")).date()
-    return today + timedelta(days=(5 - today.weekday()) % 7)
+    return today + timedelta(days=(5 - today.weekday()) % 7 or 7)
 
 
 async def _setup(
@@ -1570,53 +1580,244 @@ async def _lift_sends(client: FakeTelegramClient) -> list[SentRecord]:
     return [
         record
         for record in client.sent
-        if record.thread_id == LIFT_THREAD and "waitlist" in record.text
+        if record.thread_id == LIFT_THREAD and "freed up" in record.text
     ]
 
 
-async def test_a_freed_seat_tags_whoever_was_waiting(db: SharedDatabase) -> None:
-    poll_service, payments, client, poll_id, _ = await _setup(db)
+ZONE = ZoneInfo("Asia/Tbilisi")
+
+
+def _offer_id(record: SentRecord) -> int:
+    assert record.markup is not None
+    parsed = parse_offer_callback(record.markup.inline_keyboard[0][0].callback_data)
+    assert parsed is not None
+    return parsed[1]
+
+
+def _noon_before(service_date: date) -> datetime:
+    """A waking hour the day before, so pacing tests never land in quiet hours."""
+    return datetime.combine(service_date - timedelta(days=1), time(12, 0), ZONE)
+
+
+async def _answer(payments: PaymentsService, offer_id: int, user_id: int, *, accept: bool) -> str:
+    return await payments.respond_to_seat_offer(
+        offer_id=offer_id, telegram_user_id=user_id, accept=accept
+    )
+
+
+async def test_a_freed_seat_is_offered_not_assigned(db: SharedDatabase) -> None:
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    noon = _noon_before(saturday)
     # Eleven riders for ten seats, so rider 110 is on the waitlist.
     await _fill(poll_service, poll_id, 0, riders=11)
-    await payments.announce_seat_promotions()
-    before = len(await _lift_sends(client))
+    await payments.offer_freed_seats(now=noon)
+    assert await _lift_sends(client) == []
 
     await _vote(poll_service, poll_id, 100)
-    await payments.announce_seat_promotions()
+    await payments.offer_freed_seats(now=noon + timedelta(minutes=1))
 
     notices = await _lift_sends(client)
-    assert len(notices) == before + 1
-    assert "off the waitlist" in notices[-1].text
-    assert "tg://user?id=110" in notices[-1].text
-    # And only that rider: the ten who never moved are not tagged.
-    assert "tg://user?id=101" not in notices[-1].text
+    assert len(notices) == 1
+    assert "A seat freed up on 8:30" in notices[0].text
+    assert "tg://user?id=110" in notices[0].text
+    # And only that rider: the ones who never moved are not tagged.
+    assert "tg://user?id=101" not in notices[0].text
+    assert notices[0].markup is not None
+    assert [b.text for b in notices[0].markup.inline_keyboard[0]] == ["✅ I'm in", "🙅 Skip"]
+    # Silence is not consent: until a tap the seat is nobody's and nobody's bill.
+    day = await payments.day_bookings(saturday)
+    assert day is not None
+    assert 110 in day.waitlist_by_lift["8:30"]
+    assert day.confirmed_lift_times(110) == ()
+    # An unchanged offer is not re-sent or edited on later ticks.
+    await payments.offer_freed_seats(now=noon + timedelta(minutes=2))
+    assert len(await _lift_sends(client)) == 1
+    assert all(message_id != notices[0].message_id for message_id, _ in client.edits)
 
 
-async def test_a_freed_seat_still_tags_after_the_deadline(db: SharedDatabase) -> None:
+async def test_accepting_an_offer_takes_the_seat(db: SharedDatabase) -> None:
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    noon = _noon_before(saturday)
+    await _fill(poll_service, poll_id, 0, riders=11)
+    await payments.offer_freed_seats(now=noon)
+    await _vote(poll_service, poll_id, 100)
+    await payments.offer_freed_seats(now=noon + timedelta(minutes=1))
+    notice = (await _lift_sends(client))[0]
+    offer_id = _offer_id(notice)
+
+    # Only the tagged rider's tap counts.
+    assert await _answer(payments, offer_id, 105, accept=True) == NOT_FOR_YOU_TEXT
+    assert await _answer(payments, offer_id, 110, accept=True) == ACCEPTED_TEXT
+
+    day = await payments.day_bookings(saturday)
+    assert day is not None
+    assert 110 in day.seat_holders_by_lift["8:30"]
+    assert day.waitlist_by_lift["8:30"] == ()
+    assert day.confirmed_lift_times(110) == ("8:30",)
+    taken = [text for message_id, text in client.edits if message_id == notice.message_id]
+    assert taken == [f"🎟 {lift_label(saturday, '8:30')} — seat taken: @rider110"]
+    # The next tick leaves the settled offer alone, and a second tap finds it gone.
+    await payments.offer_freed_seats(now=noon + timedelta(minutes=2))
+    assert len(await _lift_sends(client)) == 1
+    assert notice.message_id not in client.deleted
+    assert await _answer(payments, offer_id, 110, accept=True) == GONE_TEXT
+
+
+async def test_skipping_passes_the_seat_on_and_everyone_skipping_frees_it(
+    db: SharedDatabase,
+) -> None:
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    noon = _noon_before(saturday)
+    await _fill(poll_service, poll_id, 0, riders=12)
+    await payments.offer_freed_seats(now=noon)
+    await _vote(poll_service, poll_id, 100)
+    await payments.offer_freed_seats(now=noon + timedelta(minutes=1))
+    first = (await _lift_sends(client))[0]
+    offer_id = _offer_id(first)
+
+    assert await _answer(payments, offer_id, 110, accept=False) == DECLINED_TEXT
+    await payments.offer_freed_seats(now=noon + timedelta(minutes=2))
+
+    notices = await _lift_sends(client)
+    assert len(notices) == 2
+    assert "tg://user?id=111" in notices[1].text
+    assert "tg://user?id=110" not in notices[1].text
+    assert first.message_id in client.deleted
+
+    await _answer(payments, offer_id, 111, accept=False)
+    # Nobody took it: the message goes, and the seat is open to anyone in the poll.
+    assert notices[1].message_id in client.deleted
+    await payments.offer_freed_seats(now=noon + timedelta(minutes=3))
+    assert len(await _lift_sends(client)) == 2
+    await _vote(poll_service, poll_id, 300, 0)
+    day = await payments.day_bookings(saturday)
+    assert day is not None
+    assert 300 in day.seat_holders_by_lift["8:30"]
+    assert set(day.waitlist_by_lift["8:30"]) == {110, 111}
+
+
+async def test_silence_widens_the_offer_instead_of_passing_it_on(db: SharedDatabase) -> None:
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    noon = _noon_before(saturday)
+    await _fill(poll_service, poll_id, 0, riders=12)
+    await payments.offer_freed_seats(now=noon)
+    await _vote(poll_service, poll_id, 100)
+    await payments.offer_freed_seats(now=noon + timedelta(minutes=1))
+    await payments.offer_freed_seats(now=noon + timedelta(minutes=20))
+    assert len(await _lift_sends(client)) == 1
+
+    await payments.offer_freed_seats(now=noon + timedelta(minutes=32))
+
+    notices = await _lift_sends(client)
+    assert len(notices) == 2
+    assert "tg://user?id=110" in notices[1].text
+    assert "tg://user?id=111" in notices[1].text
+    assert "First to tap takes it." in notices[1].text
+    assert notices[0].message_id in client.deleted
+    offer_id = _offer_id(notices[1])
+    assert _offer_id(notices[0]) == offer_id
+
+    # The second rider is quicker; the first kept the right to tap but lost the race.
+    assert await _answer(payments, offer_id, 111, accept=True) == ACCEPTED_TEXT
+    assert await _answer(payments, offer_id, 110, accept=True) == GONE_TEXT
+    day = await payments.day_bookings(saturday)
+    assert day is not None
+    assert 111 in day.seat_holders_by_lift["8:30"]
+    assert day.waitlist_by_lift["8:30"] == (110,)
+
+
+async def test_the_queue_is_not_walked_while_everyone_sleeps(db: SharedDatabase) -> None:
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    night = datetime.combine(saturday - timedelta(days=1), time(1, 0), ZONE)
+    await _fill(poll_service, poll_id, 0, riders=12)
+    await payments.offer_freed_seats(now=night)
+    await _vote(poll_service, poll_id, 100)
+
+    # The first rider is tagged at once: the tag will be there in the morning.
+    await payments.offer_freed_seats(now=night + timedelta(minutes=1))
+    assert len(await _lift_sends(client)) == 1
+    await payments.offer_freed_seats(now=night + timedelta(hours=5))
+    assert len(await _lift_sends(client)) == 1
+
+    await payments.offer_freed_seats(now=night.replace(hour=8, minute=1))
+    notices = await _lift_sends(client)
+    assert len(notices) == 2
+    assert "tg://user?id=111" in notices[1].text
+
+
+async def test_a_newcomer_cannot_take_a_seat_that_is_being_offered(db: SharedDatabase) -> None:
+    poll_service, payments, _client, poll_id, saturday = await _setup(db)
+    noon = _noon_before(saturday)
+    await _fill(poll_service, poll_id, 0, riders=11)
+    await payments.offer_freed_seats(now=noon)
+    await _vote(poll_service, poll_id, 100)
+    await payments.offer_freed_seats(now=noon + timedelta(minutes=1))
+
+    await _vote(poll_service, poll_id, 300, 0)
+
+    day = await payments.day_bookings(saturday)
+    assert day is not None
+    assert 300 not in day.seat_holders_by_lift["8:30"]
+    assert day.waitlist_by_lift["8:30"] == (110, 300)
+
+
+async def test_a_freed_seat_is_still_offered_after_the_deadline(db: SharedDatabase) -> None:
     saturday = _future_saturday()
     poll_service, payments, client, poll_id, _ = await _setup(db, service_date=saturday)
     await _fill(poll_service, poll_id, 0, riders=11)
-    await payments.announce_seat_promotions()
+    await payments.offer_freed_seats()
     await payments.capture_deadline_rosters(now=_after_deadline(saturday))
     before = len(await _lift_sends(client))
 
     await _vote(poll_service, poll_id, 100)
-    await payments.announce_seat_promotions(now=_after_deadline(saturday))
+    await payments.offer_freed_seats(now=_after_deadline(saturday))
 
     notices = await _lift_sends(client)
     assert len(notices) == before + 1
     assert "tg://user?id=110" in notices[-1].text
+
+
+async def test_a_seat_freed_close_to_departure_is_offered_to_nobody(db: SharedDatabase) -> None:
+    """An hour out nobody is tagged: the tag would reach nobody who can still make it."""
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    departure = lift_departure_at(saturday, "8:30", zone=ZONE)
+    await _fill(poll_service, poll_id, 0, riders=11)
+    await payments.offer_freed_seats(now=departure - timedelta(hours=3))
+
+    await _vote(poll_service, poll_id, 100)
+    await payments.offer_freed_seats(now=departure - timedelta(minutes=50))
+
+    assert await _lift_sends(client) == []
+    day = await payments.day_bookings(saturday)
+    assert day is not None
+    assert 110 in day.waitlist_by_lift["8:30"]
+    assert day.confirmed_lift_times(110) == ()
+
+
+async def test_an_open_offer_closes_when_the_lift_leaves(db: SharedDatabase) -> None:
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    departure = lift_departure_at(saturday, "8:30", zone=ZONE)
+    await _fill(poll_service, poll_id, 0, riders=11)
+    await payments.offer_freed_seats(now=departure - timedelta(hours=5))
+    await _vote(poll_service, poll_id, 100)
+    await payments.offer_freed_seats(now=departure - timedelta(hours=4))
+    notice = (await _lift_sends(client))[0]
+
+    await payments.offer_freed_seats(now=departure + timedelta(minutes=1))
+
+    assert notice.message_id in client.deleted
+    assert await _answer(payments, _offer_id(notice), 110, accept=True) == GONE_TEXT
 
 
 async def test_a_new_booking_into_a_free_seat_is_not_a_promotion(db: SharedDatabase) -> None:
     poll_service, payments, client, poll_id, _ = await _setup(db)
     await _fill(poll_service, poll_id, 0, riders=5)
-    await payments.announce_seat_promotions()
+    await payments.offer_freed_seats()
     before = len(await _lift_sends(client))
 
     # Booking into an empty seat is not news to the person who just booked.
     await _vote(poll_service, poll_id, 300, 0)
-    await payments.announce_seat_promotions()
+    await payments.offer_freed_seats()
 
     assert len(await _lift_sends(client)) == before
 
@@ -1625,7 +1826,7 @@ async def test_the_first_sight_of_a_lift_announces_nothing(db: SharedDatabase) -
     poll_service, payments, client, poll_id, _ = await _setup(db)
     await _fill(poll_service, poll_id, 0, riders=11)
 
-    await payments.announce_seat_promotions()
+    await payments.offer_freed_seats()
 
     assert await _lift_sends(client) == []
 

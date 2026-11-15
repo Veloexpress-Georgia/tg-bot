@@ -25,6 +25,7 @@ from veloexpress_bot.db.models import (
 )
 from veloexpress_bot.polls.defaults import DEFAULT_LIFTS
 from veloexpress_bot.polls.seating import SeatCandidate, allocate_seats, queue_rank
+from veloexpress_core.seat_hold import held_waitlist
 
 if TYPE_CHECKING:
     from veloexpress_core.lifts import PollPostingService
@@ -116,9 +117,18 @@ async def load_order(
     votes = list(
         (await session.scalars(select(PollVote).where(PollVote.poll_id == snapshot.poll_id))).all()
     )
-    ordered = list(
-        allocate_seats(candidates(votes, snapshot.option_index), capacity=len(votes)).holders
+    # A frozen waitlist goes last: those riders keep waiting whatever their order.
+    allocation = allocate_seats(
+        candidates(votes, snapshot.option_index),
+        capacity=len(votes),
+        held_back=await held_waitlist(
+            session,
+            settings=service._settings,
+            service_date=service_date,
+            lift_time=lift_time,
+        ),
     )
+    ordered = [*allocation.holders, *allocation.waitlist]
     manual = await service._manual_booking_count(
         session=session, service_date=service_date, lift_time=lift_time
     )
@@ -384,6 +394,9 @@ async def save(
             session.add(seat_state)
         seat_state.holder_ids = ",".join(map(str, ids[: state.available]))
         seat_state.waitlist_ids = ",".join(map(str, ids[state.available :]))
+        # An admin's order is the final word: whoever they seat is seated without
+        # an offer, and only the rest keep waiting for one.
+        seat_state.held_waitlist_ids = seat_state.waitlist_ids
         seat_state.updated_at = datetime.now(UTC)
         labels = {r.telegram_user_id: r.label for r in state.ordered}
         lines = [f"🎟 Booking order updated · {lift_time} · {service_date:%d %b}"]
