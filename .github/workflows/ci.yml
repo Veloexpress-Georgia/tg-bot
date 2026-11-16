@@ -117,6 +117,6 @@ jobs:
             echo "Configure COOLIFY_WEBHOOK and COOLIFY_TOKEN in the Production GitHub environment."
             exit 1
           fi
-          curl --fail --silent --show-error \
+          curl --fail --silent --show-error --request POST \
             --header "Authorization: Bearer ${COOLIFY_TOKEN}" \
             "$COOLIFY_WEBHOOK" > /dev/null
