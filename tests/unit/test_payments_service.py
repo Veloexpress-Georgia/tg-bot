@@ -2675,7 +2675,9 @@ async def test_frozen_queue_ignores_paid_late_exit_money_obligations(db: SharedD
     async with db.session() as session:
         row = await session.scalar(select(LiftDayResult).where(LiftDayResult.lift_time == "8:30"))
         assert row is not None
-        assert row.waiting_count == 0
+        # The original waitlisted rider still needs an offer; the paid late
+        # exit is a money obligation, not a second waiting rider.
+        assert row.waiting_count == 1
 
 
 async def test_my_past_rides_counts_the_vans_that_went_and_nothing_else(

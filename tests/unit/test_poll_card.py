@@ -169,9 +169,11 @@ def test_long_queue_caption_keeps_complete_mentions_within_telegram_limit() -> N
 
 def test_waitlist_names_do_not_increase_or_change_the_image() -> None:
     with_names = LiftAvailability(
-        time="11:45", seat_count=12, waitlist=(WaitlistRider(2, "@rider"), WaitlistRider(3, "Nika"))
+        time="11:45", seat_count=10, waitlist=(WaitlistRider(2, "@rider"), WaitlistRider(3, "Nika"))
     )
-    without_names = LiftAvailability(time="11:45", seat_count=12)
+    without_names = LiftAvailability(
+        time="11:45", seat_count=10, waitlist=(WaitlistRider(4, ""), WaitlistRider(5, ""))
+    )
     assert render_availability_card(date(2026, 10, 4), (with_names,)) == (
         render_availability_card(date(2026, 10, 4), (without_names,))
     )

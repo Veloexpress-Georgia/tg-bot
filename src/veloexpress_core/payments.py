@@ -713,15 +713,18 @@ class PaymentsService:
                 return BOARD_GONE_TEXT
             day = latest
             for lift_time in lift_times:
-                if lift_time not in day.booked_lift_times_by_user.get(telegram_user_id, ()):
+                if delta > 0 and lift_time not in day.booked_lift_times_by_user.get(
+                    telegram_user_id, ()
+                ):
                     # Booked, not necessarily running: a guest is one of the five a
                     # lift needs, so refusing them until it fills is backwards.
                     continue
-                current = day.guests_by_user_lift.get((telegram_user_id, lift_time), 0)
                 if delta > 0 and day.seats_left(lift_time) <= 0:
                     # Never sell a seat the lift does not have.
                     continue
-                if delta < 0 and current <= 0:
+                if delta > 0 and day.waitlist_by_lift.get(lift_time):
+                    # A free seat on a lift with a waitlist is on offer to the
+                    # riders who wait; a guest must not take it ahead of them.
                     continue
                 row = await session.scalar(
                     select(GuestSeat)
@@ -732,6 +735,8 @@ class PaymentsService:
                     .where(GuestSeat.lift_time == lift_time)
                     .where(GuestSeat.host_user_id == telegram_user_id)
                 )
+                if delta < 0 and (row is None or row.count <= 0):
+                    continue
                 if row is None:
                     row = GuestSeat(
                         environment=self._settings.app_env,
@@ -985,13 +990,25 @@ class PaymentsService:
         remaining: tuple[str, ...] = (
             ()
             if day is None or cancelled_lift_time is None
-            else day.booked_lift_times_by_user.get(claim.telegram_user_id, ())
+            else tuple(
+                lift_time
+                for lift_time in day.booked_lift_times_by_user.get(claim.telegram_user_id, ())
+                if claim.telegram_user_id in day.seat_holders_by_lift.get(lift_time, ())
+                or day.guests_by_user_lift.get((claim.telegram_user_id, lift_time), 0)
+            )
         )
         if pending and cancelled_lift_time is not None:
             remaining = tuple(
                 lift_time for lift_time in remaining if lift_time != cancelled_lift_time
             )
-        held = len(remaining)
+        held = (
+            sum(
+                claim.telegram_user_id in day.seat_holders_by_lift.get(lift_time, ())
+                for lift_time in remaining
+            )
+            if day is not None
+            else 0
+        )
         if day is not None:
             held += sum(
                 day.guests_by_user_lift.get((claim.telegram_user_id, lift_time), 0)
@@ -1428,9 +1445,20 @@ class PaymentsService:
     async def _scan_seat_offers(self, day: DayBookings, *, now: datetime) -> list[int]:
         """Bring one day's held lists and offers up to date; return offers to publish."""
         touched: list[int] = []
-        lifts = {} if day.cancelled else day.current_seat_holders_by_lift
         async with self._session_factory() as session:
             await transaction_lock(session, self._seat_lock_key(day.service_date))
+            if day.orphan_guest_ids:
+                # Guest seats left behind by a host who no longer votes for the
+                # lift. Read again under the lock: the host may have just returned.
+                latest = await self._day(day.service_date)
+                if latest is not None:
+                    day = latest
+                    if day.orphan_guest_ids:
+                        await session.execute(
+                            delete(GuestSeat).where(GuestSeat.id.in_(day.orphan_guest_ids))
+                        )
+                        day.orphan_guest_ids = ()
+            lifts = {} if day.cancelled else day.current_seat_holders_by_lift
             rows = {
                 row.lift_time: row
                 for row in (
@@ -1500,7 +1528,7 @@ class PaymentsService:
 
                 declined = _decode_ids(row.declined_ids or "")
                 queue = [user_id for user_id in waitlist if user_id not in declined]
-                free = _free_seats(day, lift_time, waiting=len(waitlist))
+                free = _free_seats(day, lift_time)
                 departure_at = lift_departure_at(day.service_date, lift_time, zone=self._zone)
                 offer = offers.pop(lift_time, None)
                 # Close to departure nobody new is asked: a tag that late reaches
@@ -1583,6 +1611,12 @@ class PaymentsService:
             service_date, lift_time = offer.service_date, offer.lift_time
             await transaction_lock(session, self._seat_lock_key(service_date))
             await session.refresh(offer)
+            if datetime.now(UTC).astimezone(self._zone) >= lift_departure_at(
+                service_date, lift_time, zone=self._zone
+            ):
+                offer.status = "closed"
+                await session.commit()
+                return GONE_TEXT
             day = await self._day(service_date)
             if offer.status != "open" or day is None or day.cancelled:
                 return GONE_TEXT
@@ -1599,7 +1633,7 @@ class PaymentsService:
             )
             if telegram_user_id not in offered or telegram_user_id not in waitlist or row is None:
                 return NOT_FOR_YOU_TEXT
-            free = _free_seats(day, lift_time, waiting=len(waitlist))
+            free = _free_seats(day, lift_time)
             declined = set(_decode_ids(row.declined_ids or ""))
             offered.remove(telegram_user_id)
             if accept:
@@ -2235,10 +2269,9 @@ def _decode_id_list(value: str) -> list[int]:
     return [int(part) for part in value.split(",") if part]
 
 
-def _free_seats(day: DayBookings, lift_time: str, *, waiting: int) -> int:
-    """Seats nobody holds: capacity minus everyone booked who is not waiting."""
-    taken = day.seats_by_lift.get(lift_time, 0) - waiting
-    return max(day.capacity_by_lift.get(lift_time, 10) - taken, 0)
+def _free_seats(day: DayBookings, lift_time: str) -> int:
+    """Physical capacity, independent of demand and deadline obligations."""
+    return day.seats_left(lift_time)
 
 
 def _decode_ids(value: str) -> frozenset[int]:

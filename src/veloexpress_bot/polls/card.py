@@ -103,8 +103,9 @@ def _wrap(
 def _state(lift: LiftAvailability, *, deadline_passed: bool) -> tuple[str, str, str]:
     if lift.cancelled:
         return "CANCELLED", QUIET_RED, PAST_DEADLINE_PANEL
-    if lift.seat_count > lift.capacity:
-        return f"WAITLIST +{lift.seat_count - lift.capacity}", ORANGE, PANEL
+    if lift.waitlist:
+        # Also while a seat is free: it is on offer to the riders who wait.
+        return f"WAITLIST +{len(lift.waitlist)}", ORANGE, PANEL
     if lift.seat_count >= lift.capacity:
         return "FULL", INK, PANEL
     if not lift.running:

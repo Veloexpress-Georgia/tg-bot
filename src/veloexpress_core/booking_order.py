@@ -67,6 +67,7 @@ class OrderState:
     votes: list[PollVote]
     ordered: list[SeatCandidate]
     available: int
+    current_holders: frozenset[int]
     deadline_closed: bool
     digest: str
     previous_positions: dict[str, int]
@@ -81,10 +82,10 @@ class OrderState:
                 {
                     "user_id": r.telegram_user_id,
                     "label": r.label,
-                    "waitlisted": i >= self.available,
+                    "waitlisted": r.telegram_user_id not in self.current_holders,
                     **self.payments[r.telegram_user_id],
                 }
-                for i, r in enumerate(self.ordered)
+                for r in self.ordered
             ],
             "previous_positions": self.previous_positions,
             "deadline_closed": self.deadline_closed,
@@ -118,15 +119,14 @@ async def load_order(
         (await session.scalars(select(PollVote).where(PollVote.poll_id == snapshot.poll_id))).all()
     )
     # A frozen waitlist goes last: those riders keep waiting whatever their order.
+    held = await held_waitlist(
+        session,
+        settings=service._settings,
+        service_date=service_date,
+        lift_time=lift_time,
+    )
     allocation = allocate_seats(
-        candidates(votes, snapshot.option_index),
-        capacity=len(votes),
-        held_back=await held_waitlist(
-            session,
-            settings=service._settings,
-            service_date=service_date,
-            lift_time=lift_time,
-        ),
+        candidates(votes, snapshot.option_index), capacity=len(votes), held_back=held
     )
     ordered = [*allocation.holders, *allocation.waitlist]
     manual = await service._manual_booking_count(
@@ -145,8 +145,16 @@ async def load_order(
             )
         ).all()
     )
+    voter_ids = {r.telegram_user_id for r in ordered}
+    guests = [g for g in guests if g.host_user_id in voter_ids]
     capacity = {lift.time: lift.capacity for lift in DEFAULT_LIFTS}[lift_time]
     available = max(capacity - manual - sum(g.count for g in guests), 0)
+    current_holders = frozenset(
+        r.telegram_user_id
+        for r in allocate_seats(
+            candidates(votes, snapshot.option_index), capacity=available, held_back=held
+        ).holders
+    )
     deadline_closed = bool(
         await session.scalar(
             select(DeadlineRoster.id)
@@ -174,6 +182,7 @@ async def load_order(
     state = {
         "snapshot": snapshot.id,
         "manual": manual,
+        "holders": sorted(current_holders),
         "guests": sorted((g.host_user_id, g.count) for g in guests),
         "bookings": [(r.telegram_user_id, r.booked_at.isoformat(), r.queue_rank) for r in ordered],
         "previous_positions": previous_positions,
@@ -199,6 +208,7 @@ async def load_order(
         votes,
         ordered,
         available,
+        current_holders,
         deadline_closed,
         digest,
         previous_positions,
@@ -237,7 +247,7 @@ def proposal(
     assert ordered_user_ids is not None
     if len(ordered_user_ids) != len(current) or set(ordered_user_ids) != set(current):
         raise ValueError("Bookings changed. Reopen the booking order")
-    holders_before = set(current[: state.available])
+    holders_before = state.current_holders
     holders_after = set(ordered_user_ids[: state.available])
     promoted = [uid for uid in ordered_user_ids if uid in holders_after - holders_before]
     demoted = [uid for uid in current if uid in holders_before - holders_after]
@@ -347,7 +357,7 @@ async def save(
         result = proposal(state, ordered_user_ids=ordered_user_ids, restore_user_id=restore_user_id)
         ids = result["ordered_user_ids"]
         current = [r.telegram_user_id for r in state.ordered]
-        if ids == current:
+        if ids == current and not result["promoted"] and not result["demoted"]:
             return {"message": "Booking order is unchanged"}
         by_user = {v.telegram_user_id: v for v in state.votes}
         for rank, uid in enumerate(ids):

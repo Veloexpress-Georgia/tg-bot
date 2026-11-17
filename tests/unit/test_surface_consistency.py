@@ -16,7 +16,7 @@ from veloexpress_bot.polls.defaults import PaymentTerms
 from veloexpress_bot.polls.liftsignals import LiftSignal, render_deadline_reminder
 from veloexpress_bot.polls.render import LiftAvailability, partition_availability_lifts
 from veloexpress_core.lifts import PollSetup
-from veloexpress_core.payments import CASH_METHOD
+from veloexpress_core.payments import CASH_METHOD, NOT_BOOKED_TEXT
 
 PRICE = 15
 
@@ -96,7 +96,7 @@ async def test_offline_seats_are_never_counted_as_missing_money(db: SharedDataba
     assert lift.funded
 
 
-async def test_guests_keep_their_host_on_the_hook_after_the_host_leaves(
+async def test_guests_leave_with_the_host_before_the_deadline(
     db: SharedDatabase,
 ) -> None:
     polls, payments, _client, poll_id, saturday = await _setup(db)
@@ -109,15 +109,16 @@ async def test_guests_keep_their_host_on_the_hook_after_the_host_leaves(
     day = await payments.day_bookings(saturday)
     assert day is not None
     board = await payments._board_view(day)
-    assert 100 in {rider.telegram_user_id for rider in board.outstanding}
-    assert payments.rider_views(day)[100].due_now_gel == PRICE
+    assert 100 not in {rider.telegram_user_id for rider in board.outstanding}
+    assert 100 not in payments.rider_views(day)
+    assert day.seats_by_lift["8:30"] == 4
     monitor = next(d for d in await polls.status_days() if d.service_date == saturday)
-    assert 100 in {rider.telegram_user_id for rider in monitor.unpaid_riders}
-    # And the guest seat can be paid for from the card.
+    assert 100 not in {rider.telegram_user_id for rider in monitor.unpaid_riders}
+    # The withdrawn guest no longer creates a bill on the rider card.
     outcome = await payments.claim(
         service_date=saturday, telegram_user_id=100, username="rider100", full_name="Rider 100"
     )
-    assert "recorded +15 GEL" in outcome.text
+    assert outcome.text == NOT_BOOKED_TEXT
 
 
 async def test_every_upcoming_day_is_shown_not_just_the_next_two(db: SharedDatabase) -> None:

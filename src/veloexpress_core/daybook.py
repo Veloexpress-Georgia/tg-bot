@@ -44,6 +44,9 @@ class DayBookings:
     # Every non-cancelled lift a rider booked, including ones still short of the
     # minimum: a refund question must not treat "not full yet" as "gone".
     booked_lift_times_by_user: dict[int, tuple[str, ...]] = field(default_factory=dict)
+    # Guest rows whose host no longer votes for that lift. They hold no seat;
+    # the scheduler deletes them so every surface reads the same guest count.
+    orphan_guest_ids: tuple[int, ...] = ()
     labels_by_user: dict[int, tuple[str | None, str]] = field(default_factory=dict)
     # Occupied seats and capacity per lift, so the guest form can say what is left.
     seats_by_lift: dict[str, int] = field(default_factory=dict)
@@ -313,21 +316,31 @@ async def load_day_bookings(
                 for vote in votes_by_poll.get(snapshot.poll_id, [])
                 if snapshot.option_index in decode_option_ids(vote.option_ids)
             ]
-            guest_total = sum(
-                row.count
+            voter_ids = {vote.telegram_user_id for vote in voters}
+            valid_guests = [
+                row
                 for row in guest_seats
-                if row.service_date == service_date and row.lift_time == lift_time
+                if row.service_date == service_date
+                and row.lift_time == lift_time
+                and row.host_user_id in voter_ids
+            ]
+            guest_total = sum(row.count for row in valid_guests)
+            day.orphan_guest_ids = (
+                *day.orphan_guest_ids,
+                *(
+                    row.id
+                    for row in guest_seats
+                    if row.service_date == service_date
+                    and row.lift_time == lift_time
+                    and row.host_user_id not in voter_ids
+                ),
             )
-            for row in guest_seats:
-                if row.service_date == service_date and row.lift_time == lift_time:
-                    day.guests_by_user_lift[(row.host_user_id, lift_time)] = row.count
+            for row in valid_guests:
+                day.guests_by_user_lift[(row.host_user_id, lift_time)] = row.count
             manual_total = manual_by_date_time.get((service_date, lift_time), 0)
-            seats = len(voters) + manual_total + guest_total
             capacity = capacity_by_time.get(lift_time, 10)
-            day.seats_by_lift[lift_time] = seats
             day.capacity_by_lift[lift_time] = capacity
             day.manual_by_lift[lift_time] = manual_total
-            day.waiting_by_lift[lift_time] = max(seats - capacity, 0)
             allocation = allocate_seats(
                 (
                     SeatCandidate(
@@ -342,6 +355,9 @@ async def load_day_bookings(
                 reserved=manual_total + guest_total,
                 held_back=held_by_lift.get((service_date, lift_time), frozenset()),
             )
+            seats = len(allocation.holders) + manual_total + guest_total
+            day.seats_by_lift[lift_time] = seats
+            day.waiting_by_lift[lift_time] = len(allocation.waitlist)
             day.seat_holders_by_lift[lift_time] = tuple(
                 candidate.telegram_user_id for candidate in allocation.holders
             )
@@ -412,6 +428,14 @@ def _apply_snapshot(
     for lift_time in snapshot.running_lift_times():
         if lift_time not in running:
             running.append(lift_time)
+            # Running by the roster, not by today's count: whoever is booked on
+            # it now, including a rider who took a freed seat after the deadline,
+            # is on a running lift and can pay for it.
+            for user_id, booked in list(day.booked_lift_times_by_user.items()):
+                if lift_time in booked:
+                    day.lift_times_by_user[user_id] = _with_lift(
+                        day.lift_times_by_user.get(user_id, ()), lift_time
+                    )
         day.capacity_by_lift.setdefault(lift_time, capacity_by_time.get(lift_time, 10))
     for row in snapshot.running_rows():
         user_id = row.telegram_user_id

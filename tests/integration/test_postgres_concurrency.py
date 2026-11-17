@@ -14,6 +14,7 @@ from tests.unit import test_payments_service as helpers
 
 from veloexpress_bot.db.models import (
     BookingOrderChange,
+    LiftSeatState,
     PaymentClaim,
     PaymentEntry,
     PollVote,
@@ -99,6 +100,18 @@ async def test_receipts_wait_for_queue_edit_and_do_not_charge_a_new_waitlist(
         }
         for rank, uid in enumerate([*range(101, 111), 100]):
             votes[uid].option_queue_ranks = json.dumps({"0": rank})
+        # A saved order also says who waits: without it the rider who was
+        # already waiting stays held and rider 100 keeps the seat.
+        states = list(
+            await holder.scalars(
+                select(LiftSeatState).where(
+                    LiftSeatState.environment == payments._settings.app_env,
+                    LiftSeatState.service_date == day,
+                )
+            )
+        )
+        assert [state.held_waitlist_ids for state in states] == ["110"]
+        states[0].held_waitlist_ids = "100"
         await holder.commit()
     await asyncio.wait_for(task, 15)
     async with pg.session() as session:

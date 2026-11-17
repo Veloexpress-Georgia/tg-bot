@@ -1214,8 +1214,18 @@ class PollPostingService:
                         select(PollVote).where(PollVote.poll_id == snapshot.poll_id)
                     )
                 ).all()
-                vote_count = sum(
-                    snapshot.option_index in decode_option_ids(vote.option_ids) for vote in votes
+                # Seats held, not votes: a rider waiting for a seat offer holds
+                # none, so the seat they are offered is free for an offline seat.
+                held = await held_waitlist(
+                    session,
+                    settings=self._settings,
+                    service_date=service_date,
+                    lift_time=lift_time,
+                )
+                eligible_count = sum(
+                    snapshot.option_index in decode_option_ids(vote.option_ids)
+                    and vote.telegram_user_id not in held
+                    for vote in votes
                 )
                 guest_count = (
                     await session.scalar(
@@ -1228,7 +1238,7 @@ class PollPostingService:
                     )
                 ) or 0
                 capacity = {lift.time: lift.capacity for lift in DEFAULT_LIFTS}.get(lift_time, 10)
-                if vote_count + current_count + guest_count >= capacity:
+                if eligible_count + current_count + guest_count >= capacity:
                     msg = "No seats left on this lift."
                     raise ValueError(msg)
             if booking is None:
@@ -1492,6 +1502,7 @@ class PollPostingService:
                 ),
             )
             waitlisted_ids = {rider.telegram_user_id for rider in allocation.waitlist}
+            waitlisted_count = len(allocation.waitlist)
             position_by_user = {
                 candidate.telegram_user_id: i
                 for i, candidate in enumerate((*allocation.holders, *allocation.waitlist))
@@ -1523,6 +1534,7 @@ class PollPostingService:
         status = BookingLiftStatus(
             time=lift_time,
             vote_count=len(riders),
+            waitlisted_count=waitlisted_count,
             manual_count=manual_count,
             guest_count=guest_count,
             capacity=capacity,
@@ -3164,33 +3176,41 @@ class PollPostingService:
             held_by_lift = await held_waitlists(
                 session, settings=self._settings, service_dates=(batch.service_date,)
             )
+            waitlist_by_time = {
+                snapshot.lift_time: (
+                    ()
+                    if snapshot.lift_time in cancelled_times
+                    else _waitlist_for(
+                        votes_by_option.get(snapshot.option_index, []),
+                        option_index=snapshot.option_index,
+                        capacity=capacity_by_time.get(snapshot.lift_time, 10),
+                        reserved=manual_by_time.get(snapshot.lift_time, 0)
+                        + guests_by_time.get(snapshot.lift_time, 0),
+                        held_back=held_by_lift.get(
+                            (batch.service_date, snapshot.lift_time), frozenset()
+                        ),
+                    )
+                )
+                for snapshot in snapshots
+                if snapshot.lift_time is not None
+            }
             availability = tuple(
                 LiftAvailability(
                     time=snapshot.lift_time,
                     running_locked=snapshot.lift_time in locked_times,
+                    # Seats held: a rider waiting for a seat offer holds none,
+                    # even while the seat they are offered is still free.
                     seat_count=(
                         counts.get(snapshot.option_index, 0)
                         + manual_by_time.get(snapshot.lift_time, 0)
                         + guests_by_time.get(snapshot.lift_time, 0)
+                        - len(waitlist_by_time[snapshot.lift_time])
                     ),
                     capacity=capacity_by_time.get(snapshot.lift_time, 10),
                     manual_count=manual_by_time.get(snapshot.lift_time, 0),
                     guests=tuple(guest_parties_by_time.get(snapshot.lift_time, ())),
                     cancelled=snapshot.lift_time in cancelled_times,
-                    waitlist=(
-                        ()
-                        if snapshot.lift_time in cancelled_times
-                        else _waitlist_for(
-                            votes_by_option.get(snapshot.option_index, []),
-                            option_index=snapshot.option_index,
-                            capacity=capacity_by_time.get(snapshot.lift_time, 10),
-                            reserved=manual_by_time.get(snapshot.lift_time, 0)
-                            + guests_by_time.get(snapshot.lift_time, 0),
-                            held_back=held_by_lift.get(
-                                (batch.service_date, snapshot.lift_time), frozenset()
-                            ),
-                        )
-                    ),
+                    waitlist=waitlist_by_time[snapshot.lift_time],
                 )
                 for snapshot in snapshots
                 if snapshot.lift_time is not None
@@ -3964,6 +3984,7 @@ class PollPostingService:
                         (batch.service_date, snapshot.lift_time), frozenset()
                     ),
                 )
+                lifts[-1] = replace(lift, waitlisted_count=len(allocation.waitlist))
                 for holder in allocation.holders:
                     held_lifts_by_user.setdefault(holder.telegram_user_id, []).append(
                         snapshot.lift_time
@@ -4564,7 +4585,7 @@ def _day_signals(day: BookingMonitorDay) -> tuple[LiftSignal, ...]:
         LiftSignal(
             service_date=day.service_date,
             lift_time=lift.time,
-            seats=lift.total_count,
+            seats=lift.seat_count,
             cancelled=lift.cancelled,
             covered_seats=lift.covered_count,
             running_locked=lift.running_locked,

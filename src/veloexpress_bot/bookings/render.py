@@ -37,23 +37,32 @@ class BookingLiftStatus:
     running_locked: bool = False
     covered_count: int = 0
     deadline_closed: bool = False
+    # Voters who hold no seat. A rider waiting for a seat offer waits even while
+    # a seat is free, so this is not always "everyone past capacity". None means
+    # the allocation was not computed (a cancelled lift).
+    waitlisted_count: int | None = None
 
     @property
     def total_count(self) -> int:
+        """Demand: every vote, hand-added seat and guest, seated or waiting."""
         return self.vote_count + self.manual_count + self.guest_count
 
     @property
     def seat_count(self) -> int:
-        """Seats actually held. Anyone past capacity is waiting, not seated."""
+        """Seats actually held. Anyone waiting is not seated."""
+        if self.waitlisted_count is not None:
+            return self.total_count - self.waitlisted_count
         return min(self.total_count, self.capacity)
 
     @property
     def waiting_count(self) -> int:
+        if self.waitlisted_count is not None:
+            return self.waitlisted_count
         return max(self.total_count - self.capacity, 0)
 
     @property
     def running(self) -> bool:
-        return not self.cancelled and (self.total_count >= MINIMUM_RIDERS or self.running_locked)
+        return not self.cancelled and (self.seat_count >= MINIMUM_RIDERS or self.running_locked)
 
     @property
     def funded(self) -> bool:
@@ -148,9 +157,7 @@ class BookingMonitorDay:
 
     @property
     def confirmed_seat_count(self) -> int:
-        return sum(
-            min(lift.total_count, lift.capacity) for lift in self.lifts if not lift.cancelled
-        )
+        return sum(lift.seat_count for lift in self.lifts if not lift.cancelled)
 
 
 @dataclass(frozen=True)
@@ -1220,17 +1227,20 @@ def _lift_line(lift: BookingLiftStatus) -> str:
 
 def _lift_state(lift: BookingLiftStatus) -> str:
     if lift.waiting_count:
+        # A seat can be free while it is on offer to the riders who wait.
+        if lift.seat_count < lift.capacity:
+            return f"{lift.capacity - lift.seat_count} on offer · {lift.waiting_count} waiting"
         return f"full · {lift.waiting_count} waiting"
     if lift.seat_count >= lift.capacity:
         return "full"
     if lift.running_locked:
         if lift.funded:
-            return f"funded · {lift.capacity - lift.total_count} left"
+            return f"funded · {lift.capacity - lift.seat_count} left"
         return f"decision needed · {lift.covered_count}/{MINIMUM_RIDERS} paid"
-    if lift.total_count < MINIMUM_RIDERS:
-        return f"needs {MINIMUM_RIDERS - lift.total_count} more"
+    if lift.seat_count < MINIMUM_RIDERS:
+        return f"needs {MINIMUM_RIDERS - lift.seat_count} more"
     if lift.funded:
-        return f"funded · {lift.capacity - lift.total_count} left"
+        return f"funded · {lift.capacity - lift.seat_count} left"
     return f"payment open · {lift.covered_count}/{MINIMUM_RIDERS} paid"
 
 
