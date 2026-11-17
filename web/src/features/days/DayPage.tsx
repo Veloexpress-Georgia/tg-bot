@@ -138,22 +138,24 @@ function LiveDayView({
               <Button onClick={() => navigate({ name: 'planning', date })}>{t.park.create}</Button>
             </Section>
           )}
-          {!day.past && !day.cancellation_closed && (day.lifts.length > 0 || day.recoverable_posting) && (
-            <Section title={t.day.manage}>
-              <Card flush>
-                <List>
-                  <Row
-                    leading={<Ban size={19} />}
-                    tone="danger"
-                    title={day.bike_park ? t.park.cancelOrdinary : t.day.cancelDay}
-                    subtitle={day.bike_park ? t.park.cancelOrdinaryHint : t.day.cancelDayHint}
-                    disabled={busy}
-                    onClick={() => act({ action: 'cancel_day', service_date: date })}
-                  />
-                </List>
-              </Card>
-            </Section>
-          )}
+          {!day.past &&
+            !day.cancellation_closed &&
+            (day.lifts.length > 0 || day.recoverable_posting) && (
+              <Section title={t.day.manage}>
+                <Card flush>
+                  <List>
+                    <Row
+                      leading={<Ban size={19} />}
+                      tone="danger"
+                      title={day.bike_park ? t.park.cancelOrdinary : t.day.cancelDay}
+                      subtitle={day.bike_park ? t.park.cancelOrdinaryHint : t.day.cancelDayHint}
+                      disabled={busy}
+                      onClick={() => act({ action: 'cancel_day', service_date: date })}
+                    />
+                  </List>
+                </Card>
+              </Section>
+            )}
         </>
       )}
       {route.tab === 'withdrawals' && (

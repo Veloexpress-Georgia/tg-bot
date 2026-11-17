@@ -6,7 +6,19 @@ import { t } from '../../i18n';
 import { intlLocale } from '../../locale';
 import { plain } from '../../lib';
 import type { Action, CommandResult, Session } from '../../types';
-import { Badge, Button, Card, Empty, List, Notice, Page, PageHeader, Query, Row, Section } from '../../ui';
+import {
+  Badge,
+  Button,
+  Card,
+  Empty,
+  List,
+  Notice,
+  Page,
+  PageHeader,
+  Query,
+  Row,
+  Section,
+} from '../../ui';
 import { shortDate } from '../days/model';
 import './reports.css';
 
@@ -38,10 +50,17 @@ export function RefundsPage() {
                     <strong>
                       {report.label} · {shortDate(report.service_date)}
                     </strong>
-                    <span className="caption">{report.amount_gel} ₾ · {report.method}</span>
+                    <span className="caption">
+                      {report.amount_gel} ₾ · {report.method}
+                    </span>
                   </div>
-                  {report.paid_at ? <span>{stamp(report.paid_at)}</span> : (
-                    <Button disabled={busy} onClick={() => act({ action: 'pay_refund', refund_id: report.id })}>
+                  {report.paid_at ? (
+                    <span>{stamp(report.paid_at)}</span>
+                  ) : (
+                    <Button
+                      disabled={busy}
+                      onClick={() => act({ action: 'pay_refund', refund_id: report.id })}
+                    >
                       {t.refunds.markPaid}
                     </Button>
                   )}

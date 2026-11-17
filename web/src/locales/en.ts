@@ -285,7 +285,8 @@ export const en = {
     wholeDay: 'whole day',
     empty: 'No refunds in this view.',
     legacyTitle: 'Legacy refund estimates',
-    legacyNotice: 'Read-only estimates for legacy cancellations. Payable obligations are listed separately and excluded from new estimates. Estimates do not confirm a payout.',
+    legacyNotice:
+      'Read-only estimates for legacy cancellations. Payable obligations are listed separately and excluded from new estimates. Estimates do not confirm a payout.',
   },
   history: {
     finishedDay: 'Finished day',
