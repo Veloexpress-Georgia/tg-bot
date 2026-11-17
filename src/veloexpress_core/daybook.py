@@ -158,7 +158,7 @@ async def load_day_bookings(
                 .where(PollBatch.status.in_(("posted", "cancelled")))
                 .where(PollBatch.service_date >= today)
                 .where(PollBatch.service_date <= (until or date.max))
-                .order_by(PollBatch.service_date, PollBatch.id)
+                .order_by(PollBatch.service_date, PollBatch.created_at, PollBatch.id)
             )
         ).all()
         latest_by_date = {batch.service_date: batch for batch in batches}

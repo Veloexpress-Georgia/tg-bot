@@ -1032,14 +1032,24 @@ class PaymentsService:
         """Finish a day cancellation interrupted before refunds were persisted."""
         if not self.enabled:
             return 0
-        latest_batch_ids = (
-            select(func.max(PollBatch.id))
+        # "Latest" is by creation time: a repost may reuse an older batch row.
+        ranked = (
+            select(
+                PollBatch.id.label("id"),
+                func.row_number()
+                .over(
+                    partition_by=PollBatch.service_date,
+                    order_by=(PollBatch.created_at.desc(), PollBatch.id.desc()),
+                )
+                .label("rank"),
+            )
             .where(PollBatch.environment == self._settings.app_env)
             .where(PollBatch.chat_id == self._require_chat_id())
             .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
             .where(PollBatch.status.in_(("posted", "cancelled")))
-            .group_by(PollBatch.service_date)
+            .subquery()
         )
+        latest_batch_ids = select(ranked.c.id).where(ranked.c.rank == 1)
         has_receipts = (
             select(PaymentClaim.id)
             .where(

@@ -1850,7 +1850,7 @@ class PollPostingService:
             .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
             .where(PollBatch.status == "posted")
             .where(PollOptionSnapshot.label == BIKE_PARK_OPTION)
-            .order_by(PollBatch.id.desc())
+            .order_by(PollBatch.created_at.desc(), PollBatch.id.desc())
             .limit(1)
         )
         if service_date is not None:
@@ -3022,12 +3022,15 @@ class PollPostingService:
                     await booking_order.lock_day(self, session, batch.service_date)
                     await session.refresh(batch)
                     latest_id = await session.scalar(
-                        select(func.max(PollBatch.id)).where(
+                        select(PollBatch.id)
+                        .where(
                             PollBatch.environment == batch.environment,
                             PollBatch.chat_id == batch.chat_id,
                             PollBatch.thread_id == batch.thread_id,
                             PollBatch.service_date == batch.service_date,
                         )
+                        .order_by(PollBatch.created_at.desc(), PollBatch.id.desc())
+                        .limit(1)
                     )
                     if batch.status in {"posting", "sent_unconfirmed"} and batch.id == latest_id:
                         message = await session.scalar(
@@ -4078,7 +4081,7 @@ class PollPostingService:
                     .where(PollBatch.chat_id == self._settings.telegram_target_chat_id)
                     .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
                     .where(_manageable_batches())
-                    .order_by(PollBatch.service_date, PollBatch.id)
+                    .order_by(PollBatch.service_date, PollBatch.created_at, PollBatch.id)
                 )
             ).all()
             latest_by_date = {batch.service_date: batch for batch in batches}
@@ -4384,7 +4387,7 @@ class PollPostingService:
             .where(PollBatch.service_date == service_date)
             .where(PollBatch.status == "posted")
             .where(PollOptionSnapshot.lift_time == lift_time)
-            .order_by(PollBatch.id.desc())
+            .order_by(PollBatch.created_at.desc(), PollBatch.id.desc())
         )
 
     async def _manual_booking_count(

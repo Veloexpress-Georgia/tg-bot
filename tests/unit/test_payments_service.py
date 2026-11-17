@@ -3723,3 +3723,31 @@ async def test_restore_recredits_a_receipt_corrected_to_cash(db: SharedDatabase)
     assert await _net_received(db, 100) == 30
     claim = await _claim_row(db, 100)
     assert claim is not None and claim.cash_amount_gel == 30
+
+
+async def test_a_repost_that_reuses_an_older_batch_is_the_live_day(db: SharedDatabase) -> None:
+    from veloexpress_bot.db.models import PollBatch
+
+    polls, payments, _, _, day = await _setup(db)
+    setup = PollSetup(service_date=day, created_by_user_id=1, cancelled_lift_times=("15:30",))
+    await polls.recreate_polls((setup,))
+    await polls.cancel_day(service_date=day, admin_user_id=1)
+    async with db.session() as session:
+        # The old cycle's cleanup has finished, as the scheduler would do.
+        old = await session.scalar(select(PollBatch).order_by(PollBatch.id).limit(1))
+        assert old is not None
+        old.status = "recreated"
+        await session.commit()
+    repost = await polls.create_poll(setup, pin_after_send=False)
+    async with db.session() as session:
+        statuses = {b.id: b.status for b in await session.scalars(select(PollBatch))}
+    # The repost reused the first batch row; a higher id is the cancelled cycle.
+    assert statuses[min(statuses)] == "posted"
+    assert statuses[max(statuses)] == "cancelled"
+
+    await _fill(polls, repost.poll_id or "", 0, riders=5)
+    reply = await payments.claim(
+        service_date=day, telegram_user_id=100, username=None, full_name="Rider"
+    )
+    assert "cancelled" not in reply.text.lower()
+    assert await _claim_row(db, 100) is not None
