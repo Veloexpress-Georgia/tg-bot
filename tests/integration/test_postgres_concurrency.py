@@ -475,3 +475,62 @@ async def test_lift_cancel_restore_and_undo_net_out_on_postgres(pg: helpers.Shar
     assert [r["amount_gel"] for r in await payments.refunds()] == [15] and await net() == 15
     assert await payments.undo(service_date=day, telegram_user_id=100) == "Removed."
     assert await payments.refunds() == [] and await net() == 0
+
+
+async def test_waiting_vote_cannot_revive_a_cancelled_recoverable_batch(pg, monkeypatch):
+    from veloexpress_bot.db.models import PollBatch
+    from veloexpress_core import booking_order
+
+    polls, payments, _, poll_id, day = await helpers._setup(pg)
+    async with pg.session() as session:
+        batch = await session.scalar(
+            select(PollBatch).where(PollBatch.environment == polls._settings.app_env)
+        )
+        batch_id = batch.id
+        batch.status = "sent_unconfirmed"
+        await session.commit()
+    entered = asyncio.Event()
+    original = booking_order.lock_day
+
+    async def observe(service, session, service_date):
+        entered.set()
+        await original(service, session, service_date)
+
+    monkeypatch.setattr(booking_order, "lock_day", observe)
+    async with pg.session() as holder:
+        await payments._lock_day(holder, day)
+        task = asyncio.create_task(helpers._vote(polls, poll_id, 100, 0))
+        await asyncio.wait_for(entered.wait(), 5)
+        batch = await holder.get(PollBatch, batch_id)
+        batch.status = "cancelled"
+        await holder.commit()
+    await asyncio.wait_for(task, 15)
+    async with pg.session() as session:
+        batch = await session.get(PollBatch, batch_id)
+        assert batch.status == "cancelled"
+
+
+async def test_payout_waiting_for_restore_does_not_use_a_deleted_obligation(pg, monkeypatch):
+    from veloexpress_bot.db.models import RefundObligation
+
+    polls, payments, _, _, day = await helpers._two_lift_payer(pg)
+    await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    [refund] = await payments.refunds()
+    entered = asyncio.Event()
+    original = payments._lock_day
+
+    async def observe(session, service_date):
+        entered.set()
+        await original(session, service_date)
+
+    monkeypatch.setattr(payments, "_lock_day", observe)
+    async with pg.session() as holder:
+        await original(holder, day)
+        task = asyncio.create_task(payments.pay_refund(refund["id"]))
+        await asyncio.wait_for(entered.wait(), 5)
+        obligation = await holder.get(RefundObligation, refund["id"])
+        await holder.delete(obligation)
+        await holder.commit()
+    with pytest.raises(ValueError, match="Refund not found"):
+        await asyncio.wait_for(task, 5)
+    assert await payments.refunds(paid=True) == []

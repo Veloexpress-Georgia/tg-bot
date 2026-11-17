@@ -835,7 +835,12 @@ class PaymentsService:
                     )
                 )
                 remaining = entry.amount_gel + (reversed_amount or 0)
-                if remaining <= 0:
+                # A zero reversal still withdraws the receipt's identity: restore
+                # must never attach it to a later payment claim.
+                withdrawn = await session.scalar(
+                    select(PaymentEntry.id).where(PaymentEntry.reference_key == f"undo:{entry.id}")
+                )
+                if withdrawn is not None:
                     continue
                 session.add(
                     PaymentEntry(
@@ -844,7 +849,7 @@ class PaymentsService:
                         thread_id=entry.thread_id,
                         service_date=entry.service_date,
                         telegram_user_id=entry.telegram_user_id,
-                        amount_gel=-remaining,
+                        amount_gel=-max(remaining, 0),
                         method=entry.method,
                         kind="reversal",
                         reference_key=f"undo:{entry.id}",
@@ -922,6 +927,22 @@ class PaymentsService:
             ).all()
             if not claims:
                 return None
+            if remember and cancelled_lift_time is None:
+                fallback = await session.scalar(
+                    select(RefundReport)
+                    .where(
+                        RefundReport.environment == self._settings.app_env,
+                        RefundReport.chat_id == self._require_chat_id(),
+                        RefundReport.service_date == service_date,
+                        RefundReport.lift_time.is_(None),
+                        RefundReport.tracked.is_(False),
+                        RefundReport.created_at >= min(claim.claimed_at for claim in claims),
+                    )
+                    .order_by(RefundReport.id.desc())
+                    .limit(1)
+                )
+                if fallback is not None:
+                    return fallback.text
             refunded = await self._cycle_refunds(session, service_date, claims)
             if remember or cancelled_lift_time is None:
                 # A real cancellation already decided and reversed the money under
@@ -1117,7 +1138,13 @@ class PaymentsService:
             ):
                 raise ValueError("Refund not found")
             await self._lock_day(session, row.service_date)
-            await session.refresh(row)
+            row = await session.scalar(
+                select(RefundObligation)
+                .where(RefundObligation.id == refund_id)
+                .execution_options(populate_existing=True)
+            )
+            if row is None:
+                raise ValueError("Refund not found")
             if row.paid_at is not None:
                 return
             row.paid_at = datetime.now(UTC)

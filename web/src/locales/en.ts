@@ -284,8 +284,8 @@ export const en = {
     markPaid: 'Mark paid',
     wholeDay: 'whole day',
     empty: 'No refunds in this view.',
-    legacyTitle: 'Before refunds tracking',
-    legacyNotice: 'Estimates shown before refunds were tracked. Read-only: they do not confirm that money was returned.',
+    legacyTitle: 'Legacy refund estimates',
+    legacyNotice: 'Read-only estimates for legacy cancellations. Payable obligations are listed separately and excluded from new estimates. Estimates do not confirm a payout.',
   },
   history: {
     finishedDay: 'Finished day',

@@ -3314,6 +3314,9 @@ async def test_restoring_a_lift_voids_an_unpaid_refund_and_recredits(db: SharedD
     await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
     assert [r["amount_gel"] for r in await payments.refunds()] == [15]
     assert await _net_received(db, 100) == 15
+    assert await payments.undo(service_date=day, telegram_user_id=100) == "Removed."
+    assert await _net_received(db, 100) == 0
+    assert await payments.refunds() == []
 
 
 async def test_restoring_a_lift_after_the_refund_was_paid_leaves_the_rider_owing(
@@ -3323,6 +3326,7 @@ async def test_restoring_a_lift_after_the_refund_was_paid_leaves_the_rider_owing
     await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
     [refund] = await payments.refunds()
     await payments.pay_refund(refund["id"])
+    assert "admin" in (await payments.undo(service_date=day, telegram_user_id=100)).lower()
     await polls.restore_lift(service_date=day, lift_time="10:00", admin_user_id=1)
 
     assert len(await payments.refunds(paid=True)) == 1
@@ -3627,3 +3631,95 @@ async def test_a_refused_deleted_poll_cancel_does_not_stop_the_tick(
     )
 
     assert await polls.reconcile_missing_polls(now=now) == ()
+
+
+async def test_restore_does_not_resurrect_a_fully_withdrawn_receipt(db: SharedDatabase):
+    polls, payments, _, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    await payments.claim(
+        service_date=day, telegram_user_id=100, username="rider100", full_name="Rider"
+    )
+    await polls.cancel_lift(service_date=day, lift_time="8:30", admin_user_id=1)
+    assert await payments.undo(service_date=day, telegram_user_id=100) == "Removed."
+    await _fill(polls, poll_id, 1, riders=5)
+    await payments.claim(
+        service_date=day, telegram_user_id=100, username="rider100", full_name="Rider"
+    )
+    await polls.restore_lift(service_date=day, lift_time="8:30", admin_user_id=1)
+    assert await _net_received(db, 100) == 15
+    claim = await _claim_row(db, 100)
+    assert claim is not None and claim.amount_gel == 15
+
+
+async def test_legacy_day_estimate_survives_cleanup_without_duplicating_obligations(
+    db: SharedDatabase,
+):
+    from veloexpress_bot.db.models import CancelledLift
+
+    polls, payments, _, _, day = await _two_lift_payer(db)
+    await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    async with db.session() as session:
+        session.add(
+            CancelledLift(
+                environment="test",
+                chat_id=CHAT_ID,
+                thread_id=LIFT_THREAD,
+                service_date=day,
+                lift_time="8:30",
+                cancelled_by_user_id=1,
+            )
+        )
+        await session.commit()
+    await polls.cancel_day(service_date=day, admin_user_id=1)
+    await payments.cancellation_report(service_date=day)
+    await payments.forget_day(service_date=day)
+    reports = await payments.recent_refund_reports(tracked=False)
+    assert len(reports) == 1
+    assert "Total to return: 15 GEL" in reports[0].text
+    assert [r["amount_gel"] for r in await payments.refunds()] == [15]
+
+
+@pytest.mark.parametrize("latest_status", ["failed", "cancelled"])
+async def test_vote_does_not_promote_a_superseded_recoverable_batch(db, latest_status):
+    from veloexpress_bot.db.models import PollBatch
+
+    polls, _, _, poll_id, day = await _setup(db)
+    async with db.session() as session:
+        batch = await session.scalar(select(PollBatch))
+        batch_id = batch.id
+        batch.status = "sent_unconfirmed"
+        session.add(
+            PollBatch(
+                environment="test",
+                chat_id=CHAT_ID,
+                thread_id=LIFT_THREAD,
+                service_date=day,
+                status=latest_status,
+                service_day=batch.service_day,
+                created_by_user_id=1,
+                first_lift_location=batch.first_lift_location,
+                idempotency_key="newer-cycle",
+            )
+        )
+        await session.commit()
+    await _vote(polls, poll_id, 100, 0)
+    async with db.session() as session:
+        batch = await session.get(PollBatch, batch_id)
+        assert batch.status == "sent_unconfirmed"
+
+
+async def test_restore_recredits_a_receipt_corrected_to_cash(db: SharedDatabase):
+    polls, payments, _, _, day = await _two_lift_payer(db)
+    await payments.claim(
+        service_date=day,
+        telegram_user_id=100,
+        username="rider100",
+        full_name="Rider",
+        method=CASH_METHOD,
+    )
+    await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    assert await payments.refunds() == []
+    await polls.restore_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    assert await _net_received(db, 100) == 30
+    claim = await _claim_row(db, 100)
+    assert claim is not None and claim.cash_amount_gel == 30

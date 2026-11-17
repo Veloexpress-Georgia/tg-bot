@@ -26,7 +26,7 @@ it('keeps estimates from before refunds tracking, read-only', () => {
     { service_date: '2026-11-07', lift_time: null, text: '<b>Anna</b> — 15 GEL back', created_at: '2026-11-06T10:00:00Z' },
   ]);
   const html = renderToStaticMarkup(<QueryClientProvider client={client}><RefundsPage /></QueryClientProvider>);
-  expect(html).toContain('Before refunds tracking');
+  expect(html).toContain('Legacy refund estimates');
   expect(html).toContain('Anna — 15 GEL back');
   expect(html).toContain('whole day');
 });

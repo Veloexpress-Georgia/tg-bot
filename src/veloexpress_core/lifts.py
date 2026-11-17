@@ -3020,7 +3020,16 @@ class PollPostingService:
                 batch = await session.get(PollBatch, poll_snapshot.batch_id)
                 if batch is not None:
                     await booking_order.lock_day(self, session, batch.service_date)
-                    if batch.status in {"posting", "sent_unconfirmed"}:
+                    await session.refresh(batch)
+                    latest_id = await session.scalar(
+                        select(func.max(PollBatch.id)).where(
+                            PollBatch.environment == batch.environment,
+                            PollBatch.chat_id == batch.chat_id,
+                            PollBatch.thread_id == batch.thread_id,
+                            PollBatch.service_date == batch.service_date,
+                        )
+                    )
+                    if batch.status in {"posting", "sent_unconfirmed"} and batch.id == latest_id:
                         message = await session.scalar(
                             select(PollMessage.id).where(
                                 PollMessage.batch_id == batch.id, PollMessage.message_kind == "poll"

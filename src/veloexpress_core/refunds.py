@@ -21,6 +21,7 @@ from veloexpress_bot.db.models import (
     PaymentClaim,
     PaymentEntry,
     RefundObligation,
+    RefundReport,
     ServiceDayTerms,
 )
 
@@ -311,12 +312,30 @@ async def restore_lift_cancellation(
             # Credited back already, or the rider withdrew the receipt itself.
             continue
         claim = claims.get(reversal.telegram_user_id)
-        if claim is None:
+        receipt = next((e for e in entries if e.id == reversal.reversed_entry_id), None)
+        if (
+            claim is None
+            or receipt is None
+            or as_utc(reversal.recorded_at) < as_utc(claim.claimed_at)
+        ):
             continue
         obligation = await session.scalar(
             select(RefundObligation).where(RefundObligation.reversal_entry_id == reversal.id)
         )
         if obligation is not None and obligation.paid_at is not None:
+            continue
+        corrections = [
+            e
+            for e in entries
+            if e.telegram_user_id == reversal.telegram_user_id
+            and e.kind == "method_change"
+            and as_utc(e.recorded_at) <= as_utc(reversal.recorded_at)
+        ]
+        cash_release = reversal.method == CASH or bool(
+            corrections and corrections[-1].method == CASH
+        )
+        if obligation is None and not cash_release:
+            # A transfer is restorable only while its unpaid obligation exists.
             continue
         refund = obligation.amount_gel if obligation is not None else 0
         if obligation is not None:
@@ -360,6 +379,39 @@ async def reverse_day_cancellation(
         # from the cumulative estimate. Which part of each payment it covered was
         # never recorded, so the whole day stays on the old estimate.
         logger.warning("day_cancel_legacy_refunds_skipped service_date=%s", service_date)
+        # Save the fallback before booking cleanup removes the legacy flag.
+        # Claims already exclude tracked cancellations; those remain payable as
+        # obligations and must not also appear in this read-only estimate.
+        from veloexpress_bot.payments.render import RefundRow, render_cancellation_report
+        from veloexpress_core.daybook import rider_label
+
+        claims = await _claims(session, settings, service_date)
+        report = render_cancellation_report(
+            service_date=service_date,
+            cancelled_lift_time=None,
+            rows=tuple(
+                RefundRow(
+                    label=rider_label(claim.username, claim.full_name),
+                    telegram_user_id=claim.telegram_user_id,
+                    seats=claim.seats,
+                    amount_gel=claim.amount_gel - claim.cash_amount_gel,
+                    remaining_lift_times=(),
+                    refund_gel=claim.amount_gel - claim.cash_amount_gel,
+                )
+                for claim in claims.values()
+            ),
+        )
+        if report is not None:
+            session.add(
+                RefundReport(
+                    environment=settings.app_env,
+                    chat_id=settings.telegram_target_chat_id,
+                    service_date=service_date,
+                    lift_time=None,
+                    text=report,
+                    tracked=False,
+                )
+            )
         return False
     entries = await _entries(session, settings, service_date)
     claims = await _claims(session, settings, service_date)
