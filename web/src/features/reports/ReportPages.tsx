@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useCommands } from '../../app/commands';
 import { ArrowDownLeft, Check, Clock3, ShieldCheck, TriangleAlert } from 'lucide-react';
-import { useAudit, useRefunds } from '../../app/queries';
+import { useAudit, useLegacyRefunds, useRefunds } from '../../app/queries';
 import { t } from '../../i18n';
 import { intlLocale } from '../../locale';
 import { plain } from '../../lib';
@@ -57,7 +57,31 @@ export function RefundsPage() {
           )
         }
       </Query>
+      <LegacyRefunds />
     </Page>
+  );
+}
+
+function LegacyRefunds() {
+  const reports = useLegacyRefunds();
+  if (!reports.data?.length) return null;
+  return (
+    <Section title={t.refunds.legacyTitle}>
+      <Notice>{t.refunds.legacyNotice}</Notice>
+      <div className="report-list">
+        {reports.data.map((report, index) => (
+          <Card key={index}>
+            <div className="report-head">
+              <strong>
+                {shortDate(report.service_date)} · {report.lift_time ?? t.refunds.wholeDay}
+              </strong>
+              <span className="caption">{stamp(report.created_at)}</span>
+            </div>
+            <pre className="report">{plain(report.text)}</pre>
+          </Card>
+        ))}
+      </div>
+    </Section>
   );
 }
 

@@ -489,6 +489,12 @@ def create_app(
     async def refunds(_: Annotated[dict[str, Any], Depends(admin)], paid: bool = False):
         return await runtime.payments.refunds(paid=paid)
 
+    @app.get("/api/admin/refunds/legacy")
+    async def legacy_refunds(_: Annotated[dict[str, Any], Depends(admin)]):
+        """Estimates shown before refunds were tracked; the only record of those."""
+        reports = await runtime.payments.recent_refund_reports(limit=50, tracked=False)
+        return [asdict(report) for report in reports]
+
     @app.get("/api/admin/audit")
     async def audit(_: Annotated[dict[str, Any], Depends(admin)]):
         return await queue.recent()

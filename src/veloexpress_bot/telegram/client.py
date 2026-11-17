@@ -106,7 +106,15 @@ class AiogramTelegramClient:
             error_text = error.message.lower()
             if "message is not modified" in error_text:
                 return True
-            if "message to edit not found" in error_text or "message not found" in error_text:
+            if any(
+                text in error_text
+                for text in (
+                    "message to edit not found",
+                    "message not found",
+                    "message can't be edited",
+                    "message cannot be edited",
+                )
+            ):
                 return False
             raise TelegramPollPostError(
                 "Telegram failed to edit availability card.", telegram_message=error.message
@@ -177,7 +185,15 @@ class AiogramTelegramClient:
             error_text = error.message.lower()
             if "message is not modified" in error_text:
                 return True
-            if "message to edit not found" in error_text or "message not found" in error_text:
+            if any(
+                text in error_text
+                for text in (
+                    "message to edit not found",
+                    "message not found",
+                    "message can't be edited",
+                    "message cannot be edited",
+                )
+            ):
                 return False
             raise TelegramPollPostError(
                 "Telegram failed to edit text message.",
@@ -230,6 +246,8 @@ class AiogramTelegramClient:
                 text in error_text
                 for text in (
                     "poll has already been closed",
+                    "poll can't be stopped",
+                    "poll cannot be stopped",
                     "message to stop poll not found",
                     "message with poll to stop not found",
                 )

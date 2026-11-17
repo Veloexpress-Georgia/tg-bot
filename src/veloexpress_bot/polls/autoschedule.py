@@ -90,6 +90,15 @@ def creation_moment(
     )
 
 
+def validate_publication_schedule(state: AutoScheduleState, deadline_time: str) -> None:
+    hour, minute = _parse_time(state.creation_time)
+    deadline_hour, deadline_minute = _parse_time(deadline_time)
+    if not 0 <= state.creation_weekday <= 4 or (
+        state.creation_weekday == 4 and (hour, minute) >= (deadline_hour, deadline_minute)
+    ):
+        raise ValueError("Auto-posting must be before Friday's booking deadline.")
+
+
 def decide_tick(state: AutoScheduleState, now: datetime) -> TickAction | None:
     if not state.enabled or now.tzinfo is None:
         return None

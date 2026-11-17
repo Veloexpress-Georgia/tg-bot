@@ -11,7 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.locking import transaction_lock
-from veloexpress_bot.db.models import ServiceDayDefaults
+from veloexpress_bot.db.models import PollAutoSchedule, ServiceDayDefaults
+from veloexpress_bot.polls.autoschedule import state_from_row, validate_publication_schedule
 
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
@@ -148,6 +149,16 @@ class ServiceDayDefaultsStore:
                 session,
                 f"day-defaults:{self._settings.app_env}:{chat_id}:{self._settings.telegram_target_thread_id}",
             )
+            if deadline_time is not None:
+                schedule = await session.scalar(
+                    select(PollAutoSchedule).where(
+                        PollAutoSchedule.environment == self._settings.app_env,
+                        PollAutoSchedule.chat_id == chat_id,
+                        PollAutoSchedule.thread_id == self._settings.telegram_target_thread_id,
+                    )
+                )
+                if schedule is not None and schedule.enabled:
+                    validate_publication_schedule(state_from_row(schedule), deadline_time)
             row = await session.scalar(
                 select(ServiceDayDefaults)
                 .where(ServiceDayDefaults.environment == self._settings.app_env)

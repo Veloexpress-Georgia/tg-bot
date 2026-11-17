@@ -263,8 +263,7 @@ class BikeParkService:
             query = query.where(
                 or_(
                     BikeParkSession.service_date >= self.now().date(),
-                    (BikeParkSession.status == "cancelled")
-                    & BikeParkSession.poll_closed.is_(False),
+                    BikeParkSession.poll_closed.is_(False),
                 )
             )
         async with self.sessions() as session:
@@ -280,7 +279,9 @@ class BikeParkService:
                     row.status = "sent_unconfirmed"
                 if row.telegram_message_id is None:
                     continue
-                if row.status == "cancelled" and not row.poll_closed:
+                if (
+                    row.status == "cancelled" or row.service_date < self.now().date()
+                ) and not row.poll_closed:
                     row.poll_closed = await self.telegram.stop_poll(
                         chat_id=row.chat_id, message_id=row.telegram_message_id
                     )

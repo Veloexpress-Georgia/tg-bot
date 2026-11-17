@@ -9,6 +9,7 @@ from sqlalchemy import select
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.models import LiftDayResult, LiftDaySeat, PaymentEntry
 from veloexpress_core.lifts import SessionFactory
+from veloexpress_core.refunds import NET_RECEIVED_KINDS
 
 
 def _scope(query: Any, model: Any, settings: Settings) -> Any:
@@ -145,7 +146,7 @@ class DashboardAnalytics:
                     "net_gel": sum(
                         m.amount_gel
                         for m in current_money
-                        if m.telegram_user_id == uid and m.kind in {"received", "reversal"}
+                        if m.telegram_user_id == uid and m.kind in NET_RECEIVED_KINDS
                     ),
                     "last_day": max((s.service_date for s in own_rides), default=None),
                     "new": start <= first_seen.get(uid, date.min) <= end,
@@ -271,7 +272,7 @@ def _summary(
     )
     occupied = sum(s.seats for s in seats) if personal else sum(r.seats for r in running)
     capacity = sum(r.capacity for r in running)
-    net = sum(m.amount_gel for m in money if m.kind in {"received", "reversal"})
+    net = sum(m.amount_gel for m in money if m.kind in NET_RECEIVED_KINDS)
     methods: dict[tuple[date, int], dict[str, int]] = defaultdict(
         lambda: {"cash": 0, "transfer": 0, "unknown": 0}
     )

@@ -234,7 +234,7 @@ export const en = {
     confirm: 'Confirm',
     affected: (n: number) => `${count(n, 'rider', 'riders')} on this day`,
     title: {
-    cancel_day: 'Cancel the whole day?',
+      cancel_day: 'Cancel the whole day?',
       cancel_lift: 'Cancel this lift?',
       post: 'Publish the polls now?',
       extra: 'Create an extra day?',
@@ -284,6 +284,8 @@ export const en = {
     markPaid: 'Mark paid',
     wholeDay: 'whole day',
     empty: 'No refunds in this view.',
+    legacyTitle: 'Before refunds tracking',
+    legacyNotice: 'Estimates shown before refunds were tracked. Read-only: they do not confirm that money was returned.',
   },
   history: {
     finishedDay: 'Finished day',

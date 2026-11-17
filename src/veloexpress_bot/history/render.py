@@ -39,7 +39,7 @@ def render_statistics(
             "",
             f"Reported: {view.received_gel} GEL",
             f"Reversed reports: {view.reversed_gel} GEL",
-            f"Refunded: {view.refunded_gel} ₾",
+            f"Refunded: {view.refunded_gel} GEL",
             f"Reported total: {view.net_gel} GEL",
         )
     )

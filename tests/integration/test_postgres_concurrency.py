@@ -446,3 +446,32 @@ async def test_deadline_capture_waits_for_day_lock_and_reloads(pg: helpers.Share
         await session.commit()
     rows = await asyncio.wait_for(task, 5)
     assert rows is not None and all(row.telegram_user_id != 100 for row in rows)
+
+
+async def test_lift_cancel_restore_and_undo_net_out_on_postgres(pg: helpers.SharedDatabase):
+    """Timestamps come back aware here; event keys and cycle checks must still match."""
+    from veloexpress_bot.db.models import PaymentEntry
+
+    polls, payments, _, poll_id, day = await helpers._setup(pg)
+    await helpers._fill(polls, poll_id, 0, 1, riders=5)
+    await payments.claim(service_date=day, telegram_user_id=100, username=None, full_name="R")
+
+    async def net() -> int:
+        async with pg.session() as session:
+            total = await session.scalar(
+                select(func.coalesce(func.sum(PaymentEntry.amount_gel), 0)).where(
+                    PaymentEntry.environment == payments._settings.app_env,
+                    PaymentEntry.kind.in_(("received", "reversal")),
+                )
+            )
+            return int(total or 0)
+
+    await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    assert [r["amount_gel"] for r in await payments.refunds()] == [15] and await net() == 15
+    await polls.restore_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    assert await payments.refunds() == [] and await net() == 30
+    await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    assert [r["amount_gel"] for r in await payments.refunds()] == [15] and await net() == 15
+    assert await payments.undo(service_date=day, telegram_user_id=100) == "Removed."
+    assert await payments.refunds() == [] and await net() == 0

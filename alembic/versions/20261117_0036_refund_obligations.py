@@ -30,7 +30,17 @@ def upgrade() -> None:
         ),
         sa.Column("paid_at", sa.DateTime(timezone=True), nullable=True),
     )
+    # NULL marks a lift cancelled before refunds were tracked (settled from the
+    # old estimate); new cancellations record what each rider's seats released.
+    op.add_column("cancelled_lift", sa.Column("released", sa.JSON(), nullable=True))
+    # Existing reports predate tracking and stay visible read-only in the cabinet.
+    op.add_column(
+        "refund_report",
+        sa.Column("tracked", sa.Boolean(), nullable=False, server_default=sa.false()),
+    )
 
 
 def downgrade() -> None:
+    op.drop_column("refund_report", "tracked")
+    op.drop_column("cancelled_lift", "released")
     op.drop_table("refund_obligation")

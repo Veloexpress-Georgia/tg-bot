@@ -1545,9 +1545,12 @@ async def test_cancelling_a_lift_after_the_deadline_still_refunds(db: SharedData
     await payments.sync_boards()
 
     # The roster holds a rider to what they paid for; it cannot hold them to a
-    # lift Misho called off. That is the one refund the group does recognise.
+    # lift Misho called off. That is the one refund the group does recognise:
+    # it is owed back, so it no longer sits on the board as the rider's credit.
     board_text = [text for message_id, text in client.edits if message_id == board.message_id][-1]
-    assert "15 unallocated" in board_text
+    assert "unallocated" not in board_text
+    assert "@stas — 15 GEL" in board_text
+    assert [r["amount_gel"] for r in await payments.refunds()] == [15]
 
 
 async def test_the_roster_is_frozen_once_and_never_updated(db: SharedDatabase) -> None:
@@ -3177,10 +3180,15 @@ async def test_undo_reverses_remaining_amount_after_partial_cancellation(
     await _fill(polls, poll_id, 0, 1, riders=5)
     await payments.claim(service_date=day, telegram_user_id=100, username=None, full_name="Rider")
     await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    assert [r["amount_gel"] for r in await payments.refunds()] == [15]
     await payments.undo(service_date=day, telegram_user_id=100)
     async with db.session() as session:
         entries = list(await session.scalars(select(PaymentEntry)))
-        assert sum(e.amount_gel for e in entries if e.kind != "refund") == 0
+    # The rider says no money was ever sent: nothing comes back, nothing is owed.
+    assert sum(e.amount_gel for e in entries) == 0
+    assert all(e.kind in {"received", "reversal"} for e in entries)
+    assert await payments.refunds() == []
+    assert await payments.refunds(paid=True) == []
 
 
 async def test_day_cancel_reverses_receipts_without_a_claim_projection(db: SharedDatabase) -> None:
@@ -3214,3 +3222,408 @@ async def test_stale_send_without_snapshots_exposes_cancel_button(db: SharedData
         for row in view.reply_markup.inline_keyboard
         for button in row
     )
+
+
+# --- Cancellation money: review fixes -------------------------------------------------
+
+
+async def _claim_row(db: SharedDatabase, user_id: int) -> PaymentClaim | None:
+    async with db.session() as session:
+        return await session.scalar(
+            select(PaymentClaim).where(PaymentClaim.telegram_user_id == user_id)
+        )
+
+
+async def _net_received(db: SharedDatabase, user_id: int | None = None) -> int:
+    async with db.session() as session:
+        query = select(func.coalesce(func.sum(PaymentEntry.amount_gel), 0)).where(
+            PaymentEntry.kind.in_(("received", "reversal"))
+        )
+        if user_id is not None:
+            query = query.where(PaymentEntry.telegram_user_id == user_id)
+        return int(await session.scalar(query) or 0)
+
+
+async def _two_lift_payer(db: SharedDatabase):
+    """@rider100..104 on 8:30 and 10:00; @rider100 pays 30 for both."""
+    polls, payments, client, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, 1, riders=5)
+    await payments.claim(
+        service_date=day, telegram_user_id=100, username="rider100", full_name="Rider 100"
+    )
+    return polls, payments, client, poll_id, day
+
+
+async def test_lift_cancel_refunds_nothing_to_a_rider_who_was_not_on_it(
+    db: SharedDatabase,
+) -> None:
+    """Dropping a lift voluntarily is not a cancellation of that rider's seat."""
+    polls, payments, _, poll_id, day = await _two_lift_payer(db)
+    # @rider100 walks away from 10:00 on their own; the money stays with the day.
+    await _vote(polls, poll_id, 100, 0)
+    await _vote(polls, poll_id, 105, 1)
+
+    await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    report = await payments.cancellation_report(service_date=day, cancelled_lift_time="10:00")
+
+    assert await payments.refunds() == []
+    assert await _net_received(db, 100) == 30
+    assert report is None or "@rider100" not in report
+
+
+async def test_lift_cancel_releases_are_captured_once_and_reused_by_the_report(
+    db: SharedDatabase,
+) -> None:
+    from veloexpress_bot.db.models import CancelledLift
+
+    polls, payments, _, poll_id, day = await _two_lift_payer(db)
+    await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    async with db.session() as session:
+        row = await session.scalar(select(CancelledLift))
+        assert row is not None and row.released == {"100": 15}
+    # A later change of heart does not reprice a cancellation already made.
+    await _vote(polls, poll_id, 100)
+    report = await payments.cancellation_report(service_date=day, cancelled_lift_time="10:00")
+
+    assert report is not None and "Total to return: 15 GEL" in report
+    assert [r["amount_gel"] for r in await payments.refunds()] == [15]
+    assert await _net_received(db, 100) == 15
+
+
+async def test_lift_cancel_lowers_the_payment_claim(db: SharedDatabase) -> None:
+    polls, payments, _, _, day = await _two_lift_payer(db)
+    await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+
+    claim = await _claim_row(db, 100)
+    assert claim is not None
+    assert (claim.amount_gel, claim.cash_amount_gel, claim.seats) == (15, 0, 1)
+    bookings = await payments._day(day)
+    assert bookings is not None and bookings.paid_amount_by_user[100] == 15
+
+
+async def test_restoring_a_lift_voids_an_unpaid_refund_and_recredits(db: SharedDatabase) -> None:
+    polls, payments, _, _, day = await _two_lift_payer(db)
+    await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    await polls.restore_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+
+    assert await payments.refunds() == []
+    assert await _net_received(db, 100) == 30
+    claim = await _claim_row(db, 100)
+    assert claim is not None and (claim.amount_gel, claim.seats) == (30, 2)
+    # Cancelling it again is a new cancellation, refunded again.
+    await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    assert [r["amount_gel"] for r in await payments.refunds()] == [15]
+    assert await _net_received(db, 100) == 15
+
+
+async def test_restoring_a_lift_after_the_refund_was_paid_leaves_the_rider_owing(
+    db: SharedDatabase,
+) -> None:
+    polls, payments, _, _, day = await _two_lift_payer(db)
+    await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    [refund] = await payments.refunds()
+    await payments.pay_refund(refund["id"])
+    await polls.restore_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+
+    assert len(await payments.refunds(paid=True)) == 1
+    assert await _net_received(db, 100) == 15
+    claim = await _claim_row(db, 100)
+    assert claim is not None and claim.amount_gel == 15
+    bookings = await payments._day(day)
+    assert bookings is not None
+    from veloexpress_core.ledger import day_ledger
+
+    rider = day_ledger(bookings).rider(100)
+    assert rider is not None and rider.outstanding_gel == 15
+
+
+async def test_undo_after_a_paid_refund_is_refused(db: SharedDatabase) -> None:
+    polls, payments, _, _, day = await _two_lift_payer(db)
+    await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    [refund] = await payments.refunds()
+    await payments.pay_refund(refund["id"])
+
+    text = await payments.undo(service_date=day, telegram_user_id=100)
+
+    assert "admin" in text.lower()
+    assert await _claim_row(db, 100) is not None
+    assert await _net_received(db, 100) == 15
+
+
+async def test_reversals_carry_each_receipts_own_method(db: SharedDatabase) -> None:
+    polls, payments, _, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, 1, riders=5)
+    await _record_payment(db, payments, day, 100, 15, method=CASH_METHOD)
+    await _record_payment(db, payments, day, 100, 15)
+
+    await polls.cancel_day(service_date=day, admin_user_id=1)
+
+    async with db.session() as session:
+        reversals = list(
+            await session.scalars(
+                select(PaymentEntry)
+                .where(PaymentEntry.kind == "reversal")
+                .order_by(PaymentEntry.id)
+            )
+        )
+    assert sorted((r.method, r.amount_gel) for r in reversals) == [
+        ("cash", -15),
+        ("transfer", -15),
+    ]
+    assert [r["amount_gel"] for r in await payments.refunds()] == [15]
+
+
+async def test_history_screens_count_a_paid_refund_once(db: SharedDatabase) -> None:
+    yesterday = datetime.now(UTC).date() - timedelta(days=1)
+    polls, payments, _, _, _ = await _setup(db)
+    async with db.session() as session:
+        session.add(
+            LiftDayResult(
+                environment="test",
+                chat_id=CHAT_ID,
+                thread_id=LIFT_THREAD,
+                service_date=yesterday,
+                lift_time="8:30",
+                ran=True,
+                seats=5,
+                covered_seats=1,
+                capacity=10,
+                price_gel=15,
+                frozen_at=datetime.now(UTC),
+            )
+        )
+        session.add(
+            LiftDaySeat(
+                environment="test",
+                chat_id=CHAT_ID,
+                thread_id=LIFT_THREAD,
+                service_date=yesterday,
+                lift_time="8:30",
+                telegram_user_id=100,
+                label="@rider100",
+                seats=1,
+                covered_seats=1,
+            )
+        )
+        scope = dict(
+            environment="test",
+            chat_id=CHAT_ID,
+            thread_id=LIFT_THREAD,
+            service_date=yesterday,
+            telegram_user_id=100,
+            method="transfer",
+        )
+        session.add(PaymentEntry(**scope, amount_gel=30, kind="received"))
+        session.add(PaymentEntry(**scope, amount_gel=-15, kind="reversal"))
+        session.add(PaymentEntry(**scope, amount_gel=-15, kind="refund"))
+        session.add(PaymentEntry(**scope, amount_gel=0, kind="method_change"))
+        await session.commit()
+
+    audit = await polls.lift_day_audit(service_date=yesterday)
+    assert audit is not None and (audit.received_gel, audit.refunded_gel) == (15, 15)
+    history = await polls.lift_history()
+    assert history.days[0].paid_gel == 15 and history.total_gel == 15
+    season = await payments.rider_season(telegram_user_id=100)
+    assert season.days[0].paid_gel == 15 and season.total_gel == 15
+
+
+async def test_first_departure_ignores_cancelled_lifts(
+    db: SharedDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import veloexpress_core.lifts as lifts_module
+
+    real = lifts_module.lift_departure_at
+
+    def departed_830(service_date: date, lift_time: str, *, zone: Any) -> datetime:
+        if lift_time == "8:30":
+            return datetime.now(UTC) - timedelta(minutes=1)
+        return real(service_date, lift_time, zone=zone)
+
+    polls, _, _, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 1, riders=5)
+    await polls.cancel_lift(service_date=day, lift_time="8:30", admin_user_id=1)
+    monkeypatch.setattr(lifts_module, "lift_departure_at", departed_830)
+
+    [status] = [d for d in await polls.status_days() if d.service_date == day]
+    assert status.cancellation_closed is False
+    await polls.ensure_day_cancellable(day)
+    await polls.cancel_day(service_date=day, admin_user_id=1)
+
+
+async def test_an_aborted_day_cancel_keeps_the_deadline_reminder(db: SharedDatabase) -> None:
+    from veloexpress_bot.db.models import ServiceDayNotice
+
+    polls, _, client, _, day = await _setup(db)
+    async with db.session() as session:
+        session.add(
+            ServiceDayNotice(
+                environment="test",
+                chat_id=CHAT_ID,
+                thread_id=LIFT_THREAD,
+                service_date=day,
+                deadline_message_id=987,
+            )
+        )
+        await session.commit()
+
+    await polls.cancel_day(service_date=day, admin_user_id=None, expected_batch_ids=(999_999,))
+
+    assert 987 not in client.deleted
+    async with db.session() as session:
+        notice = await session.scalar(select(ServiceDayNotice))
+        assert notice is not None and notice.deadline_message_id == 987
+
+
+async def test_recreate_before_the_deadline_lets_the_reminder_go_out_again(
+    db: SharedDatabase,
+) -> None:
+    from veloexpress_bot.db.models import ServiceDayNotice
+
+    polls, _, client, _, day = await _setup(db)
+    async with db.session() as session:
+        session.add(
+            ServiceDayNotice(
+                environment="test",
+                chat_id=CHAT_ID,
+                thread_id=LIFT_THREAD,
+                service_date=day,
+                deadline_message_id=987,
+                deadline_reminded_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+    await polls.recreate_polls((PollSetup(service_date=day, created_by_user_id=1),))
+
+    assert 987 in client.deleted
+    async with db.session() as session:
+        notice = await session.scalar(select(ServiceDayNotice))
+        assert notice is not None and notice.deadline_reminded_at is None
+
+
+async def test_legacy_lift_cancellation_is_not_reversed_again(db: SharedDatabase) -> None:
+    """A lift cancelled before refunds were tracked was settled from the old estimate."""
+    from veloexpress_bot.db.models import CancelledLift
+
+    polls, payments, _, _, day = await _two_lift_payer(db)
+    async with db.session() as session:
+        session.add(
+            CancelledLift(
+                environment="test",
+                chat_id=CHAT_ID,
+                thread_id=LIFT_THREAD,
+                service_date=day,
+                lift_time="10:00",
+                cancelled_by_user_id=1,
+            )
+        )
+        await session.commit()
+
+    await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    await payments.cancellation_report(service_date=day, cancelled_lift_time="10:00")
+    assert await payments.refunds() == []
+    await polls.restore_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    assert await _net_received(db, 100) == 30
+
+    # A day with a legacy lift on it is reported the old way, without new obligations.
+    async with db.session() as session:
+        session.add(
+            CancelledLift(
+                environment="test",
+                chat_id=CHAT_ID,
+                thread_id=LIFT_THREAD,
+                service_date=day,
+                lift_time="10:00",
+                cancelled_by_user_id=1,
+            )
+        )
+        await session.commit()
+    await polls.cancel_day(service_date=day, admin_user_id=1)
+    report = await payments.cancellation_report(service_date=day)
+    assert await payments.refunds() == []
+    assert report is not None and "@rider100</a> — 30 GEL back" in report
+
+
+async def test_reposting_keeps_state_unless_the_latest_batch_was_cancelled(
+    db: SharedDatabase,
+) -> None:
+    from veloexpress_bot.db.models import ManualBookingCount, PollBatch
+
+    polls, payments, _, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    await payments.claim(service_date=day, telegram_user_id=100, username=None, full_name="Rider")
+    async with db.session() as session:
+        batch = await session.scalar(select(PollBatch))
+        assert batch is not None
+        batch.status = "failed"
+        session.add(
+            PollBatch(
+                environment="test",
+                chat_id=CHAT_ID,
+                thread_id=LIFT_THREAD,
+                service_date=day,
+                service_day="saturday",
+                created_by_user_id=1,
+                created_at=batch.created_at - timedelta(days=1),
+                first_lift_location=batch.first_lift_location,
+                status="cancelled",
+                idempotency_key="an-older-cycle",
+            )
+        )
+        session.add(
+            ManualBookingCount(
+                environment="test",
+                chat_id=CHAT_ID,
+                thread_id=LIFT_THREAD,
+                service_date=day,
+                lift_time="8:30",
+                count=2,
+                updated_by_user_id=1,
+            )
+        )
+        await session.commit()
+
+    await polls.create_poll(PollSetup(service_date=day, created_by_user_id=1))
+
+    assert await _claim_row(db, 100) is not None
+    async with db.session() as session:
+        assert await session.scalar(select(ManualBookingCount)) is not None
+
+
+async def test_a_lift_cancel_without_its_day_releases_nothing(db: SharedDatabase) -> None:
+    from veloexpress_bot.db.models import CancelledLift, PollBatch
+
+    polls, payments, _, _, day = await _two_lift_payer(db)
+    async with db.session() as session:
+        batch = await session.scalar(select(PollBatch))
+        assert batch is not None
+        batch.status = "deleted"
+        await session.commit()
+
+    await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+
+    assert await payments.refunds() == []
+    assert await _net_received(db, 100) == 30
+    async with db.session() as session:
+        row = await session.scalar(select(CancelledLift))
+        assert row is not None and row.released == {}
+
+
+async def test_a_refused_deleted_poll_cancel_does_not_stop_the_tick(
+    db: SharedDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import AsyncMock
+
+    polls, _, client, poll_id, day = await _setup(db)
+    deleted_poll_id = int(poll_id.removeprefix("poll-"))
+    client.message_exists = AsyncMock(
+        side_effect=lambda **kwargs: kwargs["message_id"] != deleted_poll_id
+    )
+    monkeypatch.setattr(
+        polls, "cancel_day", AsyncMock(side_effect=ValueError("The first lift has departed."))
+    )
+    now = datetime.combine(
+        day - timedelta(days=1), datetime.min.time(), tzinfo=ZoneInfo("Asia/Tbilisi")
+    )
+
+    assert await polls.reconcile_missing_polls(now=now) == ()

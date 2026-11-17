@@ -389,6 +389,7 @@ class Operations:
                 f"❌ Bike park · {day} is cancelled.",
                 {r.telegram_user_id: r.label for r in parks[0].riders} if parks else {},
                 log_label="bike_park_cancel_notice_failed",
+                event_id=f"bike-park-cancel:{parks[0].id}" if parks else "",
             )
             await rt.lifts.refresh_booking_statuses()
             return {"message": "Bike park session cancelled"}

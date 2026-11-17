@@ -330,3 +330,38 @@ async def test_browser_oidc_checks_pkce_nonce_and_uses_bot_api_id(monkeypatch) -
         assert session.json()["user_id"] == 42 and session.json()["admin"] is True
         assert "HttpOnly" in response.headers["set-cookie"]
     await db.dispose()
+
+
+async def test_refunds_screen_keeps_estimates_from_before_tracking() -> None:
+    from veloexpress_bot.db.models import RefundReport
+
+    db = SharedDatabase()
+    await db.create()
+    config = settings().model_copy(
+        update={"telegram_admin_ids": (42,), "telegram_bot_token": "123456:test-token"}
+    )
+    async with db.session() as session:
+        scope = {"environment": "test", "chat_id": config.telegram_target_chat_id}
+        session.add(
+            RefundReport(
+                **scope, service_date=date(2026, 11, 7), text="old <b>15 GEL</b>", tracked=False
+            )
+        )
+        session.add(RefundReport(**scope, service_date=date(2026, 11, 21), text="new"))
+        await session.commit()
+    app = create_app(
+        settings=config,
+        web_settings=WebSettings(session_secret=SECRET, public_url="http://localhost:5173"),
+        session_factory=db.session,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://localhost:5173"
+    ) as client:
+        client.cookies.set("veloexpress_session", cookie(42))
+        response = await client.get("/api/admin/refunds/legacy")
+        assert response.status_code == 200
+        assert [(r["service_date"], r["text"]) for r in response.json()] == [
+            ("2026-11-07", "old <b>15 GEL</b>")
+        ]
+        assert (await client.get("/api/admin/refunds")).json() == []
+    await db.dispose()

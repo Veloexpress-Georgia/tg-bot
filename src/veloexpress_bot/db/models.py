@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     CheckConstraint,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    false,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -260,6 +262,10 @@ class CancelledLift(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
+    # GEL each rider's seats on this lift freed, keyed by user id, captured under
+    # the day lock when it was cancelled. NULL marks a cancellation from before
+    # refunds were tracked: it was settled from the old estimate, never reversed.
+    released: Mapped[dict[str, int] | None] = mapped_column(JSON)
 
 
 class LiftSignalState(Base):
@@ -327,6 +333,9 @@ class RefundReport(Base):
     # None when the whole day went; otherwise the single lift that was called off.
     lift_time: Mapped[str | None] = mapped_column(String(16))
     text: Mapped[str] = mapped_column(Text)
+    # False for reports filed before refund obligations were tracked: those are
+    # the only record of what was owed then, so the cabinet keeps showing them.
+    tracked: Mapped[bool] = mapped_column(Boolean, default=True, server_default=false())
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

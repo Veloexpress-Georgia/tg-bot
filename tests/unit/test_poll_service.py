@@ -1276,11 +1276,11 @@ async def test_poll_service_posts_and_persists_message(db: SharedDatabase) -> No
         )
     )
 
-    assert result.availability_message_id == 42
-    assert result.message_id == 43
-    assert result.poll_id == "poll-43"
+    assert result.availability_message_id == 43
+    assert result.message_id == 42
+    assert result.poll_id == "poll-42"
     assert result.pinned is True
-    assert client.pinned == [43]
+    assert client.pinned == [42]
     assert "15:30" not in "\n".join(client.sent[0].options)
     assert "15:30" not in client.sent_texts[0]
 
@@ -1291,8 +1291,8 @@ async def test_poll_service_posts_and_persists_message(db: SharedDatabase) -> No
     assert len(batches) == 1
     assert batches[0].status == "posted"
     assert [(message.telegram_message_id, message.message_kind) for message in messages] == [
-        (42, "availability"),
-        (43, "poll"),
+        (43, "availability"),
+        (42, "poll"),
     ]
 
 
@@ -1323,7 +1323,7 @@ async def test_poll_service_can_defer_pin_until_after_creation(db: SharedDatabas
     pinned_result = await service.pin_created_poll(result)
 
     assert pinned_result.pinned is True
-    assert client.pinned == [43]
+    assert client.pinned == [42]
 
     async with db.session() as session:
         message = await session.scalar(
@@ -1351,8 +1351,8 @@ async def test_poll_service_can_send_notice_before_poll_and_pin_poll(
     )
 
     assert result.notice_message_id == 42
-    assert result.availability_message_id == 43
-    assert result.message_id == 44
+    assert result.availability_message_id == 44
+    assert result.message_id == 43
     assert client.sent_texts[0].startswith(
         '📍 <a href="https://maps.app.goo.gl/nSNiv7GnNiQt5J64A">Opposite Vake Park</a>'
     )
@@ -1363,7 +1363,7 @@ async def test_poll_service_can_send_notice_before_poll_and_pin_poll(
     pinned_result = await service.pin_created_poll(result)
 
     assert pinned_result.pinned is True
-    assert client.pinned == [44]
+    assert client.pinned == [43]
 
     async with db.session() as session:
         messages = (
@@ -1372,10 +1372,10 @@ async def test_poll_service_can_send_notice_before_poll_and_pin_poll(
 
     assert [message.message_kind for message in messages] == [
         "notice",
-        "availability",
         "poll",
+        "availability",
     ]
-    assert [message.pinned for message in messages] == [False, False, True]
+    assert [message.pinned for message in messages] == [False, True, False]
 
 
 @pytest.mark.asyncio
@@ -1395,10 +1395,10 @@ async def test_poll_service_pins_poll_when_notice_is_sent_inline(
     )
 
     assert result.notice_message_id == 42
-    assert result.availability_message_id == 43
-    assert result.message_id == 44
+    assert result.availability_message_id == 44
+    assert result.message_id == 43
     assert result.pinned is True
-    assert client.pinned == [44]
+    assert client.pinned == [43]
 
     async with db.session() as session:
         messages = (
@@ -1407,10 +1407,10 @@ async def test_poll_service_pins_poll_when_notice_is_sent_inline(
 
     assert [message.message_kind for message in messages] == [
         "notice",
-        "availability",
         "poll",
+        "availability",
     ]
-    assert [message.pinned for message in messages] == [False, False, True]
+    assert [message.pinned for message in messages] == [False, True, False]
 
 
 @pytest.mark.asyncio
@@ -1437,7 +1437,7 @@ async def test_poll_service_pins_all_created_polls_and_not_notice(
     results = await service.pin_created_results((saturday, sunday))
 
     assert [result.pinned for result in results] == [True, True]
-    assert client.pinned == [44, 46]
+    assert client.pinned == [43, 45]
 
     async with db.session() as session:
         messages = (
@@ -1448,10 +1448,10 @@ async def test_poll_service_pins_all_created_polls_and_not_notice(
         (message.telegram_message_id, message.message_kind, message.pinned) for message in messages
     ] == [
         (42, "notice", False),
-        (43, "availability", False),
-        (44, "poll", True),
-        (45, "availability", False),
-        (46, "poll", True),
+        (43, "poll", True),
+        (44, "availability", False),
+        (45, "poll", True),
+        (46, "availability", False),
     ]
 
 
@@ -1517,12 +1517,12 @@ async def test_poll_service_reuses_failed_pre_send_idempotency_key(db: SharedDat
         messages = (await session.scalars(select(PollMessage))).all()
 
     assert result.availability_message_id == 43
-    assert result.message_id == 44
+    assert result.message_id == 42
     assert len(batches) == 1
     assert batches[0].id == failed_batch.id
     assert batches[0].status == "posted"
     assert len(messages) == 2
-    assert client.deleted == [42]
+    assert client.deleted == []
 
 
 @pytest.mark.asyncio
@@ -1717,7 +1717,7 @@ async def test_poll_service_updates_daily_availability_after_vote_changes(
     )
     result = await service.create_poll(
         PollSetup(
-            service_date=date(2026, 5, 16),
+            service_date=_upcoming_weekend()[0],
             created_by_user_id=1,
             cancelled_lift_times=("15:30",),
         )
@@ -1754,7 +1754,7 @@ async def test_poll_service_recovers_manually_deleted_availability_on_next_vote(
         telegram_client=client,
     )
     result = await service.create_poll(
-        PollSetup(service_date=date(2026, 5, 16), created_by_user_id=1)
+        PollSetup(service_date=_upcoming_weekend()[0], created_by_user_id=1)
     )
     assert client.existing_message_ids is not None
     client.existing_message_ids.discard(result.availability_message_id)
@@ -1856,7 +1856,7 @@ async def test_poll_service_clears_vote_selection_with_empty_answer(
         telegram_client=client,
     )
     result = await service.create_poll(
-        PollSetup(service_date=date(2026, 5, 16), created_by_user_id=1)
+        PollSetup(service_date=_upcoming_weekend()[0], created_by_user_id=1)
     )
 
     await service.track_poll_answer(
@@ -2036,7 +2036,7 @@ async def test_recreate_rolls_back_created_replacements_after_partial_failure(
         (47, "deleted"),
         (48, "deleted"),
     ]
-    assert client.deleted == [49, 46, 47, 48]
+    assert client.deleted == [46, 48, 47]
 
 
 @pytest.mark.asyncio
@@ -2062,15 +2062,15 @@ async def test_recreate_replaces_the_notice_instead_of_leaving_a_duplicate(
 
     result = await service.recreate_polls((setup,))
 
-    assert [created.message_id for created in result.created] == [47]
+    assert [created.message_id for created in result.created] == [46]
     assert "🚲 8:30: @stas" in result.report_text
 
     cleanup = await service.cleanup_recreated_polls(result)
 
     assert cleanup.deleted_count == 3
-    assert client.deleted == [42, 43, 44]
-    assert client.unpinned == [44]
-    assert client.operations.index(("unpin", 44)) < client.operations.index(("delete", 44))
+    assert client.deleted == [42, 44, 43]
+    assert client.unpinned == [43]
+    assert client.operations.index(("unpin", 43)) < client.operations.index(("delete", 43))
 
     async with db.session() as session:
         batches = (await session.scalars(select(PollBatch).order_by(PollBatch.id))).all()
@@ -2138,7 +2138,7 @@ async def test_recreate_cleanup_failure_keeps_old_batch_conflict_visible(
     async with db.session() as session:
         batches = (await session.scalars(select(PollBatch).order_by(PollBatch.id))).all()
         message = await session.scalar(
-            select(PollMessage).where(PollMessage.telegram_message_id == 42)
+            select(PollMessage).where(PollMessage.message_kind == "availability")
         )
 
     assert [batch.status for batch in batches] == ["cleanup_failed", "posted"]
@@ -2241,13 +2241,13 @@ async def test_poll_service_reuses_deleted_batch_idempotency_key(db: SharedDatab
         batches = (await session.scalars(select(PollBatch))).all()
         messages = (await session.scalars(select(PollMessage))).all()
 
-    assert result.availability_message_id == 44
-    assert result.message_id == 45
+    assert result.availability_message_id == 45
+    assert result.message_id == 44
     assert len(client.sent) == 2
     assert len(batches) == 1
     assert batches[0].status == "posted"
     assert len(messages) == 2
-    assert {message.telegram_message_id for message in messages} == {44, 45}
+    assert {message.telegram_message_id for message in messages} == {45, 44}
 
 
 @pytest.mark.asyncio
@@ -2277,8 +2277,8 @@ async def test_poll_service_creates_changed_setup_after_manual_delete(
     async with db.session() as session:
         batches = (await session.scalars(select(PollBatch).order_by(PollBatch.id))).all()
 
-    assert result.availability_message_id == 44
-    assert result.message_id == 45
+    assert result.availability_message_id == 45
+    assert result.message_id == 44
     assert [batch.status for batch in batches] == ["deleted", "posted"]
 
 
@@ -2320,10 +2320,10 @@ async def test_reused_deleted_batch_reports_current_poll_votes(db: SharedDatabas
         snapshots = (await session.scalars(select(PollOptionSnapshot))).all()
         events = (await session.scalars(select(PollVoteEvent).order_by(PollVoteEvent.id))).all()
 
-    assert {snapshot.poll_id for snapshot in snapshots} == {"poll-45", "poll-48"}
+    assert {snapshot.poll_id for snapshot in snapshots} == {"poll-44", "poll-47"}
     assert [(event.poll_id, event.new_option_ids) for event in events] == [
-        ("poll-43", "1"),
-        ("poll-45", "0"),
+        ("poll-42", "1"),
+        ("poll-44", "0"),
     ]
 
 
@@ -2353,8 +2353,8 @@ async def test_poll_service_reuses_recreated_batch_after_replacement_is_deleted(
             await session.scalars(select(PollMessage).order_by(PollMessage.telegram_message_id))
         ).all()
 
-    assert result.availability_message_id == 47
-    assert result.message_id == 48
+    assert result.availability_message_id == 48
+    assert result.message_id == 47
     assert len(client.sent) == 3
     assert [batch.status for batch in batches] == ["posted", "deleted"]
     assert batches[0].superseded_by_batch_id is None
@@ -2363,8 +2363,8 @@ async def test_poll_service_reuses_recreated_batch_after_replacement_is_deleted(
         for message in messages
     ] == [
         (2, 44, "not_applicable"),
-        (2, 45, "deleted"),
-        (2, 46, "telegram_deleted"),
+        (2, 45, "telegram_deleted"),
+        (2, 46, "deleted"),
         (1, 47, "not_applicable"),
         (1, 48, "not_applicable"),
     ]
@@ -3023,7 +3023,7 @@ async def test_queue_caption_is_cleared_on_the_same_card_when_last_waiting_vote_
         settings=settings(), session_factory=db.session, telegram_client=client
     )
     poll = await service.create_poll(
-        PollSetup(service_date=date(2026, 5, 16), created_by_user_id=1)
+        PollSetup(service_date=_upcoming_weekend()[0], created_by_user_id=1)
     )
     for uid in range(100, 111):
         await service.track_poll_answer(
@@ -3069,3 +3069,80 @@ async def test_known_poll_recovers_after_post_send_failure(db: SharedDatabase) -
         batch = await session.scalar(select(PollBatch))
         assert batch is not None and batch.status == "posted"
         assert await session.scalar(select(PollVote)) is not None
+
+
+async def test_repeated_cancel_is_a_new_notice_but_retry_is_not(db: SharedDatabase) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    day, _ = _upcoming_weekend()
+    await service.create_poll(PollSetup(service_date=day, created_by_user_id=1))
+    await service.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    await service.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    assert sum("❌ 10:00" in text for text in client.sent_texts) == 1
+    await service.restore_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    await service.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    assert sum("❌ 10:00" in text for text in client.sent_texts) == 2
+
+
+async def test_failed_poll_send_does_not_post_availability_photo(db: SharedDatabase) -> None:
+    client = FakeTelegramClient(fail_send_once=True)
+    service = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    day, _ = _upcoming_weekend()
+    with pytest.raises(RuntimeError):
+        await service.create_poll(PollSetup(service_date=day, created_by_user_id=1))
+    assert client.sent_texts == []
+
+
+@pytest.mark.parametrize("obsolete", ["past", "superseded"])
+async def test_obsolete_poll_vote_records_history_without_refreshing_card(
+    db: SharedDatabase, obsolete: str
+) -> None:
+    client = FakeTelegramClient(existing_message_ids=set())
+    service = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    day, _ = _upcoming_weekend()
+    poll = await service.create_poll(PollSetup(service_date=day, created_by_user_id=1))
+    async with db.session() as session:
+        batch = await session.get(PollBatch, poll.batch_id)
+        assert batch is not None
+        if obsolete == "past":
+            batch.service_date = datetime.now(UTC).date() - timedelta(days=1)
+        else:
+            batch.status = "recreated"
+        await session.commit()
+    client.existing_message_ids = set()
+    client.sent_texts.clear()
+    client.edited_texts.clear()
+    await service.track_poll_answer(
+        poll_id=poll.poll_id or "",
+        telegram_user_id=10,
+        username=None,
+        full_name="Rider",
+        option_ids=(0,),
+    )
+    assert client.sent_texts == []
+    assert client.edited_texts == []
+    async with db.session() as session:
+        assert (
+            await session.scalar(select(PollVote).where(PollVote.poll_id == poll.poll_id))
+            is not None
+        )
+
+
+async def test_finished_day_closes_polls_once_and_leaves_history(db: SharedDatabase) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    day, _ = _upcoming_weekend()
+    poll = await service.create_poll(PollSetup(service_date=day, created_by_user_id=1))
+    tomorrow = datetime.combine(day + timedelta(days=1), time(0), tzinfo=ZoneInfo("Asia/Tbilisi"))
+    await service.refresh_booking_statuses(now=tomorrow)
+    await service.refresh_booking_statuses(now=tomorrow)
+    assert client.stopped == [poll.message_id]
+    assert poll.message_id not in client.deleted

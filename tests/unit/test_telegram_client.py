@@ -91,6 +91,7 @@ class StoppingBot:
     "error_text, expected",
     [
         (None, True),
+        ("Bad Request: poll can't be stopped", True),
         ("Bad Request: poll has already been closed", True),
         ("Bad Request: message to stop poll not found", True),
         ("Bad Request: not enough rights", False),
@@ -276,4 +277,14 @@ async def test_failed_poll_probe_is_not_evidence_of_deletion() -> None:
 
     assert await AiogramTelegramClient(cast(Bot, OfflineBot())).message_exists(
         chat_id=1, message_id=42
+    )
+
+
+async def test_uneditable_card_returns_false_without_raising() -> None:
+    client = AiogramTelegramClient(cast(Bot, CardBot("Bad Request: message can't be edited")))
+    assert (
+        await client.edit_availability_card(
+            chat_id=-100123, message_id=71, image=b"png", caption=""
+        )
+        is False
     )

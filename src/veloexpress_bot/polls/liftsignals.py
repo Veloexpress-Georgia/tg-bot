@@ -62,6 +62,7 @@ class LiftEvent:
     service_date: date
     lift_time: str
     seats: int
+    occurred_at: datetime | None = None
 
 
 @dataclass(frozen=True)

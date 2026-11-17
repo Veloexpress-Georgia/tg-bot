@@ -8,6 +8,7 @@ import type {
   DayDetail,
   LiveDay,
   MyDays,
+  LegacyRefundReport,
   Planning,
   RefundReport,
 } from '../types';
@@ -20,6 +21,7 @@ export const keys = {
   analytics: (path: string) => ['analytics', path] as const,
   planning: ['planning'] as const,
   refunds: ['refunds'] as const,
+  legacyRefunds: ['refunds', 'legacy'] as const,
   audit: ['audit'] as const,
   myDays: ['mydays'] as const,
   command: (id: number) => ['command', id] as const,
@@ -95,6 +97,12 @@ export const useRefunds = (paid = false) =>
   useQuery({
     queryKey: [...keys.refunds, paid],
     queryFn: () => request<RefundReport[]>(`/api/admin/refunds?paid=${paid}`),
+  });
+
+export const useLegacyRefunds = () =>
+  useQuery({
+    queryKey: keys.legacyRefunds,
+    queryFn: () => request<LegacyRefundReport[]>('/api/admin/refunds/legacy'),
   });
 
 export const useAudit = () =>

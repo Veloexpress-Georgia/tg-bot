@@ -9,6 +9,7 @@ from sqlalchemy import select
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.models import LiftDayResult, LiftDaySeat, PaymentEntry
 from veloexpress_core.lifts import SessionFactory
+from veloexpress_core.refunds import NET_RECEIVED_KINDS
 
 Period = Literal["30d", "year", "all"]
 
@@ -129,9 +130,7 @@ class HistoryStatistics:
                     received_gel=sum(e.amount_gel for e in entries if e.kind == "received"),
                     reversed_gel=-sum(e.amount_gel for e in entries if e.kind == "reversal"),
                     refunded_gel=-sum(e.amount_gel for e in entries if e.kind == "refund"),
-                    net_gel=sum(
-                        e.amount_gel for e in entries if e.kind in {"received", "reversal"}
-                    ),
+                    net_gel=sum(e.amount_gel for e in entries if e.kind in NET_RECEIVED_KINDS),
                 )
             )
         if user_id is not None:
@@ -156,6 +155,6 @@ class HistoryStatistics:
             received_gel=sum(e.amount_gel for e in money if e.kind == "received"),
             reversed_gel=-sum(e.amount_gel for e in money if e.kind == "reversal"),
             refunded_gel=-sum(e.amount_gel for e in money if e.kind == "refund"),
-            net_gel=sum(e.amount_gel for e in money if e.kind in {"received", "reversal"}),
+            net_gel=sum(e.amount_gel for e in money if e.kind in NET_RECEIVED_KINDS),
             riders=tuple(sorted(riders, key=lambda r: (-r.days, -r.lifts, r.user_id))),
         )

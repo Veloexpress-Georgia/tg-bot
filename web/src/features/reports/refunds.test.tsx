@@ -18,3 +18,15 @@ it('shows payable refunds with rider, date, amount, method and payout action', (
   expect(html).toContain('Mark paid');
   expect(html).toContain('Paid history');
 });
+
+it('keeps estimates from before refunds tracking, read-only', () => {
+  const client = new QueryClient();
+  client.setQueryData([...keys.refunds, false], []);
+  client.setQueryData(keys.legacyRefunds, [
+    { service_date: '2026-11-07', lift_time: null, text: '<b>Anna</b> — 15 GEL back', created_at: '2026-11-06T10:00:00Z' },
+  ]);
+  const html = renderToStaticMarkup(<QueryClientProvider client={client}><RefundsPage /></QueryClientProvider>);
+  expect(html).toContain('Before refunds tracking');
+  expect(html).toContain('Anna — 15 GEL back');
+  expect(html).toContain('whole day');
+});

@@ -394,3 +394,83 @@ async def test_schedule_card_uses_defaults_before_first_save(db: SharedDatabase)
     row = await schedule_row(db)
     assert row.enabled is True
     assert row.updated_by_user_id == 1
+
+
+async def test_failed_auto_post_waits_and_warns_admin_once_even_after_restart(
+    db: SharedDatabase,
+) -> None:
+    class FailingClient(RecordingTelegramClient):
+        attempts = 0
+
+        async def send_poll(self, **kwargs: Any) -> SentPollMessage:
+            self.attempts += 1
+            raise RuntimeError("posting failed")
+
+    client = FailingClient()
+    scheduler, _ = build_scheduler(db, client)
+    await store_schedule(db)
+    with pytest.raises(RuntimeError, match="posting failed"):
+        await scheduler.tick(at(24, 14))
+    scheduler, _ = build_scheduler(db, client)
+    assert await scheduler.tick(at(24, 14, 1)) is None
+    assert client.attempts == 1
+    with pytest.raises(RuntimeError, match="posting failed"):
+        await scheduler.tick(at(24, 14, 16))
+    assert client.attempts == 2
+    assert sum("Auto-posting failed" in text for text in client.sent_texts) == 1
+
+
+@pytest.mark.parametrize("weekday,creation_time", [(4, "20:01"), (4, "20:00"), (5, "09:00")])
+async def test_save_rejects_auto_post_at_or_after_deadline(
+    db: SharedDatabase, weekday: int, creation_time: str
+) -> None:
+    scheduler, _ = build_scheduler(db, RecordingTelegramClient())
+    with pytest.raises(ValueError, match=r"before.*deadline"):
+        await scheduler.set_schedule(
+            enabled=True,
+            weekday=weekday,
+            creation_time=creation_time,
+            announce_lead_minutes=0,
+            admin_user_id=42,
+        )
+
+
+async def test_invalid_stored_schedule_is_skipped_with_one_warning(
+    db: SharedDatabase, caplog: pytest.LogCaptureFixture
+) -> None:
+    scheduler, _ = build_scheduler(db, RecordingTelegramClient())
+    await store_schedule(db, creation_weekday=5, creation_time="09:00")
+    assert await scheduler.tick(at(25, 10)) is None
+    assert await scheduler.tick(at(25, 10, 1)) is None
+    assert sum("invalid_auto_post_schedule" in r.message for r in caplog.records) == 1
+
+
+async def test_changing_deadline_cannot_invalidate_enabled_auto_post(db: SharedDatabase) -> None:
+    from veloexpress_core.terms import ServiceDayDefaultsStore
+
+    scheduler, _ = build_scheduler(db, RecordingTelegramClient())
+    await scheduler.set_schedule(
+        enabled=True, weekday=4, creation_time="18:00", announce_lead_minutes=0, admin_user_id=42
+    )
+    defaults = ServiceDayDefaultsStore(settings=settings(), session_factory=db.session)
+    with pytest.raises(ValueError, match=r"before.*deadline"):
+        await defaults.set_values(price_gel=20, deadline_time="17:00", admin_user_id=42)
+
+
+async def test_overdue_auto_post_is_skipped_after_booking_deadline(
+    db: SharedDatabase, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = RecordingTelegramClient()
+    scheduler, _ = build_scheduler(db, client)
+    await store_schedule(db)
+    assert await scheduler.tick(at(24, 21)) is None
+    assert await scheduler.tick(at(24, 21, 1)) is None
+    assert client.sent_polls == []
+    assert sum("auto_post_deadline_missed" in r.message for r in caplog.records) == 1
+
+
+async def test_admin_can_pause_an_invalid_legacy_schedule(db: SharedDatabase) -> None:
+    scheduler, _ = build_scheduler(db, RecordingTelegramClient())
+    await store_schedule(db, creation_weekday=5, creation_time="09:00")
+    await scheduler.toggle_enabled(admin_user_id=42)
+    assert not (await schedule_row(db)).enabled

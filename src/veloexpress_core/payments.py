@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from veloexpress_bot.config import Settings
@@ -86,6 +86,12 @@ from veloexpress_core.lifts import (
     SessionFactory,
     TelegramPollClient,
 )
+from veloexpress_core.refunds import (
+    as_utc,
+    day_in_session,
+    net_received_filter,
+    released_by_lift,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +103,7 @@ NOTHING_TO_UNDO_TEXT = "You have not marked a payment for this day."
 UNDO_VERIFIED_TEXT = "Misho recorded this payment. Ask him if it needs undoing."
 METHOD_VERIFIED_TEXT = "Misho recorded this payment. Ask him to correct its method."
 UNDO_AFTER_DEADLINE_TEXT = "Booking closed for this day. Ask Misho about a refund."
+UNDO_REFUND_PAID_TEXT = "A refund for this day was already paid out. Ask the admin to correct it."
 NOT_CLAIMED_YET_TEXT = "After paying, report the transfer or the cash you handed to Misho."
 BOARD_GONE_TEXT = "This payments board is no longer active."
 PAYMENTS_DISABLED_TEXT = "Payments are not set up for this chat."
@@ -535,6 +542,7 @@ class PaymentsService:
                         .where(PaymentEntry.chat_id == self._require_chat_id())
                         .where(PaymentEntry.telegram_user_id == telegram_user_id)
                         .where(PaymentEntry.service_date.in_(service_dates))
+                        .where(net_received_filter())
                         .group_by(PaymentEntry.service_date)
                     )
                 ).all()
@@ -787,6 +795,27 @@ class PaymentsService:
             )
             if notice is not None and notice.roster_captured_at is not None:
                 return UNDO_AFTER_DEADLINE_TEXT
+            await self._lock_day(session, service_date)
+            obligations = list(
+                await session.scalars(
+                    select(RefundObligation)
+                    .join(PaymentEntry, PaymentEntry.id == RefundObligation.reversal_entry_id)
+                    .where(RefundObligation.environment == self._settings.app_env)
+                    .where(RefundObligation.chat_id == self._require_chat_id())
+                    .where(RefundObligation.thread_id == self._settings.telegram_target_thread_id)
+                    .where(RefundObligation.service_date == service_date)
+                    .where(RefundObligation.telegram_user_id == telegram_user_id)
+                    # This booking cycle only; a reposted day starts a new claim.
+                    .where(PaymentEntry.recorded_at >= claim.claimed_at)
+                )
+            )
+            if any(obligation.paid_at is not None for obligation in obligations):
+                # Money went back to someone who now says they never sent any.
+                return UNDO_REFUND_PAID_TEXT
+            # Nothing was sent, so nothing comes back: the cancellation's
+            # reversals and the undo together net the receipts to zero.
+            for obligation in obligations:
+                await session.delete(obligation)
             posted_message_id = claim.posted_message_id
             entries = (
                 await session.scalars(
@@ -860,10 +889,10 @@ class PaymentsService:
         service_date: date,
         cancelled_lift_time: str | None = None,
     ) -> str | None:
-        """Cumulative refund estimate; generating it does not record a payout.
+        """Cumulative refund list; generating it does not record a payout.
 
-        Call this after the cancellation is recorded, so a rider's remaining lifts
-        already exclude what was just cancelled.
+        Call this after the cancellation is recorded. It reads back the refunds
+        that cancellation persisted and never decides a new amount itself.
         """
         return await self._cancellation_estimate(
             service_date=service_date,
@@ -880,8 +909,8 @@ class PaymentsService:
     ) -> str | None:
         if not self.enabled:
             return None
-        day = await self._day(service_date)
         async with self._session_factory() as session:
+            await self._lock_day(session, service_date)
             claims = (
                 await session.scalars(
                     select(PaymentClaim)
@@ -891,47 +920,45 @@ class PaymentsService:
                     .order_by(PaymentClaim.claimed_at, PaymentClaim.id)
                 )
             ).all()
-        if not claims:
-            return None
-
-        rows = tuple(
-            self._refund_row(
-                claim,
-                day=day,
-                cancelled_lift_time=cancelled_lift_time,
-                pending=not remember,
+            if not claims:
+                return None
+            refunded = await self._cycle_refunds(session, service_date, claims)
+            if remember or cancelled_lift_time is None:
+                # A real cancellation already decided and reversed the money under
+                # the day lock; the report only reads that back, cumulative for the
+                # day. A whole-day preview returns every transfer anyway.
+                released: dict[int, int] = {}
+            else:
+                day = await day_in_session(
+                    session, settings=self._settings, service_date=service_date
+                )
+                released = (
+                    released_by_lift(
+                        day,
+                        cancelled_lift_time,
+                        {claim.telegram_user_id: claim.amount_gel for claim in claims},
+                    )
+                    if day is not None
+                    else {}
+                )
+            rows = tuple(
+                self._refund_row(
+                    claim,
+                    refunded=refunded.get(claim.telegram_user_id, 0),
+                    released=released.get(claim.telegram_user_id, 0),
+                    whole_day=cancelled_lift_time is None,
+                )
+                for claim in claims
             )
-            for claim in claims
-        )
-        report = render_cancellation_report(
-            service_date=service_date,
-            cancelled_lift_time=cancelled_lift_time,
-            rows=rows,
-        )
-        if report is not None and remember:
-            # Kept, because cancelling clears the day's claims: without this the
-            # admin's chat message is the only list of who is owed money, and a
-            # stray delete takes it with them.
-            async with self._session_factory() as session:
-                await self._lock_day(session, service_date)
-                from veloexpress_core.refunds import reverse_cancellation
-
-                released = {}
-                for claim, row in zip(claims, rows, strict=True):
-                    held = (
-                        sum(
-                            int(claim.telegram_user_id in day.seat_holders_by_lift.get(t, ()))
-                            + day.guests_by_user_lift.get((claim.telegram_user_id, t), 0)
-                            for t in row.remaining_lift_times
-                        )
-                        if day is not None
-                        else 0
-                    )
-                    released[claim.telegram_user_id] = min(
-                        claim.amount_gel,
-                        max(claim.seats - held, 0) * (claim.amount_gel // max(claim.seats, 1)),
-                    )
-                await reverse_cancellation(session, list(claims), released)
+            report = render_cancellation_report(
+                service_date=service_date,
+                cancelled_lift_time=cancelled_lift_time,
+                rows=rows,
+            )
+            if report is not None and remember:
+                # Kept, because cancelling clears the day's claims: without this the
+                # admin's chat message is the only list of who is owed money, and a
+                # stray delete takes it with them.
                 existing_report = await session.scalar(
                     select(RefundReport.id)
                     .where(RefundReport.environment == self._settings.app_env)
@@ -953,6 +980,32 @@ class PaymentsService:
                     )
                 await session.commit()
         return report
+
+    async def _cycle_refunds(
+        self, session: AsyncSession, service_date: date, claims: Sequence[PaymentClaim]
+    ) -> dict[int, int]:
+        """Refunds owed per rider in the current booking cycle, paid out or not."""
+        first_claim = min(as_utc(claim.claimed_at) for claim in claims)
+        rows = (
+            await session.execute(
+                select(
+                    RefundObligation.telegram_user_id,
+                    RefundObligation.amount_gel,
+                    PaymentEntry.recorded_at,
+                )
+                .join(PaymentEntry, PaymentEntry.id == RefundObligation.reversal_entry_id)
+                .where(RefundObligation.environment == self._settings.app_env)
+                .where(RefundObligation.chat_id == self._require_chat_id())
+                .where(RefundObligation.thread_id == self._settings.telegram_target_thread_id)
+                .where(RefundObligation.service_date == service_date)
+            )
+        ).all()
+        claimed_at = {claim.telegram_user_id: as_utc(claim.claimed_at) for claim in claims}
+        totals: dict[int, int] = {}
+        for user_id, amount, recorded_at in rows:
+            if as_utc(recorded_at) >= claimed_at.get(user_id, first_claim):
+                totals[user_id] = totals.get(user_id, 0) + amount
+        return totals
 
     async def reconcile_cancelled_days(self) -> int:
         """Finish a day cancellation interrupted before refunds were persisted."""
@@ -997,63 +1050,31 @@ class PaymentsService:
     def _refund_row(
         claim: PaymentClaim,
         *,
-        day: DayBookings | None,
-        cancelled_lift_time: str | None,
-        pending: bool = False,
+        refunded: int,
+        released: int = 0,
+        whole_day: bool = False,
     ) -> RefundRow:
-        """One rider's line: what they paid, what they still hold, what comes back.
+        """One rider's line: what they transferred, and what goes back.
 
-        Cancelling one lift out of two does not undo the whole payment — the seats
-        they still hold keep their share. Reporting the full amount had the admin
-        handing back money for a trip that is still happening.
-
-        `pending` is the preview: the lift has not been cancelled yet, so it is
-        still among the rider's bookings and has to be taken out here. Without
-        that, every preview reported nothing to refund.
+        `refunded` is what the cycle's cancellations already owe the rider; the
+        claim has been lowered by it. `released` is a preview's not-yet-reversed
+        money. Released seats use up the cash part first, because cash is handed
+        over on site: only money transferred in advance can come back.
         """
-        remaining: tuple[str, ...] = (
-            ()
-            if day is None or cancelled_lift_time is None
-            else tuple(
-                lift_time
-                for lift_time in day.booked_lift_times_by_user.get(claim.telegram_user_id, ())
-                if claim.telegram_user_id in day.seat_holders_by_lift.get(lift_time, ())
-                or day.guests_by_user_lift.get((claim.telegram_user_id, lift_time), 0)
-            )
-        )
-        if pending and cancelled_lift_time is not None:
-            remaining = tuple(
-                lift_time for lift_time in remaining if lift_time != cancelled_lift_time
-            )
-        held = (
-            sum(
-                claim.telegram_user_id in day.seat_holders_by_lift.get(lift_time, ())
-                for lift_time in remaining
-            )
-            if day is not None
-            else 0
-        )
-        if day is not None:
-            held += sum(
-                day.guests_by_user_lift.get((claim.telegram_user_id, lift_time), 0)
-                for lift_time in remaining
-            )
-        released_gel = min(
-            claim.amount_gel,
-            max(claim.seats - held, 0) * (claim.amount_gel // max(claim.seats, 1)),
-        )
-        # Cash is handed over on site, so a cancelled seat paid in cash simply is
-        # not paid for. Released seats use up the cash part first; only money
-        # transferred in advance can come back.
         cash_gel = min(claim.cash_amount_gel or 0, claim.amount_gel)
-        transferred_gel = claim.amount_gel - cash_gel
+        transferred_left = claim.amount_gel - cash_gel
+        refund_now = min(transferred_left, max(released - cash_gel, 0))
+        if whole_day:
+            # Anything a cancellation did not reverse (a day settled from the old
+            # estimate) still goes back when the whole day goes.
+            refund_now = transferred_left
         return RefundRow(
             label=_rider_label(claim.username, claim.full_name),
             telegram_user_id=claim.telegram_user_id,
             seats=claim.seats,
-            amount_gel=transferred_gel,
-            remaining_lift_times=remaining,
-            refund_gel=min(transferred_gel, max(released_gel - cash_gel, 0)),
+            amount_gel=transferred_left + refunded,
+            remaining_lift_times=(),
+            refund_gel=refunded + refund_now,
         )
 
     async def refunds(self, *, paid: bool = False) -> list[dict[str, Any]]:
@@ -1116,7 +1137,9 @@ class PaymentsService:
             )
             await session.commit()
 
-    async def recent_refund_reports(self, *, limit: int = 10) -> tuple[StoredRefundReport, ...]:
+    async def recent_refund_reports(
+        self, *, limit: int = 10, tracked: bool | None = None
+    ) -> tuple[StoredRefundReport, ...]:
         """The last few refund lists, newest first, so a deleted message is not lost.
 
         The text is returned exactly as it was shown at the time, wording and
@@ -1132,6 +1155,7 @@ class PaymentsService:
                     select(RefundReport)
                     .where(RefundReport.environment == self._settings.app_env)
                     .where(RefundReport.chat_id == self._require_chat_id())
+                    .where(true() if tracked is None else RefundReport.tracked.is_(tracked))
                     .order_by(RefundReport.created_at.desc(), RefundReport.id.desc())
                     .limit(limit)
                 )
@@ -1501,20 +1525,8 @@ class PaymentsService:
     async def _day_in_session(
         self, session: AsyncSession, service_date: date
     ) -> DayBookings | None:
-        from contextlib import asynccontextmanager
-
-        @asynccontextmanager
-        async def current_session():
-            yield session
-
-        days = await load_day_bookings(
-            settings=self._settings,
-            session_factory=current_session,
-            chat_id=self._require_chat_id(),
-            today=service_date,
-            until=service_date,
-        )
-        return next(iter(days), None)
+        self._require_chat_id()
+        return await day_in_session(session, settings=self._settings, service_date=service_date)
 
     async def _day(self, service_date: date) -> DayBookings | None:
         days = await self._active_days(today=service_date)

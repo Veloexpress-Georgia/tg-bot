@@ -527,3 +527,43 @@ def test_availability_card_shows_a_confirmed_bike_park():
     )
     height = lambda png: Image.open(BytesIO(png)).height  # noqa: E731
     assert height(with_park) > height(plain)
+
+
+async def test_weekend_bike_park_decision_catches_up_on_service_day_morning(park_setup):
+    _, _, _, runtime, _, _ = park_setup
+    day, _, deadline = await _weekend_day_with_votes(runtime, park_votes=6)
+    morning = deadline.replace(year=day.year, month=day.month, day=day.day, hour=8)
+    await runtime.lifts.decide_weekend_bike_parks(now=morning)
+    parks = await runtime.lifts.bike_park.list(service_date=day)
+    assert len(parks) == 1
+    assert parks[0].start_time == "11:45"
+
+
+async def test_cancelled_lift_day_does_not_start_automatic_bike_park(park_setup):
+    _, _, _, runtime, _, _ = park_setup
+    day, _, deadline = await _weekend_day_with_votes(runtime, park_votes=6)
+    await runtime.lifts.cancel_day(service_date=day, admin_user_id=1)
+    await runtime.lifts.decide_weekend_bike_parks(now=deadline)
+    assert await runtime.lifts.bike_park.list(service_date=day) == ()
+
+
+async def test_late_bike_park_catch_up_does_not_announce_a_started_session(park_setup):
+    _, _, telegram, runtime, _, _ = park_setup
+    day, _, deadline = await _weekend_day_with_votes(runtime, park_votes=6)
+    afternoon = deadline.replace(year=day.year, month=day.month, day=day.day, hour=15)
+    await runtime.lifts.decide_weekend_bike_parks(now=afternoon)
+    assert await runtime.lifts.bike_park.list(service_date=day) == ()
+    assert not any("Bike park is on" in t for t in telegram.sent_texts)
+
+
+async def test_finished_independent_bike_park_poll_is_closed_once(park_setup):
+    db, _, telegram, runtime, operations, day = park_setup
+    await publish(operations, day)
+    async with db.session() as session:
+        row = await session.scalar(select(BikeParkSession))
+        assert row is not None
+        row.service_date = runtime.lifts.bike_park.now().date() - timedelta(days=1)
+        await session.commit()
+    await runtime.lifts.bike_park.reconcile()
+    await runtime.lifts.bike_park.reconcile()
+    assert telegram.stopped == [42]

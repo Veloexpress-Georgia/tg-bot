@@ -4,13 +4,14 @@ import logging
 from asyncio import sleep
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from veloexpress_bot.config import Settings
+from veloexpress_bot.db.locking import transaction_lock
 from veloexpress_bot.db.models import PollAutoSchedule, WorkerCheckpoint
 from veloexpress_bot.polls.autoschedule import (
     SHORT_WEEKDAY_LABELS,
@@ -26,7 +27,9 @@ from veloexpress_bot.polls.autoschedule import (
     render_schedule_summary,
     skip_target_week,
     state_from_row,
+    validate_publication_schedule,
 )
+from veloexpress_bot.polls.liftsignals import booking_deadline_at
 from veloexpress_bot.polls.schedule import enabled_lift_count, lift_range_from_cancelled
 from veloexpress_core.lifts import (
     DuplicatePollError,
@@ -37,6 +40,7 @@ from veloexpress_core.lifts import (
 )
 from veloexpress_core.payments import PaymentsService
 from veloexpress_core.planning import resolve_week_plan
+from veloexpress_core.terms import ServiceDayDefaultsStore
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +75,8 @@ class PollAutoScheduler:
         self._telegram_client = telegram_client
         self._payments_service = payments_service
         self._zone = ZoneInfo(settings.schedule_timezone)
+        self._invalid_schedule_warning: str | None = None
+        self._defaults = ServiceDayDefaultsStore(settings=settings, session_factory=session_factory)
 
     @property
     def zone(self) -> ZoneInfo:
@@ -208,8 +214,29 @@ class PollAutoScheduler:
                 raise SchedulerDegradedError(", ".join(failures))
             return None
 
+        defaults = await self._defaults.values()
+        try:
+            validate_publication_schedule(row_data.state, defaults.deadline_time)
+        except ValueError as error:
+            fingerprint = f"{row_data.state}:{defaults.deadline_time}"
+            if fingerprint != self._invalid_schedule_warning:
+                logger.warning("invalid_auto_post_schedule: %s", error)
+                self._invalid_schedule_warning = fingerprint
+            if failures:
+                raise SchedulerDegradedError(", ".join(failures)) from None
+            return None
+        self._invalid_schedule_warning = None
         action = decide_tick(row_data.state, now_local)
         if action is None:
+            if failures:
+                raise SchedulerDegradedError(", ".join(failures))
+            return None
+
+        if action.kind == "create" and now_local >= booking_deadline_at(
+            action.service_week_start, defaults.deadline_time, zone=self._zone
+        ):
+            logger.warning("auto_post_deadline_missed week=%s", action.service_week_start)
+            await self._mark_week_done(action.service_week_start)
             if failures:
                 raise SchedulerDegradedError(", ".join(failures))
             return None
@@ -217,12 +244,55 @@ class PollAutoScheduler:
         if action.kind == "announce":
             await self._announce(action, announced_at=now_local)
         elif action.kind == "create":
-            await self._create_scheduled_polls(action, row_data)
+            if not await self._create_with_backoff(action, row_data, now_local):
+                if failures:
+                    raise SchedulerDegradedError(", ".join(failures))
+                return None
         else:
             await self._mark_week_skipped(action, row_data)
         if failures:
             raise SchedulerDegradedError(", ".join(failures))
         return action.kind
+
+    async def _create_with_backoff(
+        self, action: TickAction, row_data: ScheduleRowData, now: datetime
+    ) -> bool:
+        name = (
+            f"auto-post:{self._settings.telegram_target_chat_id}:"
+            f"{self._settings.telegram_target_thread_id}:{action.service_week_start}"
+        )
+        async with self._session_factory() as session:
+            checkpoint = await session.scalar(
+                select(WorkerCheckpoint).where(
+                    WorkerCheckpoint.environment == self._settings.app_env,
+                    WorkerCheckpoint.name == name,
+                )
+            )
+            if checkpoint is not None and checkpoint.last_failure_at is not None:
+                failed_at = checkpoint.last_failure_at
+                if failed_at.tzinfo is None:
+                    failed_at = failed_at.replace(tzinfo=UTC)
+                if now < failed_at + timedelta(minutes=15):
+                    return False
+        try:
+            await self._create_scheduled_polls(action, row_data)
+        except Exception as error:
+            async with self._session_factory() as session:
+                checkpoint = await session.scalar(
+                    select(WorkerCheckpoint).where(
+                        WorkerCheckpoint.environment == self._settings.app_env,
+                        WorkerCheckpoint.name == name,
+                    )
+                )
+                if checkpoint is None:
+                    checkpoint = WorkerCheckpoint(environment=self._settings.app_env, name=name)
+                    session.add(checkpoint)
+                checkpoint.last_failure_at = now.astimezone(UTC)
+                checkpoint.last_error = str(error)[:2000]
+                await session.commit()
+            await self._poll_service.notify_auto_post_failure(action.service_week_start)
+            raise
+        return True
 
     async def _record_worker_checkpoint(self, *, error: Exception | None) -> None:
         now = datetime.now(UTC)
@@ -493,6 +563,11 @@ class PollAutoScheduler:
             msg = "TELEGRAM_TARGET_CHAT_ID is required to configure the poll schedule."
             raise ValueError(msg)
         async with self._session_factory() as session:
+            await transaction_lock(
+                session,
+                f"day-defaults:{self._settings.app_env}:{self._settings.telegram_target_chat_id}:{self._settings.telegram_target_thread_id}",
+            )
+            defaults = await self._defaults.values()
             row = await self._row(session)
             if row is None:
                 row = PollAutoSchedule(
@@ -504,6 +579,8 @@ class PollAutoScheduler:
                 session.add(row)
             state = state_from_row(row)
             updated = apply(state)
+            if updated != replace(state, enabled=False):
+                validate_publication_schedule(updated, defaults.deadline_time)
             row.enabled = updated.enabled
             row.creation_weekday = updated.creation_weekday
             row.creation_time = updated.creation_time

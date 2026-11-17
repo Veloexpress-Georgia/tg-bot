@@ -314,8 +314,6 @@ export interface MyDays {
   days: {
     service_date: string;
     past: boolean;
-  cancellation_closed?: boolean;
-  recoverable_posting?: boolean;
     lifts: {
       time: string;
       seats: number;
@@ -337,4 +335,11 @@ export interface RefundReport {
   amount_gel: number;
   method: string;
   paid_at: string | null;
+}
+/** A rendered estimate saved before refunds were tracked. */
+export interface LegacyRefundReport {
+  service_date: string;
+  lift_time: string | null;
+  text: string;
+  created_at: string;
 }
