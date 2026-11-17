@@ -325,6 +325,11 @@ class RecreatePollsResult:
 # Early enough to be in hand before the first van at 8:30, late enough not to be
 # a notification in the middle of the night.
 MONITOR_REPOST_AT = time(8, 0)
+# Finished polls are closed a few at a time, and only for recent days: closing
+# a whole season of old polls at once trips Telegram's flood control for the
+# chat and delays real messages.
+CLOSE_FINISHED_POLLS_DAYS = 2
+CLOSE_FINISHED_POLLS_PER_TICK = 3
 
 
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
@@ -3250,19 +3255,24 @@ class PollPostingService:
                         PollBatch.chat_id == self._settings.telegram_target_chat_id,
                         PollBatch.thread_id == self._settings.telegram_target_thread_id,
                         PollBatch.service_date < today,
+                        PollBatch.service_date >= today - timedelta(days=CLOSE_FINISHED_POLLS_DAYS),
                         PollMessage.message_kind == "poll",
                         PollMessage.cleanup_status.not_in(
                             ("stopped", "deleted", "telegram_deleted", "delete_expired")
                         ),
                     )
-                    .with_for_update()
+                    .order_by(PollBatch.service_date, PollMessage.id)
+                    .limit(CLOSE_FINISHED_POLLS_PER_TICK)
+                    .with_for_update(skip_locked=True)
                 )
             )
             for message in messages:
-                if await self._telegram_client.stop_poll(
+                if not await self._telegram_client.stop_poll(
                     chat_id=self._require_target_chat_id(), message_id=message.telegram_message_id
                 ):
-                    message.cleanup_status = "stopped"
+                    # Most likely flood control: try the rest on a later tick.
+                    break
+                message.cleanup_status = "stopped"
             await session.commit()
 
     async def refresh_booking_statuses(self, *, now: datetime | None = None) -> None:

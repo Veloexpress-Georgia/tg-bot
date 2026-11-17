@@ -268,6 +268,7 @@ class BikeParkService:
             )
         async with self.sessions() as session:
             rows = list(await session.scalars(query.with_for_update()))
+            stop_failed = False
             for row in rows:
                 created_at = row.created_at
                 if created_at.tzinfo is None:
@@ -282,9 +283,12 @@ class BikeParkService:
                 if (
                     row.status == "cancelled" or row.service_date < self.now().date()
                 ) and not row.poll_closed:
-                    row.poll_closed = await self.telegram.stop_poll(
-                        chat_id=row.chat_id, message_id=row.telegram_message_id
-                    )
+                    # After one failure (likely flood control) wait for a later tick.
+                    if not stop_failed:
+                        row.poll_closed = await self.telegram.stop_poll(
+                            chat_id=row.chat_id, message_id=row.telegram_message_id
+                        )
+                        stop_failed = not row.poll_closed
                 elif (
                     row.status == "posted"
                     and (row.service_date, row.start_time)

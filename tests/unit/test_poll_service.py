@@ -3146,3 +3146,27 @@ async def test_finished_day_closes_polls_once_and_leaves_history(db: SharedDatab
     await service.refresh_booking_statuses(now=tomorrow)
     assert client.stopped == [poll.message_id]
     assert poll.message_id not in client.deleted
+
+
+async def test_closing_finished_polls_skips_old_days_and_backs_off(db: SharedDatabase) -> None:
+    client = FakeTelegramClient()
+    service = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    day, _ = _upcoming_weekend()
+    poll = await service.create_poll(PollSetup(service_date=day, created_by_user_id=1))
+
+    # A season-old poll is left alone instead of flooding the chat.
+    long_after = datetime.combine(
+        day + timedelta(days=30), time(0), tzinfo=ZoneInfo("Asia/Tbilisi")
+    )
+    await service.refresh_booking_statuses(now=long_after)
+    assert client.stopped == []
+
+    # A failed stop is retried on a later tick.
+    client.fail_stop_once = True
+    tomorrow = datetime.combine(day + timedelta(days=1), time(0), tzinfo=ZoneInfo("Asia/Tbilisi"))
+    await service.refresh_booking_statuses(now=tomorrow)
+    assert client.stopped == []
+    await service.refresh_booking_statuses(now=tomorrow)
+    assert client.stopped == [poll.message_id]
