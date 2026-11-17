@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -20,9 +21,35 @@ from veloexpress_bot.db.base import Base
 
 ACTIVE_POLL_BATCH_STATUSES = ("posting", "posted", "sent_unconfirmed")
 
+# Every value the code writes into a status-like column. The CHECK constraints
+# below are built from these, and migration 20261117_0035 freezes the same sets.
+POLL_BATCH_STATUSES = (
+    "draft",
+    *ACTIVE_POLL_BATCH_STATUSES,
+    "failed",
+    "cancelled",
+    "cleanup_pending",
+    "cleanup_failed",
+    "recreated",
+    "deleted",
+)
+BIKE_PARK_STATUSES = ("posting", "posted", "sent_unconfirmed", "failed", "cancelled", "not_reached")
+SEAT_OFFER_STATUSES = ("open", "closed")
+TELEGRAM_OUTBOX_STATUSES = ("pending", "sent", "failed", "expired")
+ADMIN_COMMAND_STATUSES = ("pending", "running", "complete", "failed", "review")
+PAYMENT_ENTRY_KINDS = ("received", "reversal", "method_change", "refund")
+PAYMENT_CLAIM_METHODS = ("cash", "transfer", "mixed")
+
+
+def one_of(table: str, column: str, values: tuple[str, ...]) -> CheckConstraint:
+    """`column IN (...)`. A NULL passes a CHECK, so nullable columns stay nullable."""
+    allowed = ", ".join(f"'{value}'" for value in values)
+    return CheckConstraint(f"{column} IN ({allowed})", name=f"ck_{table}_{column}")
+
 
 class PollBatch(Base):
     __tablename__ = "poll_batch"
+    __table_args__ = (one_of("poll_batch", "status", POLL_BATCH_STATUSES),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     environment: Mapped[str] = mapped_column(String(64))
@@ -84,7 +111,8 @@ class PollVote(Base):
     __tablename__ = "poll_vote"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    poll_id: Mapped[str] = mapped_column(Text, index=True)
+    # Looked up through uq_poll_vote_poll_user, whose first column it is.
+    poll_id: Mapped[str] = mapped_column(Text)
     telegram_user_id: Mapped[int] = mapped_column(BigInteger)
     username: Mapped[str | None] = mapped_column(String(128))
     full_name: Mapped[str] = mapped_column(Text)
@@ -363,6 +391,7 @@ class SeatOffer(Base):
     """
 
     __tablename__ = "seat_offer"
+    __table_args__ = (one_of("seat_offer", "status", SEAT_OFFER_STATUSES),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     environment: Mapped[str] = mapped_column(String(64))
@@ -423,6 +452,7 @@ class PaymentClaim(Base):
     """
 
     __tablename__ = "payment_claim"
+    __table_args__ = (one_of("payment_claim", "method", PAYMENT_CLAIM_METHODS),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     environment: Mapped[str] = mapped_column(String(64))
@@ -439,8 +469,9 @@ class PaymentClaim(Base):
     # total kept on the read projection for cheap board rendering.
     amount_gel: Mapped[int] = mapped_column(Integer, default=0)
     cash_amount_gel: Mapped[int] = mapped_column(Integer, default=0)
-    # "cash" | "transfer" | NULL when the bot never learned how the money arrived.
-    # Misho reconciles against his bank statement, so cash is the case worth naming.
+    # "cash" | "transfer" | "mixed" when a day was paid partly each way, or NULL
+    # when the bot never learned how the money arrived. Misho reconciles against
+    # his bank statement, so cash is the case worth naming.
     method: Mapped[str | None] = mapped_column(String(16))
     claimed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
@@ -524,6 +555,7 @@ class ServiceDayDefaults(Base):
 
 class BikeParkSession(Base):
     __tablename__ = "bike_park_session"
+    __table_args__ = (one_of("bike_park_session", "status", BIKE_PARK_STATUSES),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     environment: Mapped[str] = mapped_column(String(64))
@@ -571,6 +603,7 @@ class PaymentEntry(Base):
     """One append-only money movement or method correction for a rider and day."""
 
     __tablename__ = "payment_entry"
+    __table_args__ = (one_of("payment_entry", "kind", PAYMENT_ENTRY_KINDS),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     environment: Mapped[str] = mapped_column(String(64))
@@ -762,6 +795,7 @@ class TelegramOutbox(Base):
     """A Telegram text delivery that must survive transient API failures."""
 
     __tablename__ = "telegram_outbox"
+    __table_args__ = (one_of("telegram_outbox", "status", TELEGRAM_OUTBOX_STATUSES),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     environment: Mapped[str] = mapped_column(String(64))
@@ -781,6 +815,10 @@ class TelegramOutbox(Base):
 
 
 Index("ix_poll_vote_event_batch_id", PollVoteEvent.batch_id)
+# Foreign keys the scheduler joins through on every tick.
+Index("ix_poll_message_batch_id", PollMessage.batch_id)
+Index("ix_poll_option_snapshot_batch_id", PollOptionSnapshot.batch_id)
+Index("ix_payment_entry_reversed_entry_id", PaymentEntry.reversed_entry_id)
 Index("ix_poll_vote_event_user", PollVoteEvent.telegram_user_id)
 
 
@@ -1047,6 +1085,39 @@ Index(
 )
 
 
+# Sent rows pile up forever; delivery only ever reads the few still pending.
+Index(
+    "ix_telegram_outbox_pending",
+    TelegramOutbox.environment,
+    TelegramOutbox.id,
+    postgresql_where=TelegramOutbox.status == "pending",
+    sqlite_where=TelegramOutbox.status == "pending",
+)
+
+
+Index(
+    "ix_seat_offer_day",
+    SeatOffer.environment,
+    SeatOffer.chat_id,
+    SeatOffer.service_date,
+    SeatOffer.status,
+)
+
+
+# The application lock already keeps this true; the index makes it a fact.
+Index(
+    "uq_seat_offer_open_lift",
+    SeatOffer.environment,
+    SeatOffer.chat_id,
+    func.coalesce(SeatOffer.thread_id, 0),
+    SeatOffer.service_date,
+    SeatOffer.lift_time,
+    unique=True,
+    postgresql_where=SeatOffer.status == "open",
+    sqlite_where=SeatOffer.status == "open",
+)
+
+
 Index(
     "uq_poll_batch_active_service_day",
     PollBatch.environment,
@@ -1063,6 +1134,7 @@ class AdminCommand(Base):
     """Durable web action and audit trail; uncertain executions are never replayed."""
 
     __tablename__ = "admin_command"
+    __table_args__ = (one_of("admin_command", "status", ADMIN_COMMAND_STATUSES),)
     id: Mapped[int] = mapped_column(primary_key=True)
     environment: Mapped[str] = mapped_column(String(64))
     chat_id: Mapped[int] = mapped_column(BigInteger)
