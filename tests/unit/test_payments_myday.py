@@ -71,7 +71,7 @@ def test_several_lifts_offer_one_tap_for_a_guest_riding_along() -> None:
     rows = _buttons(draft.reply_markup)
     assert rows[0] == [
         ("💸 I paid · 60 ₾", "guest:pay:20260801"),
-        ("💵 Cash · 60 ₾", "guest:cash:20260801"),
+        ("💵 I'll pay cash · 60 ₾", "guest:cash:20260801"),
     ]
     assert rows[1] == [
         ("− Guest from all lifts", "guest:allsub:20260801"),
@@ -99,7 +99,7 @@ def test_an_unfilled_lift_offers_settling_the_whole_day() -> None:
     assert "Due now 15 ₾ · whole day 45 ₾." in draft.text
     assert _buttons(draft.reply_markup)[1] == [
         ("💸 I paid all · 45 ₾", "guest:payall:20260801"),
-        ("💵 Cash, all · 45 ₾", "guest:cashall:20260801"),
+        ("💵 I'll pay cash, all · 45 ₾", "guest:cashall:20260801"),
     ]
 
 
@@ -367,7 +367,7 @@ def test_topup_buttons_show_only_the_unpaid_amount() -> None:
     )
     buttons = dict((data, text) for row in _buttons(draft.reply_markup) for text, data in row)
     assert buttons["guest:pay:20260801"] == "💸 I paid · 15 ₾"
-    assert buttons["guest:cash:20260801"] == "💵 Cash · 15 ₾"
+    assert buttons["guest:cash:20260801"] == "💵 I'll pay cash · 15 ₾"
     assert buttons["guest:payall:20260801"] == "💸 I paid all · 30 ₾"
 
 
@@ -391,3 +391,21 @@ def test_prepaid_pending_rides_are_not_presented_as_a_refund() -> None:
         for row in _buttons(draft.reply_markup)
         for _, data in row
     )
+
+
+def test_no_running_lift_means_no_whole_day_button() -> None:
+    """A payment needs a running lift to land on; the button would only be refused."""
+    draft = render_rider_card(
+        _card(
+            RiderDayView(
+                service_date=SATURDAY,
+                rows=(),
+                pending_lift_times=("10:00", "13:30"),
+                due_now_gel=0,
+                due_all_gel=30,
+            )
+        )
+    )
+    callbacks = [callback for row in _buttons(draft.reply_markup) for _, callback in row]
+    assert "guest:payall:20260801" not in callbacks
+    assert "guest:cashall:20260801" not in callbacks

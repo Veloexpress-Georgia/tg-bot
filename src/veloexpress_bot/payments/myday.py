@@ -22,6 +22,7 @@ from datetime import date, datetime
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from veloexpress_bot.payment_copy import CASH_BUTTON
 from veloexpress_bot.payments.details import bank_details_text
 from veloexpress_bot.polls.render import SHORT_DAY_LABELS
 from veloexpress_bot.wording import day_label, money, plural
@@ -295,14 +296,16 @@ def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyb
                     callback_data=f"guest:pay:{encoded_date}",
                 ),
                 InlineKeyboardButton(
-                    text=f"💵 Cash · {money(due_now)}",
+                    text=f"{CASH_BUTTON} · {money(due_now)}",
                     callback_data=f"guest:cash:{encoded_date}",
                 ),
             ]
         )
     # Settling the whole day up front only makes sense while something is unfilled.
     # It matters most for cash: handing money over twice means finding Misho twice.
-    if day.pending_lift_times and due_all:
+    # A payment needs at least one running lift to land on, so with none the
+    # buttons would only be refused.
+    if day.pending_lift_times and due_all and day.due_now_gel:
         rows.append(
             [
                 InlineKeyboardButton(
@@ -310,7 +313,7 @@ def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyb
                     callback_data=f"guest:payall:{encoded_date}",
                 ),
                 InlineKeyboardButton(
-                    text=f"💵 Cash, all · {money(due_all)}",
+                    text=f"{CASH_BUTTON}, all · {money(due_all)}",
                     callback_data=f"guest:cashall:{encoded_date}",
                 ),
             ]
