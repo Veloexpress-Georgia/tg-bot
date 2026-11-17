@@ -24,6 +24,7 @@ class RiderStatistics:
     received_gel: int
     reversed_gel: int
     net_gel: int
+    refunded_gel: int = 0
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class Statistics:
     backfilled_days: int
     received_gel: int
     reversed_gel: int
+    refunded_gel: int
     net_gel: int
     riders: tuple[RiderStatistics, ...]
 
@@ -126,7 +128,10 @@ class HistoryStatistics:
                     last_day=max((s.service_date for s in own_rides), default=None),
                     received_gel=sum(e.amount_gel for e in entries if e.kind == "received"),
                     reversed_gel=-sum(e.amount_gel for e in entries if e.kind == "reversal"),
-                    net_gel=sum(e.amount_gel for e in entries),
+                    refunded_gel=-sum(e.amount_gel for e in entries if e.kind == "refund"),
+                    net_gel=sum(
+                        e.amount_gel for e in entries if e.kind in {"received", "reversal"}
+                    ),
                 )
             )
         if user_id is not None:
@@ -150,6 +155,7 @@ class HistoryStatistics:
             backfilled_days=len({r.service_date for r in results if r.source == "backfilled"}),
             received_gel=sum(e.amount_gel for e in money if e.kind == "received"),
             reversed_gel=-sum(e.amount_gel for e in money if e.kind == "reversal"),
-            net_gel=sum(e.amount_gel for e in money),
+            refunded_gel=-sum(e.amount_gel for e in money if e.kind == "refund"),
+            net_gel=sum(e.amount_gel for e in money if e.kind in {"received", "reversal"}),
             riders=tuple(sorted(riders, key=lambda r: (-r.days, -r.lifts, r.user_id))),
         )

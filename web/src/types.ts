@@ -18,6 +18,7 @@ export interface Summary {
   expected_gel: number;
   received_gel: number;
   reversed_gel: number;
+  refunded_gel?: number;
   net_gel: number;
   cash_gel: number;
   transfer_gel: number;
@@ -149,6 +150,8 @@ export interface LiveDay {
   expected_gel: number;
   owed_gel: number;
   past: boolean;
+  cancellation_closed?: boolean;
+  recoverable_posting?: boolean;
   running_count: number;
   confirmed_seat_count: number;
   waitlist: {
@@ -217,6 +220,7 @@ export interface Planning {
   };
 }
 export type Action =
+  | 'pay_refund'
   | 'manual'
   | 'cancel_lift'
   | 'restore_lift'
@@ -259,6 +263,7 @@ export interface BookingOrderProposal extends BookingOrder {
 }
 export interface CommandSpec {
   action: Action;
+  refund_id?: number;
   request_id?: string;
   service_date?: string;
   lift_time?: string;
@@ -309,6 +314,8 @@ export interface MyDays {
   days: {
     service_date: string;
     past: boolean;
+  cancellation_closed?: boolean;
+  recoverable_posting?: boolean;
     lifts: {
       time: string;
       seats: number;
@@ -323,8 +330,11 @@ export interface MyDays {
   bank_details: string;
 }
 export interface RefundReport {
+  id: number;
   service_date: string;
-  lift_time: string | null;
-  text: string;
-  created_at: string;
+  telegram_user_id: number;
+  label: string;
+  amount_gel: number;
+  method: string;
+  paid_at: string | null;
 }

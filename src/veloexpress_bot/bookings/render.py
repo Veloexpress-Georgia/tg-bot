@@ -140,6 +140,8 @@ class BookingMonitorDay:
     # A day that has already happened stays visible for late bookkeeping, but
     # cancelling it would refund a trip people took.
     past: bool = False
+    cancellation_closed: bool = False
+    recoverable_posting: bool = False
     unpaid_riders: tuple[MonitorRider, ...] = ()
     cash_pending: tuple[MonitorRider, ...] = ()
     guests: tuple[MonitorGuest, ...] = ()
@@ -326,14 +328,21 @@ def render_booking_monitor(
             ]
         )
     day_row = [InlineKeyboardButton(text="👥 All riders", callback_data=f"mon:all:{compact_date}")]
-    if not selected_day.past and any(not lift.cancelled for lift in selected_day.lifts):
+    if (
+        not selected_day.past
+        and not selected_day.cancellation_closed
+        and (
+            selected_day.recoverable_posting
+            or any(not lift.cancelled for lift in selected_day.lifts)
+        )
+    ):
         day_row.append(
             InlineKeyboardButton(
                 text="🚫 Cancel ordinary lifts" if selected_day.bike_park else "🚫 Cancel day",
                 callback_data=f"mon:cancelday:{compact_date}",
             )
         )
-    if selected_day.lifts:
+    if selected_day.lifts or selected_day.recoverable_posting:
         rows.append(day_row)
     if selected_day.lifts:
         rows.append(

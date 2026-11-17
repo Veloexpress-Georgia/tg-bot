@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from aiogram.types import InlineKeyboardMarkup
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from veloexpress_bot.config import Settings
@@ -1260,8 +1260,8 @@ async def test_cancelling_a_day_reports_every_payment_as_a_refund(db: SharedData
     assert "nothing left" not in report
     async with db.session() as session:
         entries = (await session.scalars(select(PaymentEntry).order_by(PaymentEntry.id))).all()
-    assert sum(entry.amount_gel for entry in entries) == 45
-    assert all(entry.kind == "received" for entry in entries)
+    assert sum(entry.amount_gel for entry in entries) == 0
+    assert {entry.kind for entry in entries} == {"received", "reversal"}
 
 
 async def test_a_refund_preview_files_nothing(db: SharedDatabase) -> None:
@@ -1318,7 +1318,7 @@ async def test_scheduler_finishes_an_interrupted_day_cancellation(db: SharedData
         reports = (await session.scalars(select(RefundReport))).all()
         entries = (await session.scalars(select(PaymentEntry))).all()
     assert len(reports) == 1
-    assert sum(entry.amount_gel for entry in entries) == 15
+    assert sum(entry.amount_gel for entry in entries) == 0
 
 
 async def test_cancelling_one_lift_separates_refunds_from_riders_who_stay(
@@ -2735,7 +2735,7 @@ async def test_the_worker_tick_writes_yesterday_down(db: SharedDatabase) -> None
 
 
 @pytest.mark.parametrize("cancel_whole_day", [False, True])
-async def test_refund_reports_are_cumulative_estimates_not_money_movements(
+async def test_refund_reports_are_cumulative_and_reverse_cancelled_seats(
     db: SharedDatabase, cancel_whole_day: bool
 ) -> None:
     polls, payments, _client, poll_id, saturday = await _setup(db)
@@ -2770,7 +2770,11 @@ async def test_refund_reports_are_cumulative_estimates_not_money_movements(
     async with db.session() as session:
         entries = (await session.scalars(select(PaymentEntry))).all()
         reports = (await session.scalars(select(RefundReport))).all()
-    assert [(entry.kind, entry.amount_gel) for entry in entries] == [("received", 30)]
+    assert [(entry.kind, entry.amount_gel) for entry in entries] == [
+        ("received", 30),
+        ("reversal", -15),
+        ("reversal", -15),
+    ]
     assert len(reports) == 2
 
 
@@ -2992,7 +2996,221 @@ async def test_deleted_poll_preserves_money_and_records_refund_estimate(db: Shar
         entries = list(await session.scalars(select(PaymentEntry)))
         claims = list(await session.scalars(select(PaymentClaim)))
         reports = list(await session.scalars(select(RefundReport)))
-    assert [entry.amount_gel for entry in entries] == [15]
+    assert [entry.amount_gel for entry in entries] == [15, -15]
     assert claims == []
     assert len(reports) == 1 and "15 GEL" in reports[0].text
     assert any("cancelled" in text for _, text in client.edits)
+
+
+async def test_cancel_clears_old_booking_cycle(db: SharedDatabase) -> None:
+    from veloexpress_bot.db.models import GuestSeat, LiftSeatState, ServiceDayNotice
+
+    polls, payments, client, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    await payments.adjust_guest_seats(
+        service_date=day, telegram_user_id=100, lift_times=("8:30",), delta=1
+    )
+    async with db.session() as session:
+        scope = dict(environment="test", chat_id=CHAT_ID, thread_id=LIFT_THREAD, service_date=day)
+        session.add(
+            LiftSeatState(**scope, lift_time="8:30", held_waitlist_ids="100", declined_ids="101")
+        )
+        session.add(
+            ServiceDayNotice(**scope, deadline_message_id=987, roster_captured_at=datetime.now(UTC))
+        )
+        await session.commit()
+    await polls.cancel_day(service_date=day, admin_user_id=1)
+    async with db.session() as session:
+        assert await session.scalar(select(GuestSeat)) is None
+        assert await session.scalar(select(LiftSeatState)) is None
+        assert await session.scalar(select(ServiceDayNotice)) is None
+    assert 987 in client.deleted
+
+
+async def test_recreate_preserves_day_markers_and_retires_reminder(db: SharedDatabase) -> None:
+    from veloexpress_bot.db.models import CancelledLift, ServiceDayNotice
+
+    polls, _, client, _, day = await _setup(db)
+    async with db.session() as session:
+        scope = dict(environment="test", chat_id=CHAT_ID, thread_id=LIFT_THREAD, service_date=day)
+        session.add(
+            ServiceDayNotice(**scope, deadline_message_id=987, roster_captured_at=datetime.now(UTC))
+        )
+        session.add(CancelledLift(**scope, lift_time="8:30", cancelled_by_user_id=1))
+        await session.commit()
+    await polls.recreate_polls((PollSetup(service_date=day, created_by_user_id=1),))
+    async with db.session() as session:
+        notice = await session.scalar(select(ServiceDayNotice))
+        assert notice is not None and notice.roster_captured_at is not None
+        assert await session.scalar(select(CancelledLift)) is not None
+    assert 987 in client.deleted
+
+
+async def test_stale_day_cancel_refused(db: SharedDatabase) -> None:
+    polls, _, _, _, day = await _setup(db, service_date=date(2020, 1, 4))
+    with pytest.raises(ValueError, match="departed"):
+        await polls.cancel_day(service_date=day, admin_user_id=1)
+
+
+async def test_cancelled_day_refuses_payment(db: SharedDatabase) -> None:
+    polls, payments, _, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    await polls.cancel_day(service_date=day, admin_user_id=1)
+    outcome = await payments.claim(
+        service_date=day, telegram_user_id=100, username=None, full_name="Rider"
+    )
+    assert "cancelled" in outcome.text.lower()
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentEntry)) is None
+
+
+async def test_capture_reloads_roster_under_day_lock(db: SharedDatabase) -> None:
+    from unittest.mock import AsyncMock
+
+    polls, payments, _, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    stale = await payments._day(day)
+    assert stale is not None
+    await polls.track_poll_answer(
+        poll_id=poll_id, telegram_user_id=100, username=None, full_name="Rider", option_ids=()
+    )
+    payments._lock_day = AsyncMock(wraps=payments._lock_day)
+    rows = await payments._capture_roster(
+        stale, now=datetime.now(UTC), deadline_at=datetime.now(UTC)
+    )
+    payments._lock_day.assert_awaited_once()
+    assert rows is not None and all(row.telegram_user_id != 100 for row in rows)
+
+
+@pytest.mark.parametrize("status", ["posting", "sent_unconfirmed"])
+async def test_stale_posting_can_be_cancelled(db: SharedDatabase, status: str) -> None:
+    from veloexpress_bot.db.models import PollBatch
+
+    polls, _, _, _, day = await _setup(db)
+    async with db.session() as session:
+        batch = await session.scalar(select(PollBatch))
+        assert batch is not None
+        batch.status = status
+        batch.created_at = datetime.now(UTC) - timedelta(minutes=10)
+        await session.commit()
+    await polls.cancel_day(service_date=day, admin_user_id=1)
+    async with db.session() as session:
+        batch = await session.scalar(select(PollBatch))
+        assert batch is not None and batch.status == "cancelled"
+
+
+async def test_day_cancel_reverses_receipts_and_tracks_refund(db: SharedDatabase) -> None:
+    polls, payments, _, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    await payments.claim(service_date=day, telegram_user_id=100, username=None, full_name="Rider")
+    await polls.cancel_day(service_date=day, admin_user_id=1)
+    async with db.session() as session:
+        entries = list(await session.scalars(select(PaymentEntry)))
+        assert sum(e.amount_gel for e in entries) == 0
+        reversal = next(e for e in entries if e.kind == "reversal")
+        assert reversal.reversed_entry_id is not None
+    refunds = await payments.refunds()
+    assert len(refunds) == 1 and refunds[0]["amount_gel"] == 15
+    await payments.pay_refund(refunds[0]["id"])
+    await payments.pay_refund(refunds[0]["id"])
+    assert not await payments.refunds()
+    assert len(await payments.refunds(paid=True)) == 1
+    async with db.session() as session:
+        entries = list(
+            await session.scalars(select(PaymentEntry).where(PaymentEntry.kind == "refund"))
+        )
+        assert len(entries) == 1 and entries[0].amount_gel == -15
+
+
+async def test_lift_cancel_tracks_cumulative_refunds_once(db: SharedDatabase) -> None:
+    polls, payments, _, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    await payments.claim(service_date=day, telegram_user_id=100, username=None, full_name="Rider")
+    await polls.cancel_lift(service_date=day, lift_time="8:30", admin_user_id=1)
+    await payments.cancellation_report(service_date=day, cancelled_lift_time="8:30")
+    await payments.cancellation_report(service_date=day, cancelled_lift_time="8:30")
+    refunds = await payments.refunds()
+    assert len(refunds) == 1 and refunds[0]["amount_gel"] == 15
+    await polls.cancel_day(service_date=day, admin_user_id=1)
+    assert sum(row["amount_gel"] for row in await payments.refunds()) == 15
+
+
+async def test_cancelled_lift_refuses_old_payment_button(db: SharedDatabase) -> None:
+    polls, payments, _, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    await polls.cancel_lift(service_date=day, lift_time="8:30", admin_user_id=1)
+    await payments.claim(
+        service_date=day,
+        telegram_user_id=100,
+        username=None,
+        full_name="Rider",
+        acknowledged=True,
+        include_pending=True,
+    )
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentEntry)) is None
+
+
+async def test_repost_drops_old_payment_projection(db: SharedDatabase) -> None:
+    polls, payments, _, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    await payments.claim(service_date=day, telegram_user_id=100, username=None, full_name="Rider")
+    await polls.cancel_day(service_date=day, admin_user_id=1)
+    await polls.create_poll(PollSetup(service_date=day, created_by_user_id=1))
+    async with db.session() as session:
+        assert await session.scalar(select(PaymentClaim)) is None
+        assert await session.scalar(select(PaymentEntry)) is not None
+
+
+async def test_lift_refund_is_saved_before_report(db: SharedDatabase) -> None:
+    polls, payments, _, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    await payments.claim(service_date=day, telegram_user_id=100, username=None, full_name="Rider")
+    await polls.cancel_lift(service_date=day, lift_time="8:30", admin_user_id=1)
+    assert sum(r["amount_gel"] for r in await payments.refunds()) == 15
+
+
+async def test_undo_reverses_remaining_amount_after_partial_cancellation(
+    db: SharedDatabase,
+) -> None:
+    polls, payments, _, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, 1, riders=5)
+    await payments.claim(service_date=day, telegram_user_id=100, username=None, full_name="Rider")
+    await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
+    await payments.undo(service_date=day, telegram_user_id=100)
+    async with db.session() as session:
+        entries = list(await session.scalars(select(PaymentEntry)))
+        assert sum(e.amount_gel for e in entries if e.kind != "refund") == 0
+
+
+async def test_day_cancel_reverses_receipts_without_a_claim_projection(db: SharedDatabase) -> None:
+    polls, payments, _, poll_id, day = await _setup(db)
+    await _fill(polls, poll_id, 0, riders=5)
+    await payments.claim(service_date=day, telegram_user_id=100, username=None, full_name="Rider")
+    await payments.forget_day(service_date=day)
+    await polls.cancel_day(service_date=day, admin_user_id=1)
+    async with db.session() as session:
+        assert await session.scalar(select(func.sum(PaymentEntry.amount_gel))) == 0
+    assert sum(r["amount_gel"] for r in await payments.refunds()) == 15
+
+
+async def test_stale_send_without_snapshots_exposes_cancel_button(db: SharedDatabase) -> None:
+    from sqlalchemy import delete
+
+    from veloexpress_bot.db.models import PollBatch
+
+    polls, _, _, _, day = await _setup(db)
+    async with db.session() as session:
+        batch = await session.scalar(select(PollBatch))
+        assert batch is not None
+        batch.status = "posting"
+        batch.created_at = datetime.now(UTC) - timedelta(minutes=10)
+        await session.execute(delete(PollOptionSnapshot))
+        await session.commit()
+    view = await polls.booking_monitor_view(selected_service_date=day)
+    assert view.reply_markup is not None
+    assert any(
+        button.callback_data == f"mon:cancelday:{day:%Y%m%d}"
+        for row in view.reply_markup.inline_keyboard
+        for button in row
+    )

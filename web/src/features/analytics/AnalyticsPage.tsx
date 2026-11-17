@@ -469,6 +469,10 @@ function MoneyCard({ data }: { data: Analytics }) {
           <dd className="tabular">{money(summary.reversed_gel)}</dd>
         </div>
         <div>
+          <dt>{t.analytics.refunded}</dt>
+          <dd className="tabular">{money(summary.refunded_gel ?? 0)}</dd>
+        </div>
+        <div>
           <dt>{t.analytics.expected}</dt>
           <dd className="tabular">{money(summary.expected_gel)}</dd>
         </div>

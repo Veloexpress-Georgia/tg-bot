@@ -109,7 +109,7 @@ function LiveDayView({
       {route.tab === 'lifts' && (
         <>
           {day.bike_park && <BikeParkCard park={day.bike_park} admin />}
-          {day.lifts.length > 0 && (
+          {(day.lifts.length > 0 || day.recoverable_posting) && (
             <>
               <Section title={t.home.lifts}>
                 <LiftBoard
@@ -138,7 +138,7 @@ function LiveDayView({
               <Button onClick={() => navigate({ name: 'planning', date })}>{t.park.create}</Button>
             </Section>
           )}
-          {!day.past && day.lifts.length > 0 && (
+          {!day.past && !day.cancellation_closed && (day.lifts.length > 0 || day.recoverable_posting) && (
             <Section title={t.day.manage}>
               <Card flush>
                 <List>

@@ -235,7 +235,7 @@ export const ru: Messages = {
     confirm: 'Подтвердить',
     affected: (n) => `${count(n, 'участник', 'участника', 'участников')} в этот день`,
     title: {
-      cancel_day: 'Отменить весь день?',
+    cancel_day: 'Отменить весь день?',
       cancel_lift: 'Отменить выезд?',
       post: 'Опубликовать опросы сейчас?',
       extra: 'Создать дополнительный день?',
@@ -245,6 +245,7 @@ export const ru: Messages = {
     },
   },
   actions: {
+    pay_refund: 'Возврат денег',
     manual: 'Ручные места',
     booking_order: 'Порядок записи',
     payment: 'Отметка оплаты',
@@ -276,11 +277,14 @@ export const ru: Messages = {
     },
   },
   refunds: {
-    title: 'Оценки возвратов',
-    subtitle: 'Суммы, показанные админам при отмене выезда или дня.',
-    notice: 'Это сохранённые оценки. Они не подтверждают, что деньги вернули.',
-    wholeDay: 'весь день',
-    empty: 'Сохранённых оценок пока нет.',
+    title: 'Возвраты',
+    subtitle: 'Деньги к возврату за отменённые дни и подъёмы.',
+    notice: 'Отметьте выплату после возврата денег.',
+    open: 'К выплате',
+    paid: 'Выплаченные',
+    markPaid: 'Отметить выплату',
+    wholeDay: 'whole day',
+    empty: 'В этом списке нет возвратов.',
   },
   history: {
     finishedDay: 'Завершённый день',
@@ -288,6 +292,7 @@ export const ru: Messages = {
     reconstructed: 'Восстановлено по поздним данным',
     saved: 'Сохранённый результат',
     received: 'Добавлено оплат',
+    refunded: 'Возвращено',
     reversed: 'Сторнировано',
     price: 'Цена места',
     seats: (taken, capacity) => `${taken} из ${capacity} мест`,
@@ -301,6 +306,7 @@ export const ru: Messages = {
     noLifts: 'Для этого дня выезды не сохранены.',
   },
   analytics: {
+    refunded: 'Возвращено',
     title: 'Аналитика',
     subtitle: 'Завершённые дни: деньги, места и спрос.',
     personalTitle: 'Моя история',

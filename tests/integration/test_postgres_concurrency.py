@@ -422,3 +422,27 @@ async def test_concurrent_first_manual_seats_stay_within_capacity(
     assert sum(isinstance(result, ValueError) for result in results) == 1
     detail = await polls.lift_detail(service_date=day, lift_time="8:30")
     assert detail is not None and detail[0].manual_count == 1 and detail[0].seat_count == 10
+
+
+async def test_deadline_capture_waits_for_day_lock_and_reloads(pg: helpers.SharedDatabase):
+    polls, payments, _, poll_id, day = await helpers._setup(pg)
+    await helpers._fill(polls, poll_id, 0, riders=5)
+    stale = await payments._day(day)
+    assert stale is not None
+    from datetime import UTC, datetime
+
+    async with pg.session() as session:
+        await payments._lock_day(session, day)
+        task = asyncio.create_task(
+            payments._capture_roster(stale, now=datetime.now(UTC), deadline_at=datetime.now(UTC))
+        )
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        vote = await session.scalar(
+            select(PollVote).where(PollVote.poll_id == poll_id, PollVote.telegram_user_id == 100)
+        )
+        assert vote is not None
+        vote.option_ids = ""
+        await session.commit()
+    rows = await asyncio.wait_for(task, 5)
+    assert rows is not None and all(row.telegram_user_id != 100 for row in rows)

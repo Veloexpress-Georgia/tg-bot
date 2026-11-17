@@ -218,7 +218,8 @@ async def test_cancel_lift_worker_reports_the_paid_seat_after_cancellation(
             assert len(list(await session.scalars(select(RefundReport)))) == 1
             entries = list(await session.scalars(select(PaymentEntry)))
         assert [(entry.kind, entry.amount_gel) for entry in entries] == [
-            ("received", expected_refund)
+            ("received", expected_refund),
+            ("reversal", -expected_refund),
         ]
     finally:
         await db.dispose()
@@ -285,7 +286,7 @@ async def test_worker_refunds_stay_cumulative_and_keep_remaining_rides(
             assert len(list(await session.scalars(select(RefundReport)))) == 2
             entries = list(await session.scalars(select(PaymentEntry)))
             claim = await session.scalar(select(PaymentClaim))
-        assert [(entry.kind, entry.amount_gel) for entry in entries] == [("received", 45)]
+        assert sum(entry.amount_gel for entry in entries) == 0
         assert (claim is None) == cancel_whole_day
         if cancel_whole_day:
             assert all(d.service_date != day for d in await lifts.status_days())
@@ -342,5 +343,40 @@ async def test_failed_cancellation_does_not_file_a_refund_report(
         assert not await queue.process_one(operations)
         assert await payments.recent_refund_reports() == ()
         assert await operations.preview(spec) == preview
+    finally:
+        await db.dispose()
+
+
+async def test_refund_queue_is_admin_only_and_retry_safe() -> None:
+    from tests.unit.test_payments_service import _fill, _setup
+
+    from veloexpress_core.commands import Operations
+    from veloexpress_core.runtime import build_runtime
+
+    db = SharedDatabase()
+    await db.create()
+    try:
+        lifts, payments, client, poll_id, day = await _setup(db)
+        await _fill(lifts, poll_id, 0)
+        await payments.claim(
+            service_date=day, telegram_user_id=100, username=None, full_name="Rider"
+        )
+        await lifts.cancel_day(service_date=day, admin_user_id=1)
+        refund = (await payments.refunds())[0]
+        config = settings()
+        operations = Operations(
+            settings=config,
+            runtime=build_runtime(
+                settings=config, session_factory=db.session, telegram_client=client
+            ),
+        )
+        spec = CommandInput(request_id=uuid4(), action="pay_refund", refund_id=refund["id"])
+        with pytest.raises(PermissionError):
+            await operations.execute(spec, actor_user_id=100, identity={})
+        queue = CommandQueue(settings=config, session_factory=db.session)
+        await queue.enqueue(spec, actor_user_id=1)
+        assert await queue.process_one(operations)
+        assert not await payments.refunds()
+        assert len(await payments.refunds(paid=True)) == 1
     finally:
         await db.dispose()

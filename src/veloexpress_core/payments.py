@@ -4,6 +4,7 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, func, select
@@ -23,6 +24,7 @@ from veloexpress_bot.db.models import (
     PaymentsBoard,
     PollBatch,
     PollMessage,
+    RefundObligation,
     RefundReport,
     RiderCard,
     SeatOffer,
@@ -305,6 +307,8 @@ class PaymentsService:
             day = await self._day(service_date)
             if day is None:
                 return ClaimOutcome(BOARD_GONE_TEXT)
+            if day.cancelled:
+                return ClaimOutcome("This day is cancelled. Payment cannot be recorded.")
             # Seats come from the day ledger, the same figures the board and the
             # cards show, so the amount a tap records is the amount they quote.
             rider = day_ledger(day).rider(telegram_user_id)
@@ -792,17 +796,18 @@ class PaymentsService:
                     .where(PaymentEntry.service_date == service_date)
                     .where(PaymentEntry.telegram_user_id == telegram_user_id)
                     .where(PaymentEntry.kind == "received")
-                    .where(
-                        PaymentEntry.id.not_in(
-                            select(PaymentEntry.reversed_entry_id).where(
-                                PaymentEntry.reversed_entry_id.is_not(None)
-                            )
-                        )
-                    )
                 )
             ).all()
             now = datetime.now(UTC)
             for entry in entries:
+                reversed_amount = await session.scalar(
+                    select(func.sum(PaymentEntry.amount_gel)).where(
+                        PaymentEntry.kind == "reversal", PaymentEntry.reversed_entry_id == entry.id
+                    )
+                )
+                remaining = entry.amount_gel + (reversed_amount or 0)
+                if remaining <= 0:
+                    continue
                 session.add(
                     PaymentEntry(
                         environment=entry.environment,
@@ -810,7 +815,7 @@ class PaymentsService:
                         thread_id=entry.thread_id,
                         service_date=entry.service_date,
                         telegram_user_id=entry.telegram_user_id,
-                        amount_gel=-entry.amount_gel,
+                        amount_gel=-remaining,
                         method=entry.method,
                         kind="reversal",
                         reference_key=f"undo:{entry.id}",
@@ -908,6 +913,25 @@ class PaymentsService:
             # admin's chat message is the only list of who is owed money, and a
             # stray delete takes it with them.
             async with self._session_factory() as session:
+                await self._lock_day(session, service_date)
+                from veloexpress_core.refunds import reverse_cancellation
+
+                released = {}
+                for claim, row in zip(claims, rows, strict=True):
+                    held = (
+                        sum(
+                            int(claim.telegram_user_id in day.seat_holders_by_lift.get(t, ()))
+                            + day.guests_by_user_lift.get((claim.telegram_user_id, t), 0)
+                            for t in row.remaining_lift_times
+                        )
+                        if day is not None
+                        else 0
+                    )
+                    released[claim.telegram_user_id] = min(
+                        claim.amount_gel,
+                        max(claim.seats - held, 0) * (claim.amount_gel // max(claim.seats, 1)),
+                    )
+                await reverse_cancellation(session, list(claims), released)
                 existing_report = await session.scalar(
                     select(RefundReport.id)
                     .where(RefundReport.environment == self._settings.app_env)
@@ -969,8 +993,8 @@ class PaymentsService:
             reconciled += 1
         return reconciled
 
+    @staticmethod
     def _refund_row(
-        self,
         claim: PaymentClaim,
         *,
         day: DayBookings | None,
@@ -1031,6 +1055,66 @@ class PaymentsService:
             remaining_lift_times=remaining,
             refund_gel=min(transferred_gel, max(released_gel - cash_gel, 0)),
         )
+
+    async def refunds(self, *, paid: bool = False) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            rows = list(
+                await session.scalars(
+                    select(RefundObligation)
+                    .where(
+                        RefundObligation.environment == self._settings.app_env,
+                        RefundObligation.chat_id == self._require_chat_id(),
+                        RefundObligation.thread_id == self._settings.telegram_target_thread_id,
+                        RefundObligation.paid_at.is_not(None)
+                        if paid
+                        else RefundObligation.paid_at.is_(None),
+                    )
+                    .order_by(RefundObligation.service_date, RefundObligation.id)
+                )
+            )
+            return [
+                dict(
+                    id=r.id,
+                    service_date=r.service_date,
+                    telegram_user_id=r.telegram_user_id,
+                    label=r.label,
+                    amount_gel=r.amount_gel,
+                    method=r.method,
+                    paid_at=r.paid_at,
+                )
+                for r in rows
+            ]
+
+    async def pay_refund(self, refund_id: int) -> None:
+        async with self._session_factory() as session:
+            row = await session.get(RefundObligation, refund_id)
+            if (
+                row is None
+                or row.environment != self._settings.app_env
+                or row.chat_id != self._require_chat_id()
+                or row.thread_id != self._settings.telegram_target_thread_id
+            ):
+                raise ValueError("Refund not found")
+            await self._lock_day(session, row.service_date)
+            await session.refresh(row)
+            if row.paid_at is not None:
+                return
+            row.paid_at = datetime.now(UTC)
+            session.add(
+                PaymentEntry(
+                    environment=row.environment,
+                    chat_id=row.chat_id,
+                    thread_id=row.thread_id,
+                    service_date=row.service_date,
+                    telegram_user_id=row.telegram_user_id,
+                    amount_gel=-row.amount_gel,
+                    method=row.method,
+                    kind="refund",
+                    reference_key=f"refund:{row.id}",
+                    reversed_entry_id=row.reversal_entry_id,
+                )
+            )
+            await session.commit()
 
     async def recent_refund_reports(self, *, limit: int = 10) -> tuple[StoredRefundReport, ...]:
         """The last few refund lists, newest first, so a deleted message is not lost.
@@ -1413,6 +1497,24 @@ class PaymentsService:
             deadline_time=day.deadline_time,
             cancelled=day.cancelled,
         )
+
+    async def _day_in_session(
+        self, session: AsyncSession, service_date: date
+    ) -> DayBookings | None:
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def current_session():
+            yield session
+
+        days = await load_day_bookings(
+            settings=self._settings,
+            session_factory=current_session,
+            chat_id=self._require_chat_id(),
+            today=service_date,
+            until=service_date,
+        )
+        return next(iter(days), None)
 
     async def _day(self, service_date: date) -> DayBookings | None:
         days = await self._active_days(today=service_date)
@@ -1860,6 +1962,11 @@ class PaymentsService:
     ) -> tuple[RosterSeat, ...] | None:
         """Returns the frozen rows, or None when the day was already frozen."""
         async with self._session_factory() as session:
+            await self._lock_day(session, day.service_date)
+            latest = await self._day_in_session(session, day.service_date)
+            if latest is None or latest.cancelled:
+                return None
+            day = latest
             notice = await self._service_day_notice(session=session, service_date=day.service_date)
             if notice is not None and notice.roster_captured_at is not None:
                 return None
@@ -1988,6 +2095,14 @@ class PaymentsService:
         age_days = (now.date() - day.service_date).days
         source = "closed" if age_days <= FRESH_FREEZE_DAYS else "backfilled"
         async with self._session_factory() as session:
+            await self._lock_day(session, day.service_date)
+            notice = await self._service_day_notice(session=session, service_date=day.service_date)
+            if notice is not None and notice.results_frozen_at is not None:
+                return
+            latest = await self._day_in_session(session, day.service_date)
+            if latest is None:
+                return
+            day = latest
             claims = (
                 await session.scalars(
                     select(PaymentClaim)

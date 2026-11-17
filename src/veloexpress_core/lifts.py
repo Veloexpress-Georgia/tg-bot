@@ -55,10 +55,12 @@ from veloexpress_bot.db.models import (
     BikeParkSession,
     BikeParkVote,
     CancelledLift,
+    CashPromise,
     DeadlineRoster,
     GuestSeat,
     LiftDayResult,
     LiftDaySeat,
+    LiftSeatState,
     LiftSignalState,
     ManualBookingCount,
     PaymentClaim,
@@ -71,6 +73,7 @@ from veloexpress_bot.db.models import (
     PollScheduleHistory,
     PollVote,
     PollVoteEvent,
+    SeatOffer,
     ServiceDayNotice,
     ServiceDayTerms,
 )
@@ -141,6 +144,16 @@ from veloexpress_core import booking_order
 from veloexpress_core.bikepark import BikeParkService
 from veloexpress_core.seat_hold import apply_vote_to_waitlists, held_waitlist, held_waitlists
 from veloexpress_core.terms import ServiceDayDefaultsStore
+
+
+def _manageable_batches():
+    return or_(
+        PollBatch.status == "posted",
+        (
+            PollBatch.status.in_(("posting", "sent_unconfirmed"))
+            & (PollBatch.created_at < datetime.now(UTC) - timedelta(minutes=5))
+        ),
+    )
 
 
 class DuplicatePollError(RuntimeError):
@@ -1104,6 +1117,7 @@ class PollPostingService:
         selected_service_date: date,
         refund_preview: str | None = None,
     ) -> BookingMonitorDraft | None:
+        await self.ensure_day_cancellable(selected_service_date)
         days = await self._booking_monitor_days()
         day = next(
             (day for day in days if day.service_date == selected_service_date),
@@ -1557,6 +1571,58 @@ class PollPostingService:
             admin_user_id=admin_user_id,
         )
 
+    async def _clear_booking_cycle(self, session: AsyncSession, service_date: date) -> None:
+        # Money and historical results are deliberately outside the booking cycle.
+        for model in (
+            GuestSeat,
+            DeadlineRoster,
+            LiftSeatState,
+            LiftSignalState,
+            CancelledLift,
+            CashPromise,
+            ManualBookingCount,
+            ServiceDayNotice,
+        ):
+            await session.execute(
+                delete(model).where(
+                    model.environment == self._settings.app_env,
+                    model.chat_id == self._settings.telegram_target_chat_id,
+                    model.thread_id == self._settings.telegram_target_thread_id,
+                    model.service_date == service_date,
+                )
+            )
+        await session.execute(
+            update(SeatOffer)
+            .where(
+                SeatOffer.environment == self._settings.app_env,
+                SeatOffer.chat_id == self._settings.telegram_target_chat_id,
+                SeatOffer.thread_id == self._settings.telegram_target_thread_id,
+                SeatOffer.service_date == service_date,
+                SeatOffer.status == "open",
+            )
+            .values(status="closed")
+        )
+
+    async def ensure_day_cancellable(self, service_date: date) -> None:
+        async with self._session_factory() as session:
+            times = list(
+                await session.scalars(
+                    select(PollOptionSnapshot.lift_time)
+                    .join(PollBatch)
+                    .where(
+                        PollBatch.environment == self._settings.app_env,
+                        PollBatch.chat_id == self._settings.telegram_target_chat_id,
+                        PollBatch.thread_id == self._settings.telegram_target_thread_id,
+                        PollBatch.service_date == service_date,
+                        PollBatch.status.in_(("posted", "posting", "sent_unconfirmed")),
+                        PollOptionSnapshot.lift_time.is_not(None),
+                    )
+                )
+            )
+        first = min((t for t in times if t is not None), key=lift_minutes, default="8:30")
+        if datetime.now(UTC) >= lift_departure_at(service_date, first, zone=self._zone):
+            raise ValueError("The first lift has departed. This day cannot be cancelled.")
+
     async def cancel_day(
         self,
         *,
@@ -1570,6 +1636,8 @@ class PollPostingService:
         Unlike a single-lift cancel this is not reversible in place — the date is
         freed so an admin can post a fresh poll if the day comes back.
         """
+        await self.ensure_day_cancellable(service_date)
+        await self._retire_deadline_reminder(service_date, now=datetime.now(UTC))
         if self._settings.telegram_target_chat_id is None:
             return
         async with self._session_factory() as session:
@@ -1584,7 +1652,7 @@ class PollPostingService:
                     .where(PollBatch.chat_id == self._settings.telegram_target_chat_id)
                     .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
                     .where(PollBatch.service_date == service_date)
-                    .where(PollBatch.status == "posted")
+                    .where(_manageable_batches())
                     .where(
                         PollBatch.id.in_(expected_batch_ids)
                         if expected_batch_ids is not None
@@ -1601,6 +1669,13 @@ class PollPostingService:
                     select(PollOptionSnapshot).where(PollOptionSnapshot.batch_id.in_(batch_ids))
                 )
             ).all()
+            first = min(
+                (row.lift_time for row in snapshots if row.lift_time is not None),
+                key=lift_minutes,
+                default="8:30",
+            )
+            if datetime.now(UTC) >= lift_departure_at(service_date, first, zone=self._zone):
+                raise ValueError("The first lift has departed. This day cannot be cancelled.")
             poll_ids = tuple({snapshot.poll_id for snapshot in snapshots})
             votes = (
                 await session.scalars(select(PollVote).where(PollVote.poll_id.in_(poll_ids)))
@@ -1612,23 +1687,12 @@ class PollPostingService:
 
             for batch in batches:
                 batch.status = "cancelled"
-            await session.execute(
-                delete(CancelledLift)
-                .where(CancelledLift.environment == self._settings.app_env)
-                .where(CancelledLift.chat_id == self._settings.telegram_target_chat_id)
-                .where(CancelledLift.thread_id == self._settings.telegram_target_thread_id)
-                .where(CancelledLift.service_date == service_date)
+            from veloexpress_core.refunds import reverse_day_cancellation
+
+            await reverse_day_cancellation(
+                session, settings=self._settings, service_date=service_date
             )
-            # Hand-added riders go with the day. Nobody can tell whether they still
-            # intend to come if it is revived, and leaving them behind means a fresh
-            # poll opens with seats already taken by people nobody can name.
-            await session.execute(
-                delete(ManualBookingCount)
-                .where(ManualBookingCount.environment == self._settings.app_env)
-                .where(ManualBookingCount.chat_id == self._settings.telegram_target_chat_id)
-                .where(ManualBookingCount.thread_id == self._settings.telegram_target_thread_id)
-                .where(ManualBookingCount.service_date == service_date)
-            )
+            await self._clear_booking_cycle(session, service_date)
             await session.commit()
 
         await self._close_cancelled_polls(batch_ids=batch_ids)
@@ -2040,6 +2104,13 @@ class PollPostingService:
                             created_at=now,
                         )
                     )
+            from veloexpress_core.refunds import reverse_lift_cancellation
+
+            await session.flush()
+            for service_date, lift_time in service_dates_times:
+                await reverse_lift_cancellation(
+                    session, settings=self._settings, service_date=service_date, lift_time=lift_time
+                )
             await session.commit()
 
         if notify:
@@ -2623,9 +2694,31 @@ class PollPostingService:
             if await self._is_active_batch(session=session, batch=existing):
                 raise DuplicatePollError("Poll batch already exists for this setup.")
 
+            cancelled_cycle = await session.scalar(
+                select(PollBatch.id)
+                .where(
+                    PollBatch.environment == self._settings.app_env,
+                    PollBatch.chat_id == self._settings.telegram_target_chat_id,
+                    PollBatch.thread_id == self._settings.telegram_target_thread_id,
+                    PollBatch.service_date == setup.service_date,
+                    PollBatch.status == "cancelled",
+                )
+                .limit(1)
+            )
+            if cancelled_cycle is not None and not allow_duplicate:
+                for model in (PaymentClaim, CashPromise, LiftDayResult, LiftDaySeat):
+                    await session.execute(
+                        delete(model).where(
+                            model.environment == self._settings.app_env,
+                            model.chat_id == self._settings.telegram_target_chat_id,
+                            model.thread_id == self._settings.telegram_target_thread_id,
+                            model.service_date == setup.service_date,
+                        )
+                    )
             if existing and existing.status in REUSABLE_BATCH_STATUSES:
                 batch = existing
                 batch.status = "posting"
+                batch.created_at = datetime.now(UTC)
                 batch.created_by_user_id = setup.created_by_user_id
                 batch.first_lift_location = setup.first_lift_location.value
                 batch.superseded_by_batch_id = None
@@ -2666,30 +2759,8 @@ class PollPostingService:
                     timezone=defaults.timezone,
                 )
                 session.add(terms)
-            # A fresh poll for this date starts with a clean slate: drop lift
-            # cancellations and the record of which notices already went out, or a
-            # re-posted day would never announce itself again.
-            await session.execute(
-                delete(CancelledLift)
-                .where(CancelledLift.environment == self._settings.app_env)
-                .where(CancelledLift.chat_id == self._settings.telegram_target_chat_id)
-                .where(CancelledLift.thread_id == self._settings.telegram_target_thread_id)
-                .where(CancelledLift.service_date == setup.service_date)
-            )
-            await session.execute(
-                delete(LiftSignalState)
-                .where(LiftSignalState.environment == self._settings.app_env)
-                .where(LiftSignalState.chat_id == self._settings.telegram_target_chat_id)
-                .where(LiftSignalState.thread_id == self._settings.telegram_target_thread_id)
-                .where(LiftSignalState.service_date == setup.service_date)
-            )
-            await session.execute(
-                delete(ServiceDayNotice)
-                .where(ServiceDayNotice.environment == self._settings.app_env)
-                .where(ServiceDayNotice.chat_id == self._settings.telegram_target_chat_id)
-                .where(ServiceDayNotice.thread_id == self._settings.telegram_target_thread_id)
-                .where(ServiceDayNotice.service_date == setup.service_date)
-            )
+            if not allow_duplicate:
+                await self._clear_booking_cycle(session, setup.service_date)
             try:
                 await session.flush()
                 await session.commit()
@@ -2798,6 +2869,28 @@ class PollPostingService:
                     batch_id=batch.id,
                     status="sent_unconfirmed",
                 )
+                # Telegram already returned these ids. Preserve that evidence after
+                # rollback so votes can attach, without sending a second poll.
+                session.add(
+                    PollMessage(
+                        batch_id=batch.id,
+                        telegram_message_id=sent_message.message_id,
+                        poll_id=sent_message.poll_id,
+                        message_kind="poll",
+                        pinned=pinned,
+                        cleanup_status="not_applicable",
+                    )
+                )
+                if sent_message.poll_id is not None:
+                    session.add_all(
+                        _option_snapshots(
+                            batch_id=batch.id,
+                            telegram_message_id=sent_message.message_id,
+                            poll_id=sent_message.poll_id,
+                            draft=draft,
+                        )
+                    )
+                await session.commit()
                 raise
 
             result = PollCreationResult(
@@ -2840,6 +2933,15 @@ class PollPostingService:
                 batch = await session.get(PollBatch, poll_snapshot.batch_id)
                 if batch is not None:
                     await booking_order.lock_day(self, session, batch.service_date)
+                    if batch.status in {"posting", "sent_unconfirmed"}:
+                        message = await session.scalar(
+                            select(PollMessage.id).where(
+                                PollMessage.batch_id == batch.id, PollMessage.message_kind == "poll"
+                            )
+                        )
+                        if message is not None:
+                            batch.status = "posted"
+
             vote = await session.scalar(
                 select(PollVote)
                 .where(PollVote.poll_id == poll_id)
@@ -3323,6 +3425,15 @@ class PollPostingService:
             conflicts = await self._active_batches_for_setups(session=session, setups=setups)
             if not conflicts:
                 raise DuplicatePollError("No active polls to recreate.")
+            if any(
+                batch.status in {"posting", "sent_unconfirmed"}
+                and datetime.now(UTC) - (_as_utc(batch.created_at) or datetime.now(UTC))
+                < timedelta(minutes=5)
+                for batch in conflicts
+            ):
+                raise DuplicatePollError(
+                    "Polls are still being posted. Try again in a few minutes."
+                )
             for batch in conflicts:
                 old_statuses[batch.id] = batch.status
                 batch.status = "cleanup_pending"
@@ -3336,6 +3447,9 @@ class PollPostingService:
                 "service_dates": tuple(setup.service_date.isoformat() for setup in setups),
             },
         )
+
+        for service_date in sorted({setup.service_date for setup in setups}):
+            await self._retire_deadline_reminder(service_date, now=datetime.now(UTC))
 
         created: list[PollCreationResult] = []
         try:
@@ -3809,7 +3923,7 @@ class PollPostingService:
                     .where(PollBatch.environment == self._settings.app_env)
                     .where(PollBatch.chat_id == self._settings.telegram_target_chat_id)
                     .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
-                    .where(PollBatch.status == "posted")
+                    .where(_manageable_batches())
                     .order_by(PollBatch.service_date, PollBatch.id)
                 )
             ).all()
@@ -4080,6 +4194,14 @@ class PollPostingService:
                     # own and never billed, so they are not counted as missing.
                     owed_gel=ledger.owed_gel if ledger else 0,
                     past=batch.service_date < today,
+                    recoverable_posting=batch.status in {"posting", "sent_unconfirmed"},
+                    cancellation_closed=bool(lifts)
+                    and datetime.now(UTC)
+                    >= lift_departure_at(
+                        batch.service_date,
+                        min((lift.time for lift in lifts), key=lift_minutes),
+                        zone=self._zone,
+                    ),
                     unpaid_riders=unpaid_riders,
                     cash_pending=cash_pending,
                     guests=monitor_guests,

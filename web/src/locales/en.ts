@@ -234,7 +234,7 @@ export const en = {
     confirm: 'Confirm',
     affected: (n: number) => `${count(n, 'rider', 'riders')} on this day`,
     title: {
-      cancel_day: 'Cancel the whole day?',
+    cancel_day: 'Cancel the whole day?',
       cancel_lift: 'Cancel this lift?',
       post: 'Publish the polls now?',
       extra: 'Create an extra day?',
@@ -244,6 +244,7 @@ export const en = {
     },
   },
   actions: {
+    pay_refund: 'Refund payment',
     manual: 'Offline seats',
     booking_order: 'Booking order',
     payment: 'Payment record',
@@ -275,11 +276,14 @@ export const en = {
     } satisfies Record<CommandResult['status'], string>,
   },
   refunds: {
-    title: 'Refund estimates',
-    subtitle: 'Amounts shown to admins when a lift or a day was cancelled.',
-    notice: 'These are saved estimates. They do not confirm that money was returned.',
+    title: 'Refunds',
+    subtitle: 'Money owed after cancelled lifts and days.',
+    notice: 'Mark paid only after returning the money.',
+    open: 'Open refunds',
+    paid: 'Paid history',
+    markPaid: 'Mark paid',
     wholeDay: 'whole day',
-    empty: 'No refund estimates saved yet.',
+    empty: 'No refunds in this view.',
   },
   history: {
     finishedDay: 'Finished day',
@@ -287,6 +291,7 @@ export const en = {
     reconstructed: 'Restored from later data',
     saved: 'Saved result',
     received: 'Payments added',
+    refunded: 'Refunded',
     reversed: 'Reversed',
     price: 'Seat price',
     seats: (seats: number, capacity: number) => `${seats} of ${capacity} seats`,
@@ -300,6 +305,7 @@ export const en = {
     noLifts: 'No lifts were saved for this day.',
   },
   analytics: {
+    refunded: 'Refunded',
     title: 'Analytics',
     subtitle: 'Finished days: money, seats and demand.',
     personalTitle: 'My history',

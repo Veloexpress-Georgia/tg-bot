@@ -143,7 +143,9 @@ class DashboardAnalytics:
                     "lifts": len(own_rides),
                     "guests": sum(s.guests for s in own_seats),
                     "net_gel": sum(
-                        m.amount_gel for m in current_money if m.telegram_user_id == uid
+                        m.amount_gel
+                        for m in current_money
+                        if m.telegram_user_id == uid and m.kind in {"received", "reversal"}
                     ),
                     "last_day": max((s.service_date for s in own_rides), default=None),
                     "new": start <= first_seen.get(uid, date.min) <= end,
@@ -269,11 +271,13 @@ def _summary(
     )
     occupied = sum(s.seats for s in seats) if personal else sum(r.seats for r in running)
     capacity = sum(r.capacity for r in running)
-    net = sum(m.amount_gel for m in money)
+    net = sum(m.amount_gel for m in money if m.kind in {"received", "reversal"})
     methods: dict[tuple[date, int], dict[str, int]] = defaultdict(
         lambda: {"cash": 0, "transfer": 0, "unknown": 0}
     )
     for entry in money:
+        if entry.kind == "refund":
+            continue
         balance = methods[(entry.service_date, entry.telegram_user_id)]
         method = entry.method if entry.method in {"cash", "transfer"} else "unknown"
         if entry.kind == "method_change":
@@ -295,6 +299,7 @@ def _summary(
         "expected_gel": expected,
         "received_gel": sum(m.amount_gel for m in money if m.kind == "received"),
         "reversed_gel": -sum(m.amount_gel for m in money if m.kind == "reversal"),
+        "refunded_gel": -sum(m.amount_gel for m in money if m.kind == "refund"),
         "net_gel": net,
         "cash_gel": sum(b["cash"] for b in methods.values()),
         "transfer_gel": sum(b["transfer"] for b in methods.values()),

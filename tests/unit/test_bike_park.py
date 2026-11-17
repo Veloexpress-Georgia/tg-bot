@@ -389,7 +389,7 @@ async def test_replacing_a_prepaid_unfilled_lift_keeps_the_normal_refund_report(
     reports = await runtime.payments.recent_refund_reports()
     assert len(reports) == 1 and reports[0].lift_time == "13:30"
     async with db.session() as session:
-        assert await session.scalar(select(func.sum(PaymentEntry.amount_gel))) == 15
+        assert await session.scalar(select(func.sum(PaymentEntry.amount_gel))) == 0
 
 
 def test_weekend_bike_park_start_follows_the_last_running_lift():

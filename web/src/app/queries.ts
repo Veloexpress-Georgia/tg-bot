@@ -91,10 +91,10 @@ export const usePlanning = (enabled = true) =>
     enabled,
   });
 
-export const useRefunds = () =>
+export const useRefunds = (paid = false) =>
   useQuery({
-    queryKey: keys.refunds,
-    queryFn: () => request<RefundReport[]>('/api/admin/refunds'),
+    queryKey: [...keys.refunds, paid],
+    queryFn: () => request<RefundReport[]>(`/api/admin/refunds?paid=${paid}`),
   });
 
 export const useAudit = () =>

@@ -1,10 +1,12 @@
+import { useState } from 'react';
+import { useCommands } from '../../app/commands';
 import { ArrowDownLeft, Check, Clock3, ShieldCheck, TriangleAlert } from 'lucide-react';
 import { useAudit, useRefunds } from '../../app/queries';
 import { t } from '../../i18n';
 import { intlLocale } from '../../locale';
 import { plain } from '../../lib';
 import type { Action, CommandResult, Session } from '../../types';
-import { Badge, Card, Empty, List, Notice, Page, PageHeader, Query, Row, Section } from '../../ui';
+import { Badge, Button, Card, Empty, List, Notice, Page, PageHeader, Query, Row, Section } from '../../ui';
 import { shortDate } from '../days/model';
 import './reports.css';
 
@@ -18,24 +20,31 @@ const stamp = (value: string, timeZone?: string) =>
   });
 
 export function RefundsPage() {
-  const refunds = useRefunds();
+  const [paid, setPaid] = useState(false);
+  const refunds = useRefunds(paid);
+  const { act, busy } = useCommands();
   return (
     <Page>
       <PageHeader title={t.refunds.title} subtitle={t.refunds.subtitle} />
       <Notice>{t.refunds.notice}</Notice>
+      <Button onClick={() => setPaid(!paid)}>{paid ? t.refunds.open : t.refunds.paid}</Button>
       <Query query={refunds}>
         {(reports) =>
           reports.length ? (
             <div className="report-list">
-              {reports.map((report, index) => (
-                <Card key={index}>
+              {reports.map((report) => (
+                <Card key={report.id}>
                   <div className="report-head">
                     <strong>
-                      {shortDate(report.service_date)} · {report.lift_time ?? t.refunds.wholeDay}
+                      {report.label} · {shortDate(report.service_date)}
                     </strong>
-                    <span className="caption">{stamp(report.created_at)}</span>
+                    <span className="caption">{report.amount_gel} ₾ · {report.method}</span>
                   </div>
-                  <pre className="report">{plain(report.text)}</pre>
+                  {report.paid_at ? <span>{stamp(report.paid_at)}</span> : (
+                    <Button disabled={busy} onClick={() => act({ action: 'pay_refund', refund_id: report.id })}>
+                      {t.refunds.markPaid}
+                    </Button>
+                  )}
                 </Card>
               ))}
             </div>

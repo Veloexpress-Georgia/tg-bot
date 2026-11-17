@@ -623,6 +623,23 @@ class PaymentEntry(Base):
     )
 
 
+class RefundObligation(Base):
+    """A cancellation's payable amount; payouts remain append-only ledger entries."""
+
+    __tablename__ = "refund_obligation"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    service_date: Mapped[date] = mapped_column(Date)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger)
+    label: Mapped[str] = mapped_column(Text)
+    amount_gel: Mapped[int] = mapped_column(Integer)
+    method: Mapped[str] = mapped_column(String(16))
+    reversal_entry_id: Mapped[int] = mapped_column(ForeignKey("payment_entry.id"), unique=True)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class GuestSeat(Base):
     """Seats a rider takes for someone who has no Telegram vote of their own.
 

@@ -486,8 +486,8 @@ def create_app(
             raise HTTPException(409, str(error)) from error
 
     @app.get("/api/admin/refunds")
-    async def refunds(_: Annotated[dict[str, Any], Depends(admin)]):
-        return [asdict(report) for report in await runtime.payments.recent_refund_reports(limit=50)]
+    async def refunds(_: Annotated[dict[str, Any], Depends(admin)], paid: bool = False):
+        return await runtime.payments.refunds(paid=paid)
 
     @app.get("/api/admin/audit")
     async def audit(_: Annotated[dict[str, Any], Depends(admin)]):

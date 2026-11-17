@@ -3047,3 +3047,25 @@ async def test_queue_caption_is_cleared_on_the_same_card_when_last_waiting_vote_
     )
     assert client.edited_texts[-1] == (poll.availability_message_id, "")
     assert len(client.sent_texts) == sends
+
+
+async def test_known_poll_recovers_after_post_send_failure(db: SharedDatabase) -> None:
+    client = FakeTelegramClient(fail_pin_once=True)
+    service = PollPostingService(
+        settings=settings(), session_factory=db.session, telegram_client=client
+    )
+    with pytest.raises(RuntimeError):
+        await service.create_poll(PollSetup(service_date=date(2030, 5, 18), created_by_user_id=1))
+    async with db.session() as session:
+        message = await session.scalar(
+            select(PollMessage).where(PollMessage.message_kind == "poll")
+        )
+        assert message is not None and message.poll_id is not None
+        poll_id = message.poll_id
+    await service.track_poll_answer(
+        poll_id=poll_id, telegram_user_id=100, username=None, full_name="Rider", option_ids=(0,)
+    )
+    async with db.session() as session:
+        batch = await session.scalar(select(PollBatch))
+        assert batch is not None and batch.status == "posted"
+        assert await session.scalar(select(PollVote)) is not None

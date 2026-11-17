@@ -1022,6 +1022,13 @@ async def handle_lift_cancellation(
     service_date = decode_monitor_date(parts[2])
     admin_user_id = callback.from_user.id
 
+    if action in {"cancelday", "docancelday"}:
+        try:
+            await poll_service.ensure_day_cancellable(service_date)
+        except ValueError as error:
+            await callback.answer(str(error), show_alert=True)
+            return
+
     if action == "cancelday":
         draft = await poll_service.cancel_day_confirmation_view(
             selected_service_date=service_date,

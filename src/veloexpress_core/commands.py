@@ -24,6 +24,7 @@ from veloexpress_core.runtime import Runtime
 
 logger = logging.getLogger(__name__)
 Action = Literal[
+    "pay_refund",
     "manual",
     "cancel_lift",
     "restore_lift",
@@ -65,6 +66,7 @@ class CommandInput(BaseModel):
     action: Action
     service_date: date | None = None
     lift_time: str | None = None
+    refund_id: int | None = Field(default=None, gt=0)
     delta: int | None = None
     method: Literal["cash", "transfer"] = "transfer"
     saturday_enabled: bool | None = None
@@ -89,6 +91,7 @@ class CommandInput(BaseModel):
     @model_validator(mode="after")
     def validate_action(self) -> CommandInput:
         required = {
+            "pay_refund": ("refund_id",),
             "manual": ("service_date", "lift_time", "delta"),
             "cancel_lift": ("service_date", "lift_time"),
             "restore_lift": ("service_date", "lift_time"),
@@ -241,6 +244,8 @@ class Operations:
                 restore_user_id=spec.restore_user_id,
             )
         if spec.action in {"cancel_lift", "cancel_day"}:
+            if spec.action == "cancel_day":
+                await self.runtime.lifts.ensure_day_cancellable(spec.service_date or date.min)
             days = await self.runtime.lifts.status_days()
             day = next((d for d in days if d.service_date == spec.service_date), None)
             if day is None or day.past:
@@ -352,6 +357,9 @@ class Operations:
             if preview["digest"] != spec.expected_digest:
                 raise ValueError("Data changed. Open the confirmation again")
         rt = self.runtime
+        if spec.action == "pay_refund":
+            await rt.payments.pay_refund(spec.refund_id or 0)
+            return {"message": "Refund marked as paid"}
         day = spec.service_date or date.min
         lift_time = spec.lift_time or ""
         if spec.action == "bike_park":
