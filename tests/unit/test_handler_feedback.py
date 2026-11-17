@@ -173,16 +173,21 @@ def test_only_bot_created_pin_notices_in_target_topic_are_cleaned() -> None:
         "guest:pay:20260912:extra",
     ],
 )
-async def test_unknown_guest_action_cannot_change_seats(data: str) -> None:
+async def test_unknown_guest_action_cannot_change_seats(
+    monkeypatch: pytest.MonkeyPatch, data: str
+) -> None:
     from types import SimpleNamespace
     from typing import cast
     from unittest.mock import AsyncMock, Mock
 
-    from veloexpress_bot.bot.handlers import handle_guest_form
+    from veloexpress_bot.bot import handlers
 
+    # In the rider's own private chat, so the callback reaches its parsing.
+    message = SimpleNamespace(chat=SimpleNamespace(type="private", id=123))
+    monkeypatch.setattr(handlers, "_accessible_message", lambda _: message)
     callback = SimpleNamespace(data=data, from_user=SimpleNamespace(id=123), answer=AsyncMock())
     payments = Mock()
-    await handle_guest_form(cast(CallbackQuery, callback), payments)
+    await handlers.handle_guest_form(cast(CallbackQuery, callback), payments)
     assert payments.mock_calls == []
     callback.answer.assert_awaited_once()
 

@@ -23,6 +23,7 @@ export const en = {
     invalid: 'Check the fields and try again.',
     timeout: 'The server took too long to answer. Check the connection and try again.',
     offline: 'Cannot reach the server. Check the connection and try again.',
+    tooMany: 'Too many requests at once. Wait a minute and try again.',
   },
   boot: {
     opening: 'Opening the cabinet…',
@@ -553,6 +554,10 @@ export const en = {
       'Open the Mini App from the Telegram bot. Browser sign-in works once Telegram Login is set up.',
     reopen: 'Your Telegram sign-in has expired. Close the Mini App and open it again from the bot.',
     connectionFailed: 'Could not connect to the cabinet.',
+    membersOnly:
+      'The cabinet is only for members of the VeloExpress chat. Join the chat, then sign in again.',
+    membershipUnavailable:
+      'Telegram cannot confirm your chat membership right now. Try again in a minute.',
     demo: 'View the demo',
   },
 };

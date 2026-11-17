@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { ArrowUpRight, Send } from 'lucide-react';
-import { ApiError, request } from '../../api';
+import { ApiError, isAccessRefusal, loginRefusal, request } from '../../api';
 import { Brand } from '../../app/Brand';
 import { t } from '../../i18n';
 import { telegram } from '../../telegram';
@@ -15,6 +15,9 @@ export function LoginPage({ error, retry }: { error: Error | null; retry(): void
   });
   const inTelegram = !!telegram();
   const signedOut = error instanceof ApiError && error.status === 401;
+  // Refused by the server: after a browser sign-in redirect, or on an existing session.
+  const refusal =
+    loginRefusal(window.location.search) ?? (isAccessRefusal(error) ? error?.message : undefined);
   return (
     <div className="login">
       <div className="login-card">
@@ -40,7 +43,8 @@ export function LoginPage({ error, retry }: { error: Error | null; retry(): void
             ) : (
               <Notice>{t.login.openFromBot}</Notice>
             )}
-            {error && !signedOut && (
+            {refusal && <Notice tone="danger">{refusal}</Notice>}
+            {error && !signedOut && !refusal && (
               <Notice tone="danger">
                 <span className="login-error">
                   {t.login.connectionFailed}

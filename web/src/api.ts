@@ -11,10 +11,26 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** Machine-readable reason from the server, e.g. `not_member`. */
+    public code?: string,
   ) {
     super(message);
   }
 }
+
+/** Why the server refused cabinet access, in the cabinet language. */
+function accessRefusal(code: string | null | undefined): string | undefined {
+  if (code === 'not_member') return t.login.membersOnly;
+  if (code === 'membership_unavailable') return t.login.membershipUnavailable;
+  return undefined;
+}
+
+/** A browser sign-in that the server refused returns here with `?login_error=`. */
+export const loginRefusal = (search: string) =>
+  accessRefusal(new URLSearchParams(search).get('login_error'));
+
+export const isAccessRefusal = (error: unknown) =>
+  error instanceof ApiError && !!accessRefusal(error.code);
 /** The request may or may not have reached the server. */
 export class NetworkError extends Error {}
 
@@ -42,11 +58,21 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
       throw new NetworkError(controller.signal.aborted ? t.errors.timeout : t.errors.offline);
     }
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok)
+    if (!response.ok) {
+      const code = response.headers.get('X-Error-Code') ?? undefined;
+      // A former member's session ends: sign in again to see why.
+      if (code === 'not_member') loginPromise = undefined;
       throw new ApiError(
         response.status,
-        typeof payload.detail === 'string' ? payload.detail : t.errors.invalid,
+        accessRefusal(code) ??
+          (response.status === 429
+            ? t.errors.tooMany
+            : typeof payload.detail === 'string'
+              ? payload.detail
+              : t.errors.invalid),
+        code,
       );
+    }
     return payload as T;
   } finally {
     clearTimeout(timer);
@@ -68,7 +94,11 @@ export function loadSession(): Promise<Session> {
           // Telegram replays the original launch data when the Mini App reloads.
           // It expires after ten minutes; the session it created lasts longer.
           if (!(error instanceof ApiError && error.status === 401)) throw error;
-          const existing = await request<Session>('/api/session').catch(() => null);
+          const existing = await request<Session>('/api/session').catch((sessionError) => {
+            // The session exists but its owner may no longer use the cabinet.
+            if (isAccessRefusal(sessionError)) throw sessionError;
+            return null;
+          });
           if (!existing || existing.user_id !== telegramUserId()) throw error;
           csrf = existing.csrf;
           return existing;

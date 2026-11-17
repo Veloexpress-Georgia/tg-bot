@@ -11,14 +11,15 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import case, select, update
+from sqlalchemy import case, func, select, update
 
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.locking import transaction_lock
 from veloexpress_bot.db.models import AdminCommand
 from veloexpress_bot.polls.defaults import DEFAULT_LIFTS
+from veloexpress_bot.polls.extraday import DATE_CHOICE_COUNT
 from veloexpress_bot.polls.schedule import cancelled_lift_times_for_range, lift_range_from_cancelled
-from veloexpress_core.lifts import PollSetup, SessionFactory
+from veloexpress_core.lifts import DuplicatePollError, PollSetup, SessionFactory
 from veloexpress_core.runtime import Runtime
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,8 @@ Action = Literal[
     "booking_order",
 ]
 USER_ACTIONS = {"claim_payment", "guest", "undo_payment"}
+# Rider requests waiting for the bot at once; more are refused until it catches up.
+MAX_PENDING_RIDER_COMMANDS = 5
 CONFIRMED_ACTIONS = {
     "cancel_day",
     "cancel_lift",
@@ -50,6 +53,10 @@ CONFIRMED_ACTIONS = {
     "bike_park",
     "cancel_bike_park",
 }
+
+
+class CommandLimitError(Exception):
+    """The actor has too many requests waiting; nothing was queued."""
 
 
 class CommandInput(BaseModel):
@@ -269,9 +276,9 @@ class Operations:
             }
         if spec.action == "extra":
             today = datetime.now(UTC).astimezone(ZoneInfo(self.settings.schedule_timezone)).date()
-            if spec.service_date is None or not today <= spec.service_date <= today + timedelta(
-                days=7
-            ):
+            # The same dates the Telegram extra-day card offers.
+            last = today + timedelta(days=DATE_CHOICE_COUNT - 1)
+            if spec.service_date is None or not today <= spec.service_date <= last:
                 raise ValueError("Extra days must be within the next seven days")
             conflicts = await self.runtime.lifts.find_active_conflicts(
                 (
@@ -296,6 +303,29 @@ class Operations:
                 "details": "Publish an extra service day to the Telegram group.",
             }
         raise ValueError("This operation needs no confirmation")
+
+    async def check_rider_request(self, spec: CommandInput) -> None:
+        """Cheap early refusal of rider requests that cannot apply to any open day.
+
+        Rider requests are queued before the shared payment logic validates them,
+        so obviously ineligible ones are refused here instead of filling the queue.
+        """
+        if spec.action not in USER_ACTIONS:
+            return
+        day = next(
+            (
+                d
+                for d in await self.runtime.lifts.status_days()
+                if d.service_date == spec.service_date
+            ),
+            None,
+        )
+        if day is None:
+            raise ValueError("This day has no lifts to book or pay for")
+        if spec.action == "guest" and not any(
+            lift.time == spec.lift_time and not lift.cancelled for lift in day.lifts
+        ):
+            raise ValueError("This lift is cancelled or missing")
 
     async def execute(
         self, spec: CommandInput, *, actor_user_id: int, identity: dict[str, Any]
@@ -414,16 +444,22 @@ class Operations:
                 "count": result.created_count,
             }
         elif spec.action == "extra":
-            await rt.lifts.create_poll(
-                PollSetup(
-                    service_date=day,
-                    created_by_user_id=actor_user_id,
-                    cancelled_lift_times=cancelled_lift_times_for_range(
-                        str(spec.first_lift_time), str(spec.last_lift_time)
+            try:
+                # Same as the Telegram extra-day card: post with the route notice.
+                await rt.lifts.create_poll(
+                    PollSetup(
+                        service_date=day,
+                        created_by_user_id=actor_user_id,
+                        cancelled_lift_times=cancelled_lift_times_for_range(
+                            str(spec.first_lift_time), str(spec.last_lift_time)
+                        ),
                     ),
-                ),
-                pin_after_send=False,
-            )
+                    include_notice=True,
+                    pin_after_send=False,
+                )
+            except DuplicatePollError as error:
+                # Raised before anything is posted, so the outcome is certain.
+                raise ValueError("This day already has polls") from error
         elif spec.action == "terms":
             await rt.terms.set_values(
                 price_gel=spec.price_gel or 0,
@@ -471,6 +507,10 @@ class CommandQueue:
     def __init__(self, *, settings: Settings, session_factory: SessionFactory) -> None:
         self.settings = settings
         self.sessions = session_factory
+        # When each actor was last served by this worker; in memory, because
+        # forgetting it on restart only resets the turn order.
+        self._served: dict[int, int] = {}
+        self._turn = 0
 
     def scope(self, query: Any) -> Any:
         return query.where(
@@ -493,6 +533,20 @@ class CommandQueue:
                 if json.loads(row.payload)["spec"] != spec.model_dump(mode="json"):
                     raise ValueError("Request id already used for a different action")
                 return self.view(row)
+            if spec.action in USER_ACTIONS:
+                # Serialise one actor's inserts so the cap holds under concurrency.
+                await transaction_lock(session, f"web-command-actor:{actor_user_id}")
+                waiting = await session.scalar(
+                    self.scope(select(func.count()).select_from(AdminCommand)).where(
+                        AdminCommand.actor_user_id == actor_user_id,
+                        AdminCommand.action.in_(sorted(USER_ACTIONS)),
+                        AdminCommand.status.in_(("pending", "running")),
+                    )
+                )
+                if (waiting or 0) >= MAX_PENDING_RIDER_COMMANDS:
+                    raise CommandLimitError(
+                        "Too many requests are waiting. Wait for them to finish and try again."
+                    )
             row = AdminCommand(
                 environment=self.settings.app_env,
                 chat_id=self.settings.telegram_target_chat_id or 0,
@@ -574,12 +628,23 @@ class CommandQueue:
 
     async def process_one(self, operations: Operations) -> bool:
         async with self.sessions() as session:
+            # Take turns between actors: the actor served longest ago (or never)
+            # goes next with their oldest request, so one rider's backlog never
+            # delays another rider or an admin. One actor's order is kept.
+            heads = (
+                await session.execute(
+                    self.scope(select(AdminCommand.actor_user_id, func.min(AdminCommand.id)))
+                    .where(AdminCommand.status == "pending")
+                    .group_by(AdminCommand.actor_user_id)
+                )
+            ).all()
+            if not heads:
+                return False
+            _actor, next_id = min(heads, key=lambda head: (self._served.get(head[0], 0), head[1]))
             row = await session.scalar(
-                self.scope(select(AdminCommand))
-                .where(AdminCommand.status == "pending")
-                .order_by(AdminCommand.id)
+                select(AdminCommand)
+                .where(AdminCommand.id == next_id, AdminCommand.status == "pending")
                 .with_for_update(skip_locked=True)
-                .limit(1)
             )
             if row is None:
                 return False
@@ -587,6 +652,8 @@ class CommandQueue:
             row.started_at = datetime.now(UTC)
             command_id, actor_id, payload = row.id, row.actor_user_id, json.loads(row.payload)
             await session.commit()
+        self._turn += 1
+        self._served[actor_id] = self._turn
         status = "complete"
         try:
             result = await operations.execute(

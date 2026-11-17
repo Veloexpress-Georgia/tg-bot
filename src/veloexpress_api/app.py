@@ -18,7 +18,17 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from veloexpress_api.auth import AuthError, SessionSigner, validate_init_data
+from veloexpress_api.auth import AssertionLedger, AuthError, SessionSigner, read_init_data
+from veloexpress_api.limits import RateLimiter
+from veloexpress_api.membership import (
+    MEMBERS_ONLY_CODE,
+    MEMBERS_ONLY_DETAIL,
+    UNAVAILABLE_DETAIL,
+    MembershipGate,
+    MembershipUnavailable,
+    NotAMember,
+    telegram_member_lookup,
+)
 from veloexpress_api.settings import WebSettings
 from veloexpress_bot.config import Settings
 from veloexpress_bot.db.session import create_session_factory
@@ -29,6 +39,7 @@ from veloexpress_core.commands import (
     CONFIRMED_ACTIONS,
     USER_ACTIONS,
     CommandInput,
+    CommandLimitError,
     CommandQueue,
     Operations,
 )
@@ -37,10 +48,15 @@ from veloexpress_core.runtime import build_runtime
 
 SESSION_COOKIE = "veloexpress_session"
 OAUTH_COOKIE = "veloexpress_oauth"
+UNAVAILABLE_CODE = "membership_unavailable"
+# Per user, all command submissions; a page reload or retry is far below this.
+COMMAND_RATE_LIMIT = 20
+COMMAND_RATE_WINDOW_SECONDS = 60
 
 
 class TelegramLogin(BaseModel):
-    init_data: str = Field(max_length=16384)
+    # A bearer credential: never logged or echoed.
+    init_data: str = Field(max_length=16384, repr=False)
 
 
 class ConfirmedCommand(BaseModel):
@@ -53,6 +69,8 @@ def create_app(
     settings: Settings | None = None,
     web_settings: WebSettings | None = None,
     session_factory: SessionFactory | None = None,
+    membership: MembershipGate | None = None,
+    command_rate: RateLimiter | None = None,
 ) -> FastAPI:
     config = settings or Settings()
     web = web_settings or WebSettings()
@@ -65,6 +83,12 @@ def create_app(
         settings=config, session_factory=sessions, telegram_client=AiogramTelegramClient(bot)
     )
     analytics = DashboardAnalytics(settings=config, session_factory=sessions)
+    # Plain Bot API calls on the API's own aiogram session; no poller or scheduler.
+    members = membership or MembershipGate(
+        telegram_member_lookup(bot, config.telegram_target_chat_id)
+    )
+    used_assertions = AssertionLedger()
+    rate = command_rate or RateLimiter(limit=COMMAND_RATE_LIMIT, window=COMMAND_RATE_WINDOW_SECONDS)
     queue = CommandQueue(settings=config, session_factory=sessions)
     operations = Operations(settings=config, runtime=runtime)
 
@@ -104,7 +128,7 @@ def create_app(
         if origin and origin != web.public_url:
             raise HTTPException(403, "Untrusted origin")
 
-    def identity(request: Request) -> dict[str, Any]:
+    def session_claims(request: Request) -> dict[str, Any]:
         try:
             claims = signer.read(request.cookies.get(SESSION_COOKIE, ""), purpose="session")
             if type(claims.get("uid")) is not int or claims["uid"] <= 0:
@@ -112,6 +136,26 @@ def create_app(
             return claims
         except AuthError as error:
             raise HTTPException(401, "Sign in with Telegram") from error
+
+    async def require_member(uid: int, *, fresh: bool = False) -> None:
+        try:
+            await members.require(uid, fresh=fresh)
+        except NotAMember as error:
+            raise HTTPException(
+                403, MEMBERS_ONLY_DETAIL, headers={"X-Error-Code": MEMBERS_ONLY_CODE}
+            ) from error
+        except MembershipUnavailable as error:
+            raise HTTPException(
+                503,
+                UNAVAILABLE_DETAIL,
+                headers={"X-Error-Code": UNAVAILABLE_CODE, "Retry-After": "30"},
+            ) from error
+
+    async def identity(request: Request) -> dict[str, Any]:
+        claims = session_claims(request)
+        # Former members lose access within the membership cache period.
+        await require_member(claims["uid"])
+        return claims
 
     def admin(user: Annotated[dict[str, Any], Depends(identity)]) -> dict[str, Any]:
         if user["uid"] not in config.telegram_admin_ids:
@@ -169,9 +213,27 @@ def create_app(
     async def telegram_auth(body: TelegramLogin, request: Request, response: Response):
         check_origin(request)
         try:
-            user = validate_init_data(body.init_data, config.telegram_bot_token)
+            assertion = read_init_data(body.init_data, config.telegram_bot_token)
         except AuthError as error:
             raise HTTPException(401, str(error)) from error
+        user = assertion.user
+        try:
+            current = session_claims(request)
+        except HTTPException:
+            current = None
+        if current is not None and current["uid"] == user["id"]:
+            # A Mini App reload replays its launch data; this browser already
+            # holds the session that data was exchanged for.
+            await require_member(user["id"])
+            return {"ok": True}
+        if not used_assertions.claim(assertion.fingerprint, expires_at=assertion.expires_at):
+            raise HTTPException(401, "This Telegram sign-in was already used; reopen the app")
+        try:
+            await require_member(user["id"], fresh=True)
+        except HTTPException:
+            # Not exchanged for a session, so the same launch data may retry.
+            used_assertions.release(assertion.fingerprint)
+            raise
         issue_session(
             response,
             uid=user["id"],
@@ -265,6 +327,14 @@ def create_app(
             StopIteration,
         ) as error:
             raise HTTPException(401, "Telegram login failed; start again") from error
+        try:
+            await require_member(uid, fresh=True)
+        except HTTPException as error:
+            # A full-page redirect: the login page explains the refusal.
+            code = (error.headers or {}).get("X-Error-Code", UNAVAILABLE_CODE)
+            refused = RedirectResponse(f"/?login_error={code}", status_code=303)
+            refused.delete_cookie(OAUTH_COOKIE, path="/api/auth")
+            return refused
         response = RedirectResponse("/", status_code=303)
         issue_session(
             response,
@@ -288,7 +358,9 @@ def create_app(
 
     @app.post("/api/auth/logout")
     async def logout(
-        request: Request, response: Response, user: Annotated[dict[str, Any], Depends(identity)]
+        request: Request,
+        response: Response,
+        user: Annotated[dict[str, Any], Depends(session_claims)],
     ):
         csrf(request, user)
         response.delete_cookie(SESSION_COOKIE, path="/api")
@@ -510,6 +582,16 @@ def create_app(
             raise HTTPException(409, str(error)) from error
         if existing is not None:
             return existing
+        if not rate.allow(user["uid"]):
+            raise HTTPException(
+                429,
+                "Too many requests. Wait a minute and try again.",
+                headers={"Retry-After": str(COMMAND_RATE_WINDOW_SECONDS)},
+            )
+        try:
+            await operations.check_rider_request(spec)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
         if spec.action in CONFIRMED_ACTIONS:
             try:
                 confirmation = signer.read(body.confirmation or "", purpose="confirmation")
@@ -525,6 +607,10 @@ def create_app(
                 actor_user_id=user["uid"],
                 identity={"name": user["name"], "username": user.get("username")},
             )
+        except CommandLimitError as error:
+            raise HTTPException(
+                429, str(error), headers={"Retry-After": str(COMMAND_RATE_WINDOW_SECONDS)}
+            ) from error
         except ValueError as error:
             raise HTTPException(409, str(error)) from error
 

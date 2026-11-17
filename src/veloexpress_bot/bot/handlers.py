@@ -78,6 +78,8 @@ logger = logging.getLogger(__name__)
 
 ADMIN_ONLY_TEXT = "Admins only."
 PRIVATE_ONLY_TEXT = "Open the bot in a private chat via /start."
+# The rider card shows bookings and payments, so it never opens in a group.
+RIDER_CARD_PRIVATE_TEXT = "This works in a private chat with the bot."
 STALE_SETUP_ALERT = "This menu is outdated. Run /start again."
 STALE_BOARD_ALERT = "This payments board is outdated."
 TELEGRAM_NOT_MODIFIED_TEXT = "message is not modified"
@@ -118,11 +120,16 @@ async def open_guest_form(
     Tapping the deep link is pressing Start, which is how a rider who never opened
     the bot ends up with a private chat the bot may write to.
     """
+    user = message.from_user
+    if not _is_own_private_chat(message, user.id if user else None):
+        # `/start@Bot guests-…` typed in a group: neither record a payment nor
+        # post the sender's card there.
+        await message.answer(RIDER_CARD_PRIVATE_TEXT)
+        return
     intent = parse_deep_link(command.args or "")
     if intent is None:
         await message.answer(STALE_BOARD_ALERT)
         return
-    user = message.from_user
     if intent.method and user is not None:
         # "I paid" and "Cash" mean the money has moved, so arriving here settles
         # up — unless something needs saying first. A warning gets the card
@@ -215,6 +222,9 @@ async def handle_guest_form(
     callback: CallbackQuery,
     payments_service: PaymentsService,
 ) -> None:
+    if not _is_own_private_chat(_accessible_message(callback), callback.from_user.id):
+        await callback.answer(RIDER_CARD_PRIVATE_TEXT, show_alert=True)
+        return
     action, value = _split_callback(callback.data)
     if action == "noop":
         await callback.answer()
@@ -1809,6 +1819,16 @@ def _should_send_recreate_report(report_text: str) -> bool:
 
 def _accessible_message(callback: CallbackQuery) -> Message | None:
     return callback.message if isinstance(callback.message, Message) else None
+
+
+def _is_own_private_chat(message: Message | None, user_id: int | None) -> bool:
+    """True only in the sender's own private chat with the bot."""
+    return (
+        message is not None
+        and user_id is not None
+        and message.chat.type == "private"
+        and message.chat.id == user_id
+    )
 
 
 def _string_items(value: object) -> tuple[str, ...]:

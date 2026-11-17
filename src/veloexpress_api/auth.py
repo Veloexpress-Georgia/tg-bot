@@ -5,17 +5,36 @@ import hashlib
 import hmac
 import json
 import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qsl
+
+INIT_DATA_MAX_AGE = 600
 
 
 class AuthError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class InitData:
+    user: dict[str, Any]
+    # Identifies the signed assertion however its fields are ordered or encoded.
+    fingerprint: str = field(repr=False)
+    expires_at: int
+
+
 def validate_init_data(
-    raw: str, token: str, *, now: int | None = None, max_age: int = 600
+    raw: str, token: str, *, now: int | None = None, max_age: int = INIT_DATA_MAX_AGE
 ) -> dict[str, Any]:
+    return read_init_data(raw, token, now=now, max_age=max_age).user
+
+
+def read_init_data(
+    raw: str, token: str, *, now: int | None = None, max_age: int = INIT_DATA_MAX_AGE
+) -> InitData:
+    """Validate Mini App launch data. Never log `raw`: it is a bearer credential."""
     try:
         pairs = parse_qsl(raw, keep_blank_values=True, strict_parsing=True)
         fields = dict(pairs)
@@ -37,7 +56,11 @@ def validate_init_data(
         user = json.loads(fields["user"])
         if not isinstance(user, dict) or type(user.get("id")) is not int or user["id"] <= 0:
             raise AuthError("Invalid Telegram identity")
-        return user
+        return InitData(
+            user=user,
+            fingerprint=hashlib.sha256(supplied.encode()).hexdigest(),
+            expires_at=timestamp + max_age,
+        )
     except (ValueError, KeyError, TypeError) as error:
         raise AuthError("Invalid or expired Telegram login") from error
 
@@ -79,3 +102,27 @@ class SessionSigner:
             return claims
         except (ValueError, KeyError, TypeError) as error:
             raise AuthError("Invalid or expired session") from error
+
+
+class AssertionLedger:
+    """Signed login assertions already exchanged for a session, kept until they expire.
+
+    In memory: the API runs as one instance, and a restart forgets only
+    assertions that are at most ten minutes old.
+    """
+
+    def __init__(self, *, clock: Callable[[], float] = time.time) -> None:
+        self._clock = clock
+        self._used: dict[str, float] = {}
+
+    def claim(self, fingerprint: str, *, expires_at: float) -> bool:
+        now = self._clock()
+        for key in [k for k, until in self._used.items() if until <= now]:
+            del self._used[key]
+        if fingerprint in self._used:
+            return False
+        self._used[fingerprint] = max(expires_at, now) + 1
+        return True
+
+    def release(self, fingerprint: str) -> None:
+        self._used.pop(fingerprint, None)
