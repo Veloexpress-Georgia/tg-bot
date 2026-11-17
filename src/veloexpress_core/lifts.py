@@ -140,6 +140,7 @@ from veloexpress_bot.polls.seating import (
     queue_rank,
 )
 from veloexpress_bot.telegram.outbox import TelegramOutboxDispatcher
+from veloexpress_bot.wording import day_label
 from veloexpress_core import booking_order, refunds
 from veloexpress_core.bikepark import BikeParkService
 from veloexpress_core.seat_hold import apply_vote_to_waitlists, held_waitlist, held_waitlists
@@ -1193,7 +1194,7 @@ class PollPostingService:
             msg = "TELEGRAM_TARGET_CHAT_ID is required to adjust bookings."
             raise ValueError(msg)
         if delta not in {-1, 1}:
-            msg = "Manual booking adjustments must be +1 or -1."
+            msg = "Offline seat changes must be +1 or -1."
             raise ValueError(msg)
 
         now = datetime.now(UTC)
@@ -1224,7 +1225,7 @@ class PollPostingService:
             current_count = booking.count if booking is not None else 0
             new_count = current_count + delta
             if new_count < 0:
-                msg = "No manual bookings to remove."
+                msg = "No offline seats to remove."
                 raise ValueError(msg)
             if delta > 0:
                 cancelled = await session.scalar(
@@ -1582,7 +1583,11 @@ class PollPostingService:
     ) -> None:
         await self._set_lift_cancelled(
             service_dates_times=((service_date, lift_time),),
-            notice=f"❌ {lift_time} · {_service_day_label(service_date)} is cancelled.",
+            notice=(
+                f"❌ {lift_time} · {_service_day_label(service_date)} is cancelled.\n"
+                "Pick another lift in the poll if you can. "
+                "Paid by transfer? Misho returns any money you are owed."
+            ),
             admin_user_id=admin_user_id,
         )
 
@@ -1723,7 +1728,8 @@ class PollPostingService:
         await self._close_cancelled_polls(batch_ids=batch_ids)
         if notify:
             await self._send_tagged_notice(
-                f"❌ All lifts on {_service_day_label(service_date)} are cancelled.",
+                f"❌ All lifts on {_service_day_label(service_date)} are cancelled.\n"
+                "Paid by transfer? Misho will return your money.",
                 mentions,
                 log_label="lift_cancel_notice_failed",
                 event_id="day-cancel:"
@@ -2568,6 +2574,11 @@ class PollPostingService:
             if not kind_events or kind == "confirmed":
                 # The day payment card announces opening once and then stays live.
                 continue
+            if kind == "departure":
+                kind_events = [
+                    replace(event, location=await self._first_lift_location(event.service_date))
+                    for event in kind_events
+                ]
             mentions: dict[int, str] = {}
             for event in kind_events:
                 for user_id, label in await self._lift_voters(
@@ -2577,11 +2588,7 @@ class PollPostingService:
                 ):
                     mentions.setdefault(user_id, label)
             await self._send_tagged_notice(
-                render_lift_signal_notice(
-                    kind,
-                    tuple(kind_events),
-                    terms=await self._payment_terms(service_date=_shared_date(kind_events)),
-                ),
+                render_lift_signal_notice(kind, tuple(kind_events)),
                 mentions,
                 log_label="lift_signal_notice_failed",
                 event_id="|".join(
@@ -2594,6 +2601,24 @@ class PollPostingService:
                 len(kind_events),
                 extra={"kind": kind, "lift_count": len(kind_events)},
             )
+
+    async def _first_lift_location(self, service_date: date) -> StartLocation | None:
+        """Where the day's first running lift leaves from, as the poll notice says."""
+        async with self._session_factory() as session:
+            location = await session.scalar(
+                select(PollBatch.first_lift_location)
+                .where(PollBatch.environment == self._settings.app_env)
+                .where(PollBatch.chat_id == self._settings.telegram_target_chat_id)
+                .where(PollBatch.thread_id == self._settings.telegram_target_thread_id)
+                .where(PollBatch.service_date == service_date)
+                .where(PollBatch.status == "posted")
+                .order_by(PollBatch.created_at.desc(), PollBatch.id.desc())
+                .limit(1)
+            )
+        try:
+            return StartLocation(location) if location else None
+        except ValueError:
+            return None
 
     async def _lift_voters(
         self,
@@ -4835,13 +4860,7 @@ def _service_week_start(service_date: date) -> date:
 
 
 def _service_day_label(service_date: date) -> str:
-    return f"{service_date:%a}, {service_date.day} {service_date:%b}"
-
-
-def _shared_date(events: list[LiftEvent]) -> date | None:
-    """The one date these events cover, or None when they span a weekend."""
-    dates = {event.service_date for event in events}
-    return next(iter(dates)) if len(dates) == 1 else None
+    return day_label(service_date)
 
 
 def _waitlist_for(

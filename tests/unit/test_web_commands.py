@@ -191,7 +191,7 @@ async def test_cancel_lift_worker_reports_the_paid_seat_after_cancellation(
             request_id=uuid4(), action="cancel_lift", service_date=day, lift_time="8:30"
         )
         preview = await operations.preview(spec)
-        assert f"Total to return: {expected_refund} GEL" in preview["details"]
+        assert f"Total to return: {expected_refund} ₾" in preview["details"]
         assert (
             not next(d for d in await lifts.status_days() if d.service_date == day)
             .lifts[0]
@@ -204,7 +204,7 @@ async def test_cancel_lift_worker_reports_the_paid_seat_after_cancellation(
         result = await queue.get(command["id"], actor_user_id=1)
         assert result is not None and result["status"] == "complete"
         assert result["result"]["report"] == preview["details"]
-        assert f"Paid {expected_refund} · rides 0 GEL" in result["result"]["report"]
+        assert f"Paid {expected_refund} ₾ · kept for rides 0 ₾" in result["result"]["report"]
         assert (
             next(d for d in await lifts.status_days() if d.service_date == day).lifts[0].cancelled
         )
@@ -269,19 +269,19 @@ async def test_worker_refunds_stay_cumulative_and_keep_remaining_rides(
                 }
             )
             preview = await operations.preview(spec)
-            assert f"Total to return: {expected_return} GEL" in preview["details"]
+            assert f"Total to return: {expected_return} ₾" in preview["details"]
             spec = spec.model_copy(update={"expected_digest": preview["digest"]})
             command = await queue.enqueue(spec, actor_user_id=1)
             assert await queue.process_one(operations)
             result = await queue.get(command["id"], actor_user_id=1)
             assert result is not None and result["status"] == "complete"
             assert result["result"]["report"] == preview["details"]
-            assert f"Paid 45 · rides {expected_rides} GEL" in result["result"]["report"]
+            assert f"Paid 45 ₾ · kept for rides {expected_rides} ₾" in result["result"]["report"]
             assert (await queue.enqueue(spec, actor_user_id=1))["id"] == command["id"]
             assert not await queue.process_one(operations)
         reports = await payments.recent_refund_reports()
         assert len(reports) == 2
-        assert "Total to return: 45 GEL" in reports[0].text
+        assert "Total to return: 45 ₾" in reports[0].text
         async with db.session() as session:
             assert len(list(await session.scalars(select(RefundReport)))) == 2
             entries = list(await session.scalars(select(PaymentEntry)))

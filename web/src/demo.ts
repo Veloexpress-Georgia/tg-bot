@@ -11,6 +11,7 @@ import type {
   Session,
   Summary,
 } from './types';
+import { t } from './i18n';
 
 /** Synthetic data for ?demo=1. It is a Sunday lift day, like a real one. */
 export const demoSession: Session = {
@@ -444,7 +445,9 @@ function buildDay(service_date: string): LiveDay {
         service_date,
         lift_time: '10:00',
         status: 'review',
-        result: { message: 'Demo request whose result needs checking.' },
+        get result() {
+          return { message: t.demo.reviewRequest };
+        },
         created_at: '2026-10-04T05:40:00Z',
         finished_at: null,
       },
@@ -514,7 +517,9 @@ export const demoMyDays: MyDays = {
     booking: day.riders?.find((rider) => rider.user_id === 42) ?? null,
   })),
   polls_url: null,
-  bank_details: 'Demo data. Payment details appear in the working cabinet.',
+  get bank_details() {
+    return t.demo.bankDetails;
+  },
 };
 
 export function demoDay(day: string): DayDetail {
@@ -580,15 +585,18 @@ export function demoGet(path: string): unknown {
   if (url.pathname === '/api/admin/planning') return demoPlanning;
   if (url.pathname === '/api/my-days') return demoMyDays;
   if (url.pathname === '/api/admin/audit') return demoDays.flatMap((day) => day.commands ?? []);
+  if (url.pathname === '/api/admin/refunds/legacy') return [];
   if (url.pathname === '/api/admin/refunds')
-    return [
-      {
-        service_date: '2026-09-20',
-        lift_time: '13:30',
-        text: 'Refund estimate for cancelling lift 13:30\n@anna_v — 20 GEL\n@davit_l — 20 GEL\nTotal: 40 GEL\nThis is an estimate, not a confirmation that money was returned.',
-        created_at: '2026-09-19T17:00:00Z',
-      },
-    ];
+    return url.searchParams.get('paid') === 'true'
+      ? []
+      : ['@anna_v', '@davit_l'].map((label, index) => ({
+          id: index + 1,
+          label,
+          service_date: '2026-09-20',
+          amount_gel: 20,
+          method: 'transfer',
+          paid_at: null,
+        }));
   if (url.pathname === '/api/config') return { browser_login: false, timezone: 'Asia/Tbilisi' };
   if (url.pathname === '/api/analytics')
     return demoAnalytics(

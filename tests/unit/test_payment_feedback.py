@@ -19,7 +19,7 @@ from veloexpress_bot.payments.myday import (
 from veloexpress_core.payments import ALREADY_SETTLED_TEXT, WAITLIST_WARNING_TEXT, ClaimOutcome
 
 
-@pytest.mark.parametrize("notice", ["Recorded 60 GEL.", ALREADY_SETTLED_TEXT])
+@pytest.mark.parametrize("notice", ["Recorded 60 ₾.", ALREADY_SETTLED_TEXT])
 async def test_group_payment_result_requires_visible_acknowledgement(notice: str) -> None:
     callback = SimpleNamespace(
         data="pay:paid:20261004",
@@ -56,7 +56,7 @@ def test_surplus_is_not_presented_as_a_promised_payout() -> None:
             price_gel=20,
         )
     )
-    assert "20 GEL above current bookings" in draft.text
+    assert "20 ₾ extra" in draft.text
     assert "to come back" not in draft.text
     assert "Misho" in draft.text
 
@@ -75,7 +75,7 @@ def test_money_already_reported_is_visible_even_when_all_seats_are_waitlisted() 
             price_gel=20,
         )
     )
-    assert "Paid 20 GEL" in draft.text
+    assert "You reported 20 ₾" in draft.text
     assert "Misho" in draft.text
 
 

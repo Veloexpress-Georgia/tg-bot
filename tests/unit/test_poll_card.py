@@ -47,7 +47,7 @@ def test_availability_card_renders_dynamic_lifts_as_a_telegram_sized_png() -> No
 def test_underfilled_lifts_are_quiet_after_deadline_and_sources_are_separate() -> None:
     underfilled = LiftAvailability(time="8:30", seat_count=3)
     assert _state(underfilled, deadline_passed=False)[0] == "NEEDS 2 MORE"
-    assert _state(underfilled, deadline_passed=True)[0] == "BELOW MINIMUM"
+    assert _state(underfilled, deadline_passed=True)[0] == "STILL NEED RIDERS"
     assert (
         _state(underfilled, deadline_passed=True)[2]
         != _state(LiftAvailability(time="10:00", seat_count=5), deadline_passed=True)[2]
@@ -60,7 +60,7 @@ def test_underfilled_lifts_are_quiet_after_deadline_and_sources_are_separate() -
         guests=(GuestParty(1, "@rider", 1),),
     )
     assert [label for label, _ in _breakdown(mixed)] == [
-        "EXTERNAL +2",
+        "OFFLINE +2",
         "GUESTS +1",
         "VOTES 3",
     ]
@@ -69,7 +69,7 @@ def test_underfilled_lifts_are_quiet_after_deadline_and_sources_are_separate() -
     )
 
 
-def test_bar_colors_show_reserved_external_and_guest_seats_before_telegram_votes() -> None:
+def test_bar_colors_show_reserved_offline_and_guest_seats_before_telegram_votes() -> None:
     lift = LiftAvailability(
         time="10:00",
         seat_count=5,
@@ -163,7 +163,7 @@ def test_long_queue_caption_keeps_complete_mentions_within_telegram_limit() -> N
     assert len(visible.encode("utf-16-le")) // 2 <= 1024
     assert caption.startswith('⏳ 11:45: <a href="tg://user?id=0">')
     assert caption.count("<a href=") == caption.count("</a>")
-    assert caption.endswith("… More riders in the queue.")
+    assert caption.endswith("… More riders on the waitlist.")
     assert "image" not in caption
 
 

@@ -74,7 +74,7 @@ async def test_payment_button_records_only_two_real_seats(db: SharedDatabase):
         full_name="Vlad",
         acknowledged=True,
     )
-    assert "Total reported: 40 GEL" in outcome.text
+    assert "Total reported: 40 ₾" in outcome.text
     async with db.session() as session:
         claim = await session.scalar(
             select(PaymentClaim).where(PaymentClaim.telegram_user_id == 999)

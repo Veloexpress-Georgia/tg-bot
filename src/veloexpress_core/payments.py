@@ -69,15 +69,16 @@ from veloexpress_bot.polls.liftsignals import (
 )
 from veloexpress_bot.polls.seating import WAITLIST_FREEZE_LEAD
 from veloexpress_bot.polls.seatoffer import (
-    ACCEPTED_TEXT,
     DECLINED_TEXT,
     GONE_TEXT,
     NOT_FOR_YOU_TEXT,
+    accepted_text,
     offer_keyboard,
     render_seat_offer,
     render_seat_taken,
     widen_due,
 )
+from veloexpress_bot.wording import day_label, money, plural
 from veloexpress_core.daybook import DayBookings, load_day_bookings
 from veloexpress_core.daybook import as_utc as _as_utc
 from veloexpress_core.daybook import rider_label as _rider_label
@@ -96,13 +97,15 @@ from veloexpress_core.refunds import (
 logger = logging.getLogger(__name__)
 
 NOT_BOOKED_TEXT = "You are not booked for this day."
+# Booked, but only on lifts still below the minimum: there is nothing to pay yet.
+NOT_RUNNING_YET_TEXT = f"Your lifts don't have {MINIMUM_RIDERS} riders yet — nothing to pay now."
 ALREADY_SETTLED_TEXT = "You are already settled up for this day."
 NOTHING_TO_UNDO_TEXT = "You have not marked a payment for this day."
 # Undo erases the only record that money arrived, so it stops where the money
 # stops being the rider's to take back: an admin recorded it, or booking closed.
 UNDO_VERIFIED_TEXT = "Misho recorded this payment. Ask him if it needs undoing."
 METHOD_VERIFIED_TEXT = "Misho recorded this payment. Ask him to correct its method."
-UNDO_AFTER_DEADLINE_TEXT = "Booking closed for this day. Ask Misho about a refund."
+UNDO_AFTER_DEADLINE_TEXT = "Too late to undo: the deadline has passed. Ask Misho."
 UNDO_REFUND_PAID_TEXT = "A refund for this day was already paid out. Ask the admin to correct it."
 NOT_CLAIMED_YET_TEXT = "After paying, report the transfer or the cash you handed to Misho."
 BOARD_GONE_TEXT = "This payments board is no longer active."
@@ -323,6 +326,8 @@ class PaymentsService:
             booked_running = day.lift_times_by_user.get(telegram_user_id, ())
             guest_times = tuple(seat.lift_time for seat in seats if seat.running and seat.guests)
             if not booked_running and not guest_times:
+                if any(not seat.running and seat.seats for seat in seats):
+                    return ClaimOutcome(NOT_RUNNING_YET_TEXT)
                 return ClaimOutcome(NOT_BOOKED_TEXT)
             lift_times = tuple(seat.lift_time for seat in seats if seat.running and seat.own)
             waitlisted = day.is_waitlisted(telegram_user_id) and not guest_times
@@ -341,8 +346,8 @@ class PaymentsService:
             if claim is not None and claim.amount_gel >= owed_amount:
                 if claim.method not in {CASH_METHOD, TRANSFER_METHOD} or claim.method == method:
                     return ClaimOutcome(
-                        f"{ALREADY_SETTLED_TEXT}\n{service_date.isoformat()} · "
-                        f"reported {claim.amount_gel} GEL. Nothing added."
+                        f"{ALREADY_SETTLED_TEXT}\n{day_label(service_date)} · "
+                        f"reported {money(claim.amount_gel)}. Nothing added."
                     )
                 if claim.verified_by_user_id is not None:
                     return ClaimOutcome(METHOD_VERIFIED_TEXT)
@@ -439,10 +444,10 @@ class PaymentsService:
         # Name the lifts: the amount only makes sense once you can see that lifts
         # still short of the minimum are not charged for.
         how = " in cash" if method == CASH_METHOD else ""
-        guest_note = f" +{guests} guest(s)" if guests else ""
+        guest_note = f" + {plural(guests, 'guest')}" if guests else ""
         return ClaimOutcome(
-            f"{service_date.isoformat()} · recorded +{received_delta} GEL{how}.\n"
-            f"Total reported: {owed_amount} GEL.\n"
+            f"{day_label(service_date)} · recorded +{money(received_delta)}{how}.\n"
+            f"Total reported: {money(owed_amount)}.\n"
             f"{', '.join(paying_for)}{guest_note}."
         )
 
@@ -867,7 +872,7 @@ class PaymentsService:
             )
         if day is not None:
             await self._refresh_board(day)
-        return "Removed."
+        return "Payment report removed."
 
     async def cancellation_preview(
         self,
@@ -1772,6 +1777,7 @@ class PaymentsService:
             if offer.status != "open" or day is None or day.cancelled:
                 return GONE_TEXT
             labels = day.labels_by_user
+            price = day.price_gel
             offered = _decode_id_list(offer.offered_ids)
             waitlist = tuple(day.waitlist_by_lift.get(lift_time, ()))
             row = await session.scalar(
@@ -1824,7 +1830,7 @@ class PaymentsService:
             accept,
             extra={"offer_id": offer_id, "telegram_user_id": telegram_user_id, "accepted": accept},
         )
-        return ACCEPTED_TEXT if accept else DECLINED_TEXT
+        return accepted_text(price) if accept else DECLINED_TEXT
 
     def _seat_lock_key(self, service_date: date) -> str:
         return f"payment-day:{self._settings.app_env}:{self._require_chat_id()}:{service_date}"
@@ -2314,7 +2320,7 @@ class PaymentsService:
         return chat_id
 
 
-MANUAL_LABEL = "Manual bookings"
+MANUAL_LABEL = "Offline seats"
 
 
 def _roster_rows(day: DayBookings) -> tuple[RosterSeat, ...]:
@@ -2405,10 +2411,13 @@ def _partial_booking_warning(
     due_later: int,
 ) -> str:
     """Telegram caps a callback answer at 200 characters, so this stays terse."""
+    has = "has" if len(confirmed) == 1 else "have"
+    need = "needs" if len(pending) == 1 else "need"
     return (
-        f"⚠️ Only {', '.join(confirmed)} filled — {due_now} GEL now. "
-        f"{', '.join(pending)} still short (+{due_later} later). "
-        "Already paid? Tap again to report it; otherwise wait."
+        f"⚠️ Only {', '.join(confirmed)} {has} {MINIMUM_RIDERS} riders — "
+        f"pay {money(due_now)} now. "
+        f"{', '.join(pending)} {need} more riders (+{money(due_later)} later). "
+        f"Paid already? Tap again to report {money(due_now)}."
     )
 
 

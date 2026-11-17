@@ -12,7 +12,8 @@ from html import escape
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from veloexpress_bot.polls.render import EN_SHORT_MONTHS, SHORT_DAY_LABELS
+from veloexpress_bot.payment_copy import CASH_BUTTON, PAID_BUTTON
+from veloexpress_bot.wording import day_label, money
 
 CALLBACK_PREFIX = "seat"
 
@@ -27,10 +28,20 @@ URGENT_WIDEN_STEP = timedelta(minutes=10)
 QUIET_FROM = time(22, 0)
 QUIET_UNTIL = time(8, 0)
 
-ACCEPTED_TEXT = "✅ The seat is yours."
-DECLINED_TEXT = "OK, passed on. Vote again in the poll if you change your mind."
+DECLINED_TEXT = (
+    "OK, skipped. No more offers for this lift. Changed your mind? "
+    "Remove your vote and vote again — you go to the end of the waitlist."
+)
 NOT_FOR_YOU_TEXT = "This seat is offered to the riders tagged in the message."
 GONE_TEXT = "This seat is already taken."
+
+
+def accepted_text(price_gel: int) -> str:
+    """Taking the seat is what makes it billable, so the toast says so."""
+    return (
+        f"✅ The seat is yours. Please pay {money(price_gel)}: transfer and tap "
+        f"{PAID_BUTTON} on the board, or tap {CASH_BUTTON}."
+    )
 
 
 def is_quiet(now: datetime) -> bool:
@@ -77,8 +88,7 @@ def offer_keyboard(offer_id: int) -> InlineKeyboardMarkup:
 
 
 def lift_label(service_date: date, lift_time: str) -> str:
-    day = SHORT_DAY_LABELS.get(service_date.weekday(), "Lift day")
-    return f"{lift_time} · {day}, {service_date.day} {EN_SHORT_MONTHS[service_date.month]}"
+    return f"{lift_time} · {day_label(service_date)}"
 
 
 def render_seat_offer(
@@ -95,10 +105,15 @@ def render_seat_offer(
     mentions = " ".join(
         f'<a href="tg://user?id={user_id}">{escape(label)}</a>' for user_id, label in riders
     )
-    what = "A seat" if seats == 1 else f"{seats} seats"
-    lines = [f"🎟 {what} freed up on {lift_label(service_date, lift_time)}: {mentions}"]
+    what, which = ("Free seat", "it") if seats == 1 else (f"{seats} free seats", "one")
+    lines = [
+        f"🎟 {what} on {lift_label(service_date, lift_time)} — {mentions}, do you want {which}?",
+        "Tap ✅ I'm in to take it and pay as usual, or 🙅 Skip.",
+    ]
     if len(riders) > seats:
-        lines.append("First to tap takes it.")
+        lines.append(
+            "First tap gets the seat." if seats == 1 else f"The first {seats} taps get the seats."
+        )
     return "\n".join(lines)
 
 

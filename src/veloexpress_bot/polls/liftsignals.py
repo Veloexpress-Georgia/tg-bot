@@ -6,8 +6,8 @@ from datetime import date, datetime, timedelta, tzinfo
 from typing import Literal
 
 from veloexpress_bot.payment_copy import CASH_ON_SITE_TEXT
-from veloexpress_bot.polls.defaults import MINIMUM_RIDERS, PaymentTerms
-from veloexpress_bot.polls.render import EN_SHORT_MONTHS, SHORT_DAY_LABELS
+from veloexpress_bot.polls.defaults import MINIMUM_RIDERS, PaymentTerms, StartLocation
+from veloexpress_bot.wording import day_label, plural
 
 # Dropping below the minimum is usually one rider re-picking slots, so the
 # notice waits for the dust to settle instead of firing on every vote change.
@@ -63,6 +63,8 @@ class LiftEvent:
     lift_time: str
     seats: int
     occurred_at: datetime | None = None
+    # Where the lift leaves from, for the departure ping. None when unknown.
+    location: StartLocation | None = None
 
 
 @dataclass(frozen=True)
@@ -228,18 +230,17 @@ def render_deadline_reminder(
     poll and the live card already say everything after that, and a second list
     reading "deadline has passed" made late riders think booking was shut.
     """
-    day = SHORT_DAY_LABELS.get(service_date.weekday(), "Lift day")
-    month = EN_SHORT_MONTHS[service_date.month]
-    headline = (
-        f"⏳ Tomorrow · {day}, {service_date.day} {month} — "
-        f"book and transfer by {terms.deadline_time}."
-    )
-    lines = [headline, ""]
+    lines = [
+        f"⏰ Tomorrow · {day_label(service_date)} — please book and transfer "
+        f"by {terms.deadline_time} today.",
+        "You can still book later while seats are free.",
+        "",
+    ]
     ordered = sorted(signals, key=lambda signal: lift_minutes(signal.lift_time))
     lines.extend(_reminder_line(signal) for signal in ordered)
     lines.extend(("", f"💵 {CASH_ON_SITE_TEXT}"))
     if terms.link:
-        lines.extend(("", terms.rules()[-1]))
+        lines.extend(("", terms.link_line("Where to pay")))
     return "\n".join(lines)
 
 
@@ -250,14 +251,15 @@ def _reminder_line(signal: LiftSignal) -> str:
         # A lift that had the minimum when booking closed is happening, so it
         # never reads short.
         missing = MINIMUM_RIDERS - signal.seats
-        return f"{signal.lift_time} — {signal.seats}/{MINIMUM_RIDERS} · needs {missing} more"
+        return f"{signal.lift_time} — {signal.seats}/{MINIMUM_RIDERS} seats · needs {missing} more"
     if signal.covered_seats < MINIMUM_RIDERS:
+        missing_paid = MINIMUM_RIDERS - signal.covered_seats
         return (
-            f"{signal.lift_time} — {signal.seats} riders · "
+            f"{signal.lift_time} — {plural(signal.seats, 'seat')} · "
             f"{signal.covered_seats}/{MINIMUM_RIDERS} paid · "
-            f"needs {MINIMUM_RIDERS - signal.covered_seats} more paid seats"
+            f"needs {plural(missing_paid, 'more paid seat', 'more paid seats')}"
         )
-    return f"{signal.lift_time} — {signal.seats} riders · funded"
+    return f"{signal.lift_time} — {plural(signal.seats, 'seat')} · minimum paid ✅"
 
 
 def _is_short(signal: LiftSignal) -> bool:
@@ -284,76 +286,60 @@ def lift_minutes(lift_time: str) -> int:
 def render_lift_signal_notice(
     kind: LiftEventKind,
     events: tuple[LiftEvent, ...],
-    *,
-    terms: PaymentTerms,
 ) -> str:
-    """One message per event kind per tick, so a busy tick is not a spam burst."""
+    """One message per event kind per tick, so a busy tick is not a spam burst.
+
+    A lift reaching the minimum is announced by the day's payment card, not here.
+    """
     if not events:
         msg = "A lift notice needs at least one event."
         raise ValueError(msg)
-    ordered = sorted(events, key=lambda event: (event.service_date, lift_minutes(event.lift_time)))
     if kind == "confirmed":
-        return _confirmed_notice(ordered, terms=terms)
+        msg = "Confirmed lifts are announced on the payments board."
+        raise ValueError(msg)
+    ordered = sorted(events, key=lambda event: (event.service_date, lift_minutes(event.lift_time)))
     if kind == "undershoot":
         return _undershoot_notice(ordered)
     return _departure_notice(ordered)
 
 
-def _confirmed_notice(events: list[LiftEvent], *, terms: PaymentTerms) -> str:
-    # Reaching the booking minimum opens payment details; it is not a promise
-    # that the lift is funded. Cash remains payable on site on the lift day.
-    if len(events) == 1:
-        event = events[0]
-        headline = f"✅ {_lift_label(event)} has {event.seats} riders — payment details are ready."
-    else:
-        headline = "\n".join(
-            (
-                "✅ These lifts have enough riders — payment details are ready:",
-                "",
-                *(f"{_lift_label(event)} — {event.seats} riders" for event in events),
-            )
-        )
-    # One line, not the whole rulebook: the rules live in the pinned notice and the
-    # amount lives on the board this links to. Three lines of money talk per confirmed
-    # lift read as spam in the lift topic, which is what admins said.
-    lines = [headline, f"💵 {CASH_ON_SITE_TEXT}"]
-    if terms.link:
-        lines.append(terms.pay_link("💸 Payment details"))
-    return "\n".join(lines)
-
-
 def _undershoot_notice(events: list[LiftEvent]) -> str:
     if len(events) == 1:
         event = events[0]
+        missing = MINIMUM_RIDERS - event.seats
         return (
-            f"⚠️ {_lift_label(event)} is short — {event.seats}/{MINIMUM_RIDERS} riders. "
-            f"{_needs_phrase(event.seats)}"
+            f"⚠️ {_lift_label(event)} has {event.seats}/{MINIMUM_RIDERS} seats. "
+            f"It needs {plural(missing, 'more rider')} to run — "
+            "invite a friend or check another lift."
         )
-    lines = ["⚠️ These lifts dropped below the minimum:", ""]
+    lines = [f"⚠️ These lifts have fewer than {MINIMUM_RIDERS} seats again:", ""]
     lines.extend(
-        f"{_lift_label(event)} — {event.seats}/{MINIMUM_RIDERS} · {_needs_phrase(event.seats)}"
+        f"{_lift_label(event)} — {event.seats}/{MINIMUM_RIDERS} seats · "
+        f"needs {MINIMUM_RIDERS - event.seats} more"
         for event in events
     )
+    lines.extend(("", "Invite a friend or check another lift."))
     return "\n".join(lines)
+
+
+START_POINTS = {
+    StartLocation.VAKE: "opposite Vake Park",
+    StartLocation.JUSTICE_HALL: "Justice Hall",
+}
 
 
 def _departure_notice(events: list[LiftEvent]) -> str:
-    lines = ["🚐 First lift of the day, leaving soon — please be on time.", ""]
-    lines.extend(_lift_label(event) for event in events)
+    lines = [
+        f"🚐 {_lift_label(event)} leaves soon."
+        + (f" Start: {START_POINTS[event.location]}." if event.location else "")
+        for event in events
+    ]
+    lines.append("Please be on time.")
     return "\n".join(lines)
 
 
-def _needs_phrase(seats: int) -> str:
-    missing = MINIMUM_RIDERS - seats
-    if missing <= 1:
-        return "One more and it runs."
-    return f"Needs {missing} more to run."
-
-
 def _lift_label(event: LiftEvent) -> str:
-    day = SHORT_DAY_LABELS.get(event.service_date.weekday(), "Lift day")
-    month = EN_SHORT_MONTHS[event.service_date.month]
-    return f"{event.lift_time} · {day}, {event.service_date.day} {month}"
+    return f"{event.lift_time} · {day_label(event.service_date)}"
 
 
 def _parse_lift_time(lift_time: str) -> tuple[int, int]:

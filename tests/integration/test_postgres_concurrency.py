@@ -473,7 +473,7 @@ async def test_lift_cancel_restore_and_undo_net_out_on_postgres(pg: helpers.Shar
     assert await payments.refunds() == [] and await net() == 30
     await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
     assert [r["amount_gel"] for r in await payments.refunds()] == [15] and await net() == 15
-    assert await payments.undo(service_date=day, telegram_user_id=100) == "Removed."
+    assert await payments.undo(service_date=day, telegram_user_id=100) == "Payment report removed."
     assert await payments.refunds() == [] and await net() == 0
 
 

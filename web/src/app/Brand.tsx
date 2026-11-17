@@ -1,3 +1,4 @@
+import { t } from '../i18n';
 import { cx } from '../lib';
 
 export function Brand({ href, compact = false }: { href?: string; compact?: boolean }) {
@@ -26,7 +27,7 @@ export function Brand({ href, compact = false }: { href?: string; compact?: bool
         <b className="wordmark">
           Velo<span>Express</span>
         </b>
-        {!compact && <small>Tbilisi · Shuttle club</small>}
+        {!compact && <small>{t.shell.tagline}</small>}
       </span>
     </Tag>
   );

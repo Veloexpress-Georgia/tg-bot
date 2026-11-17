@@ -67,7 +67,7 @@ async def test_cancellation_confirmation_renders_refund_mentions_as_html(
     assert sent.kwargs["parse_mode"] == "HTML"
     if has_refund:
         assert '<a href="tg://user?id=123">Anna &lt;&amp;&gt;</a>' in sent.args[0]
-        assert "Total to return: 20 GEL" in sent.args[0]
+        assert "Total to return: 20 ₾" in sent.args[0]
     else:
         assert "The bot writes the refund list once" in sent.args[0]
     poll_service.cancel_day.assert_not_awaited()

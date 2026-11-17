@@ -130,7 +130,7 @@ async def test_statistic_rendering_escapes_names_and_keeps_admin_period_controls
     view = replace(empty, riders=(rider,))
     draft = render_statistics(view, personal=False)
     assert "&lt;Alice&gt;" in draft.text and "<Alice>" not in draft.text
-    assert "Refunded: 0 GEL" in draft.text
+    assert "Refunded: 0 ₾" in draft.text
     detail = render_statistics(view, personal=True, page=2, admin_user_id=100)
     assert detail.reply_markup is not None
     callbacks = [b.callback_data for row in detail.reply_markup.inline_keyboard for b in row]

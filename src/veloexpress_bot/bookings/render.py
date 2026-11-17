@@ -6,6 +6,7 @@ from datetime import date, datetime
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from veloexpress_bot.polls.defaults import MINIMUM_RIDERS
+from veloexpress_bot.wording import day_label, money, plural
 from veloexpress_core.bikepark import BikeParkView
 
 EN_SHORT_MONTHS = {
@@ -284,7 +285,7 @@ def render_booking_monitor(
             (
                 "",
                 f"🚵 Bike park · {park.start_time} · Vake",
-                f"{park.price_gel} GEL per lift · {len(park.riders)} signed up · minimum 6",
+                f"{money(park.price_gel)} per lift · {len(park.riders)} signed up · minimum 6",
                 "Pay for actual lifts afterwards. On-site rider count decides when to stop.",
             )
         )
@@ -299,7 +300,7 @@ def render_booking_monitor(
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=("✅ " if day.service_date == selected_day.service_date else "")
+                    text=("▸ " if day.service_date == selected_day.service_date else "")
                     + _short_day_label(day.service_date),
                     callback_data=f"mon:day:{_compact_date(day.service_date)}",
                 )
@@ -485,7 +486,7 @@ def render_posted_result(
     ordered = tuple(sorted(service_dates))
     count = len(ordered)
     lines = [
-        f"🚀 Posted {count} {'day' if count == 1 else 'days'}",
+        f"🚀 Posted {plural(count, 'day')}",
         "",
         *(f"✅ {_long_day_label(service_date)} — polls are open" for service_date in ordered),
         "",
@@ -511,7 +512,7 @@ def _menu_day_line(day: BookingMonitorDay) -> str:
     label = _long_day_label(day.service_date)
     active = sum(not lift.cancelled for lift in day.lifts)
     if not day.running_count:
-        return f"{label} · {day.confirmed_seat_count} seats booked, nothing running yet"
+        return f"{label} · {plural(day.confirmed_seat_count, 'seat')} booked, nothing running yet"
     funded = sum(lift.funded for lift in day.lifts)
     return f"{label} · {day.running_count} of {active} running · {funded} funded"
 
@@ -540,8 +541,9 @@ def render_lift_history(
         lines.extend(
             (
                 "",
-                f"All time · {history.total_days} days · {history.total_ran} lifts · "
-                f"{history.total_seats} seats · {history.total_gel} GEL",
+                f"All time · {plural(history.total_days, 'day')} · "
+                f"{plural(history.total_ran, 'lift')} · "
+                f"{plural(history.total_seats, 'seat')} · {money(history.total_gel)}",
             )
         )
 
@@ -604,7 +606,7 @@ def render_lift_day_audit(
     lines = [f"🗓 {_long_day_label(audit.service_date)}"]
     ran = sum(lift.ran for lift in audit.lifts)
     seats = sum(lift.seats for lift in audit.lifts if lift.ran)
-    lines.append(f"{ran} of {len(audit.lifts)} lifts ran · {seats} seats")
+    lines.append(f"{ran} of {plural(len(audit.lifts), 'lift')} ran · {plural(seats, 'seat')}")
     lines.append(_audit_money_line(audit))
     if audit.cancelled:
         lines.extend(("", "❌ The whole day was cancelled."))
@@ -664,14 +666,14 @@ def _trend_line(row: TrendRow) -> str:
         return f"{row.label} — never ran in {row.days_offered}"
     return (
         f"{row.label} — ran {row.days_ran} of {row.days_offered} · "
-        f"{row.average_seats:.1f} seats avg"
+        f"{row.average_seats:.1f} seats on average"
     )
 
 
 def _audit_money_line(audit: LiftDayAudit) -> str:
-    parts = [f"{audit.price_gel} GEL per seat", f"{audit.received_gel} GEL received"]
+    parts = [f"{money(audit.price_gel)} per seat", f"{money(audit.received_gel)} received"]
     if audit.refunded_gel:
-        parts.append(f"{audit.refunded_gel} GEL refunded")
+        parts.append(f"{money(audit.refunded_gel)} refunded")
     return " · ".join(parts)
 
 
@@ -681,21 +683,15 @@ def _audit_lift_line(lift: LiftDayAuditLift) -> str:
     parts = [f"{marker} {lift.lift_time}", state, f"{lift.seats}/{lift.capacity}"]
     parts.append(f"{lift.covered_seats} paid")
     if lift.manual_seats:
-        parts.append(f"{lift.manual_seats} manual")
-    if lift.guest_seats == 1:
-        parts.append("1 guest")
-    elif lift.guest_seats > 1:
-        parts.append(f"{lift.guest_seats} guests")
+        parts.append(plural(lift.manual_seats, "offline seat"))
+    if lift.guest_seats:
+        parts.append(plural(lift.guest_seats, "guest"))
     return " · ".join(parts)
 
 
 def _audit_seat_line(seat: LiftDayAuditSeat) -> str:
     marker = "✅" if seat.covered else "🔴"
-    guests = ""
-    if seat.guests == 1:
-        guests = " · +1 guest"
-    elif seat.guests > 1:
-        guests = f" · +{seat.guests} guests"
+    guests = f" · +{plural(seat.guests, 'guest')}" if seat.guests else ""
     return f"{marker} {seat.label}{guests}"
 
 
@@ -705,7 +701,7 @@ def _history_day_line(day: LiftHistoryDay) -> str:
     mark = " ⚠️" if day.reconstructed else ""
     return (
         f"{_long_day_label(day.service_date)} · {day.ran_count}/{day.lift_count} lifts · "
-        f"{day.seat_count} seats · {day.paid_gel} GEL{mark}"
+        f"{plural(day.seat_count, 'seat')} · {money(day.paid_gel)}{mark}"
     )
 
 
@@ -740,7 +736,7 @@ def _weekend_total_line(days: tuple[LiftHistoryDay, ...]) -> str:
     ran = sum(day.ran_count for day in days)
     seats = sum(day.seat_count for day in days)
     paid = sum(day.paid_gel for day in days)
-    return f"🚐 {ran} lifts · {seats} seats · {paid} GEL"
+    return f"🚐 {plural(ran, 'lift')} · {plural(seats, 'seat')} · {money(paid)}"
 
 
 def render_all_riders(
@@ -761,7 +757,7 @@ def render_all_riders(
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=("✅ " if day.service_date == selected_service_date else "")
+                    text=("▸ " if day.service_date == selected_service_date else "")
                     + _short_day_label(day.service_date),
                     callback_data=f"mon:all:{_compact_date(day.service_date)}",
                 )
@@ -796,15 +792,13 @@ def render_cancel_lift_confirmation(
     lines = [
         f"⚠️ Cancel {lift.time} · {_long_day_label(service_date)}?",
         "",
-        f"{lift.seat_count} seats · {len(holders)} riders from the poll",
+        f"{plural(lift.seat_count, 'seat')} · {plural(len(holders), 'rider')} from the poll",
     ]
     offline = []
     if lift.manual_count:
-        offline.append(f"{lift.manual_count} added by hand")
+        offline.append(plural(lift.manual_count, "offline seat"))
     if lift.guest_count:
-        offline.append(
-            f"{lift.guest_count} guest" if lift.guest_count == 1 else f"{lift.guest_count} guests"
-        )
+        offline.append(plural(lift.guest_count, "guest"))
     if offline:
         lines.append(" · ".join(offline))
     lines.extend(
@@ -849,10 +843,8 @@ def render_cancel_day_confirmation(
     lines = [
         f"⚠️ Cancel the whole day · {_long_day_label(day.service_date)}?",
         "",
-        f"{active_lifts} {'lift' if active_lifts == 1 else 'lifts'} · "
-        f"{day.confirmed_seat_count} seats",
-        f"{day.paid_rider_count} {'rider' if day.paid_rider_count == 1 else 'riders'} "
-        f"reported {day.expected_gel} GEL",
+        f"{plural(active_lifts, 'lift')} · {plural(day.confirmed_seat_count, 'seat')}",
+        f"{plural(day.paid_rider_count, 'rider')} reported {money(day.expected_gel)}",
         "",
         "This retires the day and may need several refunds.",
     ]
@@ -893,14 +885,14 @@ def render_bumped_report(
     riders: tuple[tuple[str, int, bool], ...],
     price_gel: int,
 ) -> str:
-    """Name the riders a manual booking just pushed onto the waitlist.
+    """Name the riders an offline booking just pushed onto the waitlist.
 
-    A manual seat outranks a poll vote, so adding one can evict a rider who has
+    An offline seat outranks a poll vote, so adding one can evict a rider who has
     already paid. The admin took that seat deliberately; owing somebody a refund
     without being told is the part that would be an accident.
     """
     lines = [
-        f"⚠️ {lift_time} · {_long_day_label(service_date)} — manual seat added.",
+        f"⚠️ {lift_time} · {_long_day_label(service_date)} — offline seat added.",
         "",
         "Off the lift now:",
         "",
@@ -910,11 +902,11 @@ def render_bumped_report(
         mention = f'<a href="tg://user?id={user_id}">{html.escape(label)}</a>'
         if paid:
             refund += price_gel
-            lines.append(f"{mention} — paid, refund {price_gel} GEL")
+            lines.append(f"{mention} — paid, refund {money(price_gel)}")
         else:
             lines.append(f"{mention} — nothing paid")
     lines.append("")
-    lines.append(f"Refund {refund} GEL." if refund else "Nobody paid for those seats.")
+    lines.append(f"Refund {money(refund)}." if refund else "Nobody paid for those seats.")
     return "\n".join(lines)
 
 
@@ -944,11 +936,9 @@ def render_lift_detail(
     lines.append(" · ".join(seats))
     made_of = [f"{lift.vote_count} from the poll"]
     if lift.manual_count:
-        made_of.append(f"{lift.manual_count} added by hand")
+        made_of.append(plural(lift.manual_count, "offline seat"))
     if lift.guest_count:
-        made_of.append(
-            f"{lift.guest_count} guest" if lift.guest_count == 1 else f"{lift.guest_count} guests"
-        )
+        made_of.append(plural(lift.guest_count, "guest"))
     lines.append(" · ".join(made_of))
     if riders:
         reported = sum(rider.paid or rider.cash for rider in riders if not rider.waitlisted)
@@ -1035,14 +1025,14 @@ def _summary_lines(day: BookingMonitorDay) -> tuple[str, ...]:
     active = sum(not lift.cancelled for lift in day.lifts)
     funded = sum(lift.funded for lift in day.lifts)
     if day.running_count:
-        headline = f"{day.running_count} of {active} lifts running · {funded} funded"
+        headline = f"{day.running_count} of {plural(active, 'lift')} running · {funded} funded"
     elif active:
-        headline = f"Nothing running yet · {day.confirmed_seat_count} seats booked"
+        headline = f"Nothing running yet · {plural(day.confirmed_seat_count, 'seat')} booked"
     else:
         headline = "Every lift is cancelled"
     lines = [headline]
     if day.expected_gel or day.owed_gel:
-        lines.append(f"Reported {day.expected_gel} of {day.owed_gel} GEL")
+        lines.append(f"Reported {money(day.expected_gel)} of {money(day.owed_gel)}")
     return tuple(lines)
 
 
@@ -1059,9 +1049,7 @@ def _lift_rider_line(rider: LiftRider, *, running: bool = True) -> str:
         marker = "✅"
     else:
         marker = "🔴"
-    guests = f" · +{rider.guests} guest" if rider.guests == 1 else ""
-    if rider.guests > 1:
-        guests = f" · +{rider.guests} guests"
+    guests = f" · +{plural(rider.guests, 'guest')}" if rider.guests else ""
     return f"{marker} {rider.label}{guests}"
 
 
@@ -1124,7 +1112,7 @@ def _guest_parties(guests: tuple[MonitorGuest, ...]) -> tuple[str, ...]:
 
 
 def _money_rider_items(riders: tuple[MonitorRider, ...]) -> tuple[str, ...]:
-    return tuple(f"{rider.label} {rider.amount_gel} GEL" for rider in riders)
+    return tuple(f"{rider.label} {money(rider.amount_gel)}" for rider in riders)
 
 
 # Roughly what a Telegram message shows on one phone line before wrapping.
@@ -1168,7 +1156,7 @@ def _lift_lines(day: BookingMonitorDay) -> tuple[str, ...]:
     cancelled = tuple(lift.time for lift in day.lifts if lift.cancelled)
     quiet = tuple(lift.time for lift in day.lifts if not lift.running and not lift.cancelled)
     if quiet:
-        lines.append(f"💤 Not filled: {', '.join(quiet)}")
+        lines.append(f"💤 Not running yet: {', '.join(quiet)}")
     if cancelled:
         lines.append(f"❌ Cancelled: {', '.join(cancelled)}")
     if not lines:
@@ -1197,7 +1185,7 @@ def _running_lift_line(lift: BookingLiftStatus) -> str:
     if lift.manual_count:
         # Not in any section above, and it is the one number an admin put there
         # by hand.
-        parts.append(f"{lift.manual_count} manual")
+        parts.append(plural(lift.manual_count, "offline seat"))
     return " · ".join(parts)
 
 
@@ -1225,11 +1213,9 @@ def _lift_line(lift: BookingLiftStatus) -> str:
         return f"{lift.time} — ❌ cancelled"
     extra = []
     if lift.manual_count:
-        extra.append(f"{lift.manual_count} manual")
+        extra.append(plural(lift.manual_count, "offline seat"))
     if lift.guest_count:
-        extra.append(
-            f"{lift.guest_count} guest" if lift.guest_count == 1 else f"{lift.guest_count} guests"
-        )
+        extra.append(plural(lift.guest_count, "guest"))
     suffix = f" · {' · '.join(extra)}" if extra else ""
     return f"{lift.time} — {lift.seat_count}/{lift.capacity} · {_lift_state(lift)}{suffix}"
 
@@ -1257,8 +1243,7 @@ EN_SHORT_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
 def _long_day_label(service_date: date) -> str:
-    day = EN_SHORT_WEEKDAYS[service_date.weekday()]
-    return f"{day}, {service_date.day} {EN_SHORT_MONTHS[service_date.month]}"
+    return day_label(service_date)
 
 
 def _short_day_label(service_date: date) -> str:
@@ -1306,7 +1291,7 @@ def render_booking_withdrawals(
         lines.append("No recorded withdrawals.")
     rows: list[list[InlineKeyboardButton]] = []
     if pages > 1:
-        lines.append(f"Page {page + 1} of {pages} · {len(withdrawals)} withdrawals")
+        lines.append(f"Page {page + 1} of {pages} · {plural(len(withdrawals), 'withdrawal')}")
         pager = []
         if page:
             pager.append(

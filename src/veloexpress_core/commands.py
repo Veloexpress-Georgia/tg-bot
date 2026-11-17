@@ -19,6 +19,7 @@ from veloexpress_bot.db.models import AdminCommand
 from veloexpress_bot.polls.defaults import DEFAULT_LIFTS
 from veloexpress_bot.polls.extraday import DATE_CHOICE_COUNT
 from veloexpress_bot.polls.schedule import cancelled_lift_times_for_range, lift_range_from_cancelled
+from veloexpress_bot.wording import day_label
 from veloexpress_core.lifts import DuplicatePollError, PollSetup, SessionFactory
 from veloexpress_core.runtime import Runtime
 
@@ -233,8 +234,8 @@ class Operations:
             park = parks[0]
             return {
                 "digest": _fingerprint(asdict(park)),
-                "details": f"Cancel bike park {park.service_date} at {park.start_time}.\n"
-                + ", ".join(r.label for r in park.riders),
+                "details": f"Cancel bike park on {day_label(park.service_date)} "
+                f"at {park.start_time}.\n" + ", ".join(r.label for r in park.riders),
             }
         if spec.action == "booking_order":
             return await self.runtime.lifts.preview_booking_order(
@@ -268,7 +269,7 @@ class Operations:
             return {
                 "digest": _fingerprint(state),
                 "details": report
-                or f"Cancel {target} on {day.service_date.isoformat()}. {no_report}",
+                or f"Cancel {target} on {day_label(day.service_date)}. {no_report}",
                 "affected": day.booked_rider_count,
                 "service_date": day.service_date,
             }
@@ -409,7 +410,7 @@ class Operations:
                 delta=spec.delta or 0,
                 admin_user_id=actor_user_id,
             )
-            return {"message": "Manual seats updated", "manual_count": result.manual_count}
+            return {"message": "Offline seats updated", "manual_count": result.manual_count}
         if spec.action == "restore_lift":
             await rt.lifts.restore_lift(
                 service_date=day, lift_time=lift_time, admin_user_id=actor_user_id

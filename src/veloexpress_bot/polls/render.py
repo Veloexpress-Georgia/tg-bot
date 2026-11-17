@@ -13,6 +13,7 @@ from veloexpress_bot.polls.defaults import (
     PaymentTerms,
     StartLocation,
 )
+from veloexpress_bot.wording import money
 
 # Availability uses plain proportional lines (no code block): monospace bars
 # render as an ugly "copy code" box on mobile and column alignment is unreliable.
@@ -26,21 +27,6 @@ DAY_LABELS: dict[int, str] = {
     4: "Friday",
     5: "Saturday",
     6: "Sunday",
-}
-
-EN_MONTHS: dict[int, str] = {
-    1: "January",
-    2: "February",
-    3: "March",
-    4: "April",
-    5: "May",
-    6: "June",
-    7: "July",
-    8: "August",
-    9: "September",
-    10: "October",
-    11: "November",
-    12: "December",
 }
 
 SHORT_DAY_LABELS: dict[int, str] = {
@@ -135,7 +121,7 @@ def render_poll(render_input: PollRenderInput) -> PollDraft:
         raise ValueError(msg)
 
     day = DAY_LABELS.get(render_input.service_date.weekday(), "Lift day")
-    question = f"🚐 {day} · {_en_date(render_input.service_date)}"
+    question = f"🚐 {day}, {_en_date(render_input.service_date)}"
 
     park = (BIKE_PARK_OPTION,) if render_input.bike_park else ()
     options = (*(_format_lift_option(lift) for lift in lifts), *park, CHECK_ANSWERS_OPTION)
@@ -158,9 +144,9 @@ def render_poll_notice(
             "All later lifts depart from Vake Park."
         )
     payment_notice = (
-        f"💳 <b>{terms.price_gel} GEL / seat.</b> "
-        f"Bank transfer once your lift reaches {MINIMUM_RIDERS} booked seats, "
-        f"by <b>{terms.deadline_time} the evening before</b>. Late bookings: transfer immediately."
+        f"💳 <b>{money(terms.price_gel)} per seat.</b> "
+        f"Transfer when your lift has {MINIMUM_RIDERS} seats, "
+        f"by <b>{terms.deadline_time} the evening before</b>. Booked later? Transfer right away."
     )
     links = [
         '<a href="https://t.me/c/2200954181/5">Rules &amp; bank details</a>',
@@ -171,9 +157,10 @@ def render_poll_notice(
     if bike_park_window is not None:
         earliest, latest = bike_park_window
         lines.append(
-            f"🚵 Bike park runs with {BIKE_PARK_MINIMUM}+ votes at {terms.deadline_time}: "
-            f"from Vake after the last running lift ({earliest}–{latest}). "
-            "The start time is posted then; pay per lift on site."
+            f"🚵 Bike park: if {BIKE_PARK_MINIMUM}+ vote by {terms.deadline_time} the evening "
+            f"before, it starts from Vake after the last running lift (between {earliest} "
+            f"and {latest}). We post the start time at {terms.deadline_time}. "
+            "Pay per lift afterwards, cash or transfer."
         )
     lines.append(" · ".join(links))
     return "\n".join(lines)
@@ -200,7 +187,7 @@ def render_availability_caption(lifts: tuple[LiftAvailability, ...]) -> str:
     if visible_size <= 1024:
         return "\n".join(lines)
 
-    overflow = "… More riders in the queue."
+    overflow = "… More riders on the waitlist."
     budget = 1024 - len(overflow) - 1
     lines = []
     used = 0
@@ -221,37 +208,6 @@ def render_availability_caption(lifts: tuple[LiftAvailability, ...]) -> str:
     return "\n".join(lines)
 
 
-def render_availability_status(
-    service_date: date,
-    lifts: tuple[LiftAvailability, ...],
-    *,
-    deadline_passed: bool = False,
-) -> str:
-    day = SHORT_DAY_LABELS.get(service_date.weekday(), "Lift day")
-    header = f"🚐 Availability · {day}, {service_date.day} {EN_SHORT_MONTHS[service_date.month]}"
-    if not lifts:
-        return header
-
-    lines = [header, ""]
-    if deadline_passed:
-        running, short, cancelled = partition_availability_lifts(lifts)
-        lines.append(f"✅ {MINIMUM_RIDERS}+ seats booked · {len(running)} lifts")
-        for lift in running:
-            lines.extend(_availability_lines(lift))
-        if short:
-            lines.extend(("", "Below minimum"))
-            for lift in short:
-                lines.extend(_availability_lines(lift))
-        if cancelled:
-            lines.extend(("", "Cancelled"))
-            for lift in cancelled:
-                lines.extend(_availability_lines(lift))
-    else:
-        for lift in lifts:
-            lines.extend(_availability_lines(lift))
-    return "\n".join(lines)
-
-
 def partition_availability_lifts(
     lifts: tuple[LiftAvailability, ...],
 ) -> tuple[
@@ -264,57 +220,8 @@ def partition_availability_lifts(
     return running, short, cancelled
 
 
-def _availability_lines(lift: LiftAvailability) -> list[str]:
-    lines = [_availability_line(lift)]
-    off_poll = _off_poll_line(lift)
-    if off_poll:
-        lines.append(off_poll)
-    if lift.waitlist:
-        # Named right where the seats are counted, so "waitlist +2" stops being a
-        # riddle. The board is edited in place and a Telegram edit sends no
-        # notification, so this informs without pinging anyone.
-        lines.append(f"    ⏳ {' '.join(_waitlist_mention(r) for r in lift.waitlist)}")
-    return lines
-
-
-def _off_poll_line(lift: LiftAvailability) -> str:
-    """Seats the poll cannot show: guests and manual bookings do not vote.
-
-    Named under their own lift rather than summed in a footer. A rider counting
-    votes in the poll and finding one more seat gone here should be able to see
-    whose it is, without opening the payments topic to work it out.
-    """
-    if lift.cancelled or not lift.off_poll_count:
-        return ""
-    parts = [f"{_guest_mention(party)} +{party.count}" for party in lift.guests if party.count]
-    if lift.manual_count:
-        parts.append(f"+{lift.manual_count} external seats")
-    return f"    🎟 {' · '.join(parts)}"
-
-
-def _guest_mention(party: GuestParty) -> str:
-    return f'<a href="tg://user?id={party.telegram_user_id}">{html.escape(party.label)}</a>'
-
-
 def _waitlist_mention(rider: WaitlistRider) -> str:
     return f'<a href="tg://user?id={rider.telegram_user_id}">{html.escape(rider.label)}</a>'
-
-
-def _availability_line(lift: LiftAvailability) -> str:
-    if lift.cancelled:
-        return f"{lift.time} — ❌ cancelled"
-    return f"{lift.time} — <b>{lift.seat_count}/{lift.capacity}</b> · {_availability_tag(lift)}"
-
-
-def _availability_tag(lift: LiftAvailability) -> str:
-    over = lift.seat_count - lift.capacity
-    if over > 0:
-        return f"waitlist +{over}"
-    if lift.seat_count >= lift.capacity:
-        return "full"
-    if not lift.running:
-        return f"needs {MINIMUM_RIDERS - lift.seat_count} more"
-    return f"{lift.capacity - lift.seat_count} left"
 
 
 def _active_lifts(cancelled_lift_times: tuple[str, ...]) -> list[LiftTemplate]:
@@ -327,4 +234,4 @@ def _format_lift_option(lift: LiftTemplate) -> str:
 
 
 def _en_date(service_date: date) -> str:
-    return f"{EN_MONTHS[service_date.month]} {service_date.day}"
+    return f"{service_date.day} {EN_SHORT_MONTHS[service_date.month]}"

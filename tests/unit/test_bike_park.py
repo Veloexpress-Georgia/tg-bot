@@ -336,7 +336,7 @@ async def test_bot_creation_uses_the_same_preview_and_published_price(park_setup
             ]
             assert f"extra:date:{day}" in editor and "menu:extra_day" in editor
     assert not telegram.sent
-    assert "5 GEL" in show.call_args.args[4]
+    assert "5 ₾" in show.call_args.args[4]
     callback.data = "park:post"
     await bikepark.handle_bike_park(callback, state, config, runtime.lifts, operations)
     assert len(telegram.sent) == 1
@@ -467,7 +467,7 @@ async def test_weekend_bike_park_runs_after_last_running_lift_at_the_deadline(pa
     _, _, telegram, runtime, _, _ = park_setup
     _, poll_id, deadline = await _weekend_day_with_votes(runtime, park_votes=6)
     assert "🚵 Bike park" in telegram.sent[0].options
-    assert any("Bike park runs with 6+ votes" in text for text in telegram.sent_texts)
+    assert any("Bike park: if 6+ vote by" in text for text in telegram.sent_texts)
     texts_before = len(telegram.sent_texts)
 
     await runtime.lifts.decide_weekend_bike_parks(now=deadline - timedelta(minutes=2))

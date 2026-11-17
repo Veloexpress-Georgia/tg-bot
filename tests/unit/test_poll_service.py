@@ -374,7 +374,7 @@ async def test_admin_booking_monitor_controls_manual_counts_and_tracks_votes(
     ]
     assert availability_updates[-1] == ""
     # One manual seat does not make a lift: it is named, not given a line.
-    assert "💤 Not filled: 8:30" in monitor_updates[-1]
+    assert "💤 Not running yet: 8:30" in monitor_updates[-1]
 
     await service.track_poll_answer(
         poll_id=poll.poll_id or "",
@@ -387,7 +387,7 @@ async def test_admin_booking_monitor_controls_manual_counts_and_tracks_votes(
     monitor_updates = [
         text for message_id, text in client.edited_texts if message_id == monitor_message_id
     ]
-    assert "💤 Not filled: 8:30" in monitor_updates[-1]
+    assert "💤 Not running yet: 8:30" in monitor_updates[-1]
 
     detail = await service.lift_detail(service_date=saturday, lift_time="8:30")
     assert detail is not None
@@ -555,7 +555,7 @@ async def test_booking_monitor_surfaces_money_guests_waitlist_and_late_exits(
 
     view = await service.booking_monitor_view(selected_service_date=saturday)
 
-    assert "💵 Cash on site: @rider100 30 GEL" in view.text
+    assert "💵 Cash on site: @rider100 30 ₾" in view.text
     assert "👥 Guests: @rider100 +1 (8:30)" in view.text
     assert "@rider109 8:30 #1" in view.text
     assert "@late204 10:00" in view.text
@@ -871,7 +871,7 @@ async def test_lift_signals_report_a_settled_undershoot(db: SharedDatabase) -> N
     assert await service.evaluate_lift_signals(now=start + timedelta(minutes=1)) == ()
     events = await service.evaluate_lift_signals(now=start + timedelta(minutes=12))
     assert [event.kind for event in events] == ["undershoot"]
-    assert "is short — 4/5 riders" in client.sent_texts[-1]
+    assert "has 4/5 seats" in client.sent_texts[-1]
 
 
 @pytest.mark.parametrize("day_offset", [0, 1])
@@ -912,14 +912,14 @@ async def test_lift_undershoot_stays_quiet_until_its_own_deadline_evening(
     )
     await service.evaluate_lift_signals(now=thursday + timedelta(minutes=1))
     assert await service.evaluate_lift_signals(now=thursday + timedelta(minutes=12)) == ()
-    assert not any("is short" in text for text in client.sent_texts)
+    assert not any("has 4/5 seats" in text for text in client.sent_texts)
 
     deadline = booking_deadline_at(service_date, deadline_time, zone=ZoneInfo("Asia/Tbilisi"))
     assert await service.evaluate_lift_signals(now=deadline - timedelta(days=1, hours=2)) == ()
     assert await service.evaluate_lift_signals(now=deadline - timedelta(hours=2, seconds=1)) == ()
     events = await service.evaluate_lift_signals(now=deadline - timedelta(hours=2))
     assert [event.kind for event in events] == ["undershoot"]
-    assert "is short — 4/5 riders" in client.sent_texts[-1]
+    assert "has 4/5 seats" in client.sent_texts[-1]
     assert await service.evaluate_lift_signals(now=deadline - timedelta(hours=1)) == ()
 
 
@@ -955,7 +955,9 @@ async def test_lift_signals_ping_only_the_first_lift_before_departure(
     departure = lift_departure_at(saturday, "8:30", zone=ZoneInfo("Asia/Tbilisi"))
     events = await service.evaluate_lift_signals(now=departure - timedelta(minutes=20))
     assert [(event.kind, event.lift_time) for event in events] == [("departure", "8:30")]
-    assert client.sent_texts[-1].startswith("🚐 First lift of the day")
+    assert client.sent_texts[-1].startswith("🚐 8:30 · ")
+    # Tagged riders are told where to go, not only when.
+    assert "Start: opposite Vake Park." in client.sent_texts[-1]
 
     assert await service.evaluate_lift_signals(now=departure - timedelta(minutes=10)) == ()
 
@@ -977,17 +979,17 @@ async def test_the_deadline_reminder_goes_out_once_and_names_no_one(db: SharedDa
 
     deadline = booking_deadline_at(saturday, "20:00", zone=ZoneInfo("Asia/Tbilisi"))
     assert await service.evaluate_lift_signals(now=deadline - timedelta(hours=3)) == ()
-    assert not any("⏳ Tomorrow" in text for text in client.sent_texts)
+    assert not any("⏰ Tomorrow" in text for text in client.sent_texts)
 
     await service.evaluate_lift_signals(now=deadline - timedelta(hours=1))
-    reminders = [text for text in client.sent_texts if "⏳ Tomorrow" in text]
+    reminders = [text for text in client.sent_texts if "⏰ Tomorrow" in text]
     assert len(reminders) == 1
-    assert "book and transfer by 20:00" in reminders[0]
-    assert "8:30 — 3/5 · needs 2 more" in reminders[0]
+    assert "please book and transfer by 20:00 today" in reminders[0]
+    assert "8:30 — 3/5 seats · needs 2 more" in reminders[0]
     assert "tg://user?id=" not in reminders[0], "a nudge tags nobody"
 
     await service.evaluate_lift_signals(now=deadline - timedelta(minutes=30))
-    assert len([text for text in client.sent_texts if "⏳ Tomorrow" in text]) == 1
+    assert len([text for text in client.sent_texts if "⏰ Tomorrow" in text]) == 1
 
 
 async def test_the_deadline_reminder_stays_fresh_then_goes_away_at_the_deadline(
@@ -1016,16 +1018,16 @@ async def test_the_deadline_reminder_stays_fresh_then_goes_away_at_the_deadline(
     deadline = booking_deadline_at(saturday, "20:00", zone=ZoneInfo("Asia/Tbilisi"))
     reminder_id = client.next_message_id
     await service.evaluate_lift_signals(now=deadline - timedelta(hours=1))
-    reminders = [text for text in client.sent_texts if "⏳ Tomorrow" in text]
+    reminders = [text for text in client.sent_texts if "⏰ Tomorrow" in text]
     assert len(reminders) == 1
-    assert "8:30 — 3/5 · needs 2 more" in reminders[0]
+    assert "8:30 — 3/5 seats · needs 2 more" in reminders[0]
 
     # Two more riders arrive before the deadline: the message must follow.
     await _fill_lift(service, poll_id, riders=5)
     await service.evaluate_lift_signals(now=deadline - timedelta(minutes=30))
     edits = [text for message_id, text in client.edited_texts if message_id == reminder_id]
-    assert "8:30 — 5 riders · 0/5 paid" in edits[-1]
-    assert len([text for text in client.sent_texts if "⏳ Tomorrow" in text]) == 1
+    assert "8:30 — 5 seats · 0/5 paid" in edits[-1]
+    assert len([text for text in client.sent_texts if "⏰ Tomorrow" in text]) == 1
 
     edit_count = len(client.edited_texts)
     await service.evaluate_lift_signals(now=deadline + timedelta(minutes=5))
@@ -1062,7 +1064,7 @@ async def test_full_unpaid_day_still_gets_a_deadline_reminder(
     deadline = booking_deadline_at(saturday, "20:00", zone=ZoneInfo("Asia/Tbilisi"))
     await service.evaluate_lift_signals(now=deadline - timedelta(hours=1))
 
-    reminders = [text for text in client.sent_texts if "⏳ Tomorrow" in text]
+    reminders = [text for text in client.sent_texts if "⏰ Tomorrow" in text]
     assert len(reminders) == 1
     assert "0/5 paid" in reminders[0]
 
@@ -1118,7 +1120,7 @@ async def test_a_posted_notice_keeps_its_snapshotted_money_rules(db: SharedDatab
     edits = [
         text for message_id, text in client.edited_texts if message_id == result.notice_message_id
     ]
-    assert "15 GEL / seat" in edits[-1]
+    assert "15 ₾ per seat" in edits[-1]
     # Once per day per process: a second pass would spend an API call to change
     # nothing, and Telegram edits are silent anyway.
     assert await service.refresh_poll_notices() == 0
@@ -1224,7 +1226,7 @@ async def test_manual_booking_count_cannot_go_below_zero(db: SharedDatabase) -> 
         pin_after_send=False,
     )
 
-    with pytest.raises(ValueError, match="No manual bookings to remove"):
+    with pytest.raises(ValueError, match="No offline seats to remove"):
         await service.adjust_manual_booking(
             service_date=date(2026, 5, 16),
             lift_time="8:30",
@@ -1356,9 +1358,9 @@ async def test_poll_service_can_send_notice_before_poll_and_pin_poll(
     assert client.sent_texts[0].startswith(
         '📍 <a href="https://maps.app.goo.gl/nSNiv7GnNiQt5J64A">Opposite Vake Park</a>'
     )
-    assert "Bank transfer once your lift reaches 5 booked seats" in client.sent_texts[0]
+    assert "Transfer when your lift has 5 seats" in client.sent_texts[0]
     assert client.sent_texts[1] == ""
-    assert client.sent[0].question == "🚐 Saturday · May 16"
+    assert client.sent[0].question == "🚐 Saturday, 16 May"
 
     pinned_result = await service.pin_created_poll(result)
 

@@ -56,7 +56,7 @@ class ServiceDayDefaultsStore:
 
     async def adjust_price(self, delta: int, *, admin_user_id: int) -> ServiceDayDefaultValues:
         if delta not in {-PRICE_STEP_GEL, PRICE_STEP_GEL}:
-            msg = f"Price changes must be {PRICE_STEP_GEL} GEL."
+            msg = f"Price changes must be {PRICE_STEP_GEL} ₾."
             raise ValueError(msg)
         current = await self.values()
         price = current.price_gel + delta
@@ -95,9 +95,9 @@ class ServiceDayDefaultsStore:
         bike_park_price_gel: int | None = None,
     ) -> ServiceDayDefaultValues:
         if price_gel <= 0 or price_gel > 10000:
-            raise ValueError("Price must be between 1 and 10000 GEL")
+            raise ValueError("Price must be between 1 and 10000 ₾")
         if bike_park_price_gel is not None and not 1 <= bike_park_price_gel <= 10000:
-            raise ValueError("Bike park price must be between 1 and 10000 GEL")
+            raise ValueError("Bike park price must be between 1 and 10000 ₾")
         normalized = Settings.validate_booking_deadline(deadline_time)
         await self._save(
             price_gel=price_gel,
@@ -111,7 +111,7 @@ class ServiceDayDefaultsStore:
         self, delta: int, *, admin_user_id: int
     ) -> ServiceDayDefaultValues:
         if delta not in {-PRICE_STEP_GEL, PRICE_STEP_GEL}:
-            raise ValueError("Price changes must be 1 GEL.")
+            raise ValueError("Price changes must be 1 ₾.")
         # Adjust inside the same lock as every other settings write.
         await self._save(admin_user_id=admin_user_id, bike_park_delta=delta)
         return await self.values()
@@ -173,7 +173,7 @@ class ServiceDayDefaultsStore:
             )
             park_price += bike_park_delta
             if not 1 <= park_price <= 10000:
-                raise ValueError("Bike park price must be between 1 and 10000 GEL")
+                raise ValueError("Bike park price must be between 1 and 10000 ₾")
             if row is None:
                 row = ServiceDayDefaults(
                     environment=self._settings.app_env,
@@ -202,8 +202,8 @@ def render_service_day_defaults(values: ServiceDayDefaultValues) -> ServiceDayDe
     return ServiceDayDefaultsCard(
         text=(
             "⚙️ Settings\n\n"
-            f"💳 Price: {values.price_gel} GEL per seat\n"
-            f"🚵 Bike park: {values.bike_park_price_gel} GEL per lift · payment after riding\n"
+            f"💳 Price: {values.price_gel} ₾ per seat\n"
+            f"🚵 Bike park: {values.bike_park_price_gel} ₾ per lift · paid after riding\n"
             f"⏰ Booking deadline: {values.deadline_time} the evening before each lift day\n"
             f"🌍 Timezone: {values.timezone}\n\n"
             # Said in full, because the two scopes are easy to confuse and the
@@ -216,17 +216,17 @@ def render_service_day_defaults(values: ServiceDayDefaultValues) -> ServiceDayDe
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text=f"🚐 −{PRICE_STEP_GEL} GEL",
+                        text=f"🚐 −{PRICE_STEP_GEL} ₾",
                         callback_data="defaults:price:sub",
                     ),
                     InlineKeyboardButton(
-                        text=f"🚐 +{PRICE_STEP_GEL} GEL",
+                        text=f"🚐 +{PRICE_STEP_GEL} ₾",
                         callback_data="defaults:price:add",
                     ),
                 ],
                 [
-                    InlineKeyboardButton(text="🚵 −1 GEL", callback_data="defaults:bikepark:sub"),
-                    InlineKeyboardButton(text="🚵 +1 GEL", callback_data="defaults:bikepark:add"),
+                    InlineKeyboardButton(text="🚵 −1 ₾", callback_data="defaults:bikepark:sub"),
+                    InlineKeyboardButton(text="🚵 +1 ₾", callback_data="defaults:bikepark:add"),
                 ],
                 [
                     InlineKeyboardButton(

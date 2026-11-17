@@ -32,9 +32,11 @@ export const en = {
   demo: {
     noChanges: 'Demo: nothing was changed and no messages were sent.',
     cancelPreview:
-      'The selected lift will be cancelled.\nRiders get a notice in Telegram.\nDemo refund estimate: 40 GEL.\nNo money is moved.',
+      'The selected lift will be cancelled.\nRiders get a notice in Telegram.\nDemo refund estimate: 40 ₾.\nNo money is moved.',
     publishPreview:
       'Polls will be posted to the Telegram group as planned. Nothing is posted in the demo.',
+    reviewRequest: 'Demo request whose result needs checking.',
+    bankDetails: 'Demo data. Payment details appear in the working cabinet.',
   },
   nav: {
     label: 'Sections',
@@ -59,6 +61,7 @@ export const en = {
     toAdmin: 'Open the admin view',
     toRider: 'Open my rides',
     logout: 'Log out',
+    tagline: 'Tbilisi · Shuttle club',
   },
   settings: {
     theme: 'Theme',
@@ -127,7 +130,7 @@ export const en = {
   lift: {
     state: {
       cancelled: 'Cancelled',
-      below: 'Below minimum',
+      below: 'Not running yet',
       waitlist: 'Full',
       full: 'Full',
       running: 'Running',
@@ -137,7 +140,7 @@ export const en = {
     summary: (seats: number, capacity: number, waiting: number) =>
       `${seats} of ${capacity} seats${waiting ? ` · ${waiting} on the waitlist` : ''}`,
     funded: 'Minimum paid',
-    offlineCount: (n: number) => `${num(n)} manual`,
+    offlineCount: (n: number) => `${num(n)} offline`,
     guestCount: (n: number) => count(n, 'guest', 'guests'),
     riders: 'Riders',
     all: 'All',
@@ -154,10 +157,10 @@ export const en = {
     restore: 'Restore the lift',
     notFound: 'This lift is not part of the current day.',
     openDay: 'Open the day',
-    offlineSeats: 'Manual seats',
+    offlineSeats: 'Offline seats',
     offlineHint: 'For riders not in Telegram',
-    addOffline: 'Add a manual seat',
-    removeOffline: 'Remove a manual seat',
+    addOffline: 'Add an offline seat',
+    removeOffline: 'Remove an offline seat',
   },
   withdrawals: {
     title: 'Booking withdrawals',
@@ -170,8 +173,8 @@ export const en = {
     title: 'Booking order',
     intro: (seats: number) =>
       seats
-        ? `The first ${seats} in the list get seats; everyone after waits in line. Manual seats and guests keep their places.`
-        : 'No seats are free for poll bookings: everyone waits in line.',
+        ? `The first ${seats} in the list get seats; everyone after them goes on the waitlist. Offline seats and guests keep their places.`
+        : 'No seats are free for poll bookings: everyone is on the waitlist.',
     seatsHeader: (n: number) => `Seats · ${n}`,
     waitlistHeader: 'Waitlist',
     up: (name: string) => `Move ${name} up`,
@@ -267,6 +270,7 @@ export const en = {
     title: 'Activity',
     subtitle: 'Requests made in the cabinet: who, when and with what result.',
     empty: 'Actions taken in the cabinet appear here.',
+    telegramId: (id: number) => `Telegram ID ${id}`,
     status: {
       pending: 'Waiting',
       running: 'Running',
@@ -384,7 +388,7 @@ export const en = {
     restored: 'Restored',
     noHistory: 'No saved history for this period.',
     showMore: (n: number) => `Show ${n} more`,
-    csvHeader: ['Date', 'Lifts', 'Seats', 'Occupancy %', 'Payments GEL', 'Restored'],
+    csvHeader: ['Date', 'Lifts', 'Seats', 'Occupancy %', 'Payments ₾', 'Restored'],
     historyFrom: (date: string | null) =>
       date ? `History since ${date}.` : 'History since the first saved record.',
     backfilled: (n: number) => `${count(n, 'day was', 'days were')} restored from later data.`,
@@ -399,7 +403,8 @@ export const en = {
     waiting: 'On waitlists',
     ranOf: (ran: number, offered: number) => `${ran} of ${offered} ran`,
     ofLifts: (n: number) => `of ${count(n, 'lift', 'lifts')}`,
-    recorded: (recorded: number, offered: number) => `${recorded} / ${offered} lifts recorded`,
+    recorded: (recorded: number, offered: number) =>
+      `${recorded} of ${count(offered, 'lift', 'lifts')} recorded`,
     noSaved: 'Not recorded yet',
     noObservations: 'No observations',
     queueSaved: 'Waitlist recorded',
@@ -453,7 +458,7 @@ export const en = {
     location: 'Vake',
     title: 'Bike park',
     create: 'Create bike park poll',
-    price: 'Bike park price per lift, GEL',
+    price: 'Bike park price per lift, ₾',
     start: 'Start time',
     place: 'Starts at Vake · minimum 6 riders',
     note: 'Usually 5–7 lifts. Riders can leave; lifts end when fewer than 6 remain. Pay for actual lifts afterwards, by cash or transfer.',
@@ -502,7 +507,7 @@ export const en = {
     saveSchedule: 'Save schedule',
     newDays: 'For new days',
     termsTitle: 'Price and deadline',
-    price: 'Seat price, GEL',
+    price: 'Seat price, ₾',
     deadline: 'Deadline, day before',
     termsNote: 'Applies to days published after the change. Published days keep their terms.',
     saveTerms: 'Save terms',
@@ -529,7 +534,7 @@ export const en = {
     payCash: "I'll pay cash",
     waitlist: (n: number) => `Waitlist #${n}`,
     seatHeld: 'Seat held',
-    waitingMinimum: 'Waiting for the minimum',
+    waitingMinimum: 'Needs more riders',
     guests: (n: number) => `+ ${count(n, 'guest', 'guests')}`,
     guestsButton: 'Guests',
     guestSeats: 'Guest seats',
@@ -538,17 +543,17 @@ export const en = {
     removeGuest: (time: string) => `Remove a guest from ${time}`,
     dueNow: 'Due now',
     marked: 'Paid',
-    left: 'Left',
-    pending: (times: string) => `Waiting for the minimum: ${times}.`,
+    left: 'Still to pay',
+    pending: (times: string) => `Not running yet: ${times}.`,
     cashNote: 'Cash is handed to Misho on site. It counts toward the lift like a transfer.',
-    paidCash: 'Cash at the lift',
-    switchToCash: 'I will pay cash instead',
+    paidCash: 'Cash on site',
+    switchToCash: "I'll pay cash instead",
     switchToTransfer: 'I paid by transfer instead',
     paymentMarked: 'Paid',
     nothingDue: 'Nothing to pay yet',
     paymentDetails: 'Payment details',
     priceNote: (price: string, all: string) =>
-      `${price} per seat. Only lifts that reached the minimum are due now. Whole day: ${all}.`,
+      `${price} per seat. Pay now only for lifts with 5 riders. Whole day: ${all}.`,
     undoMark: 'Undo my payment report',
     undoNote: 'Undoing depends on the deadline and on admin confirmation.',
     noBooking: 'You have no bookings for this day yet.',

@@ -2,8 +2,9 @@
 
 from datetime import date, datetime
 
-from veloexpress_bot.polls.defaults import BIKE_PARK_MINIMUM, DEFAULT_LIFTS
-from veloexpress_bot.polls.render import DAY_LABELS, SHORT_DAY_LABELS, PollDraft
+from veloexpress_bot.polls.defaults import BIKE_PARK_MINIMUM, CHECK_ANSWERS_OPTION, DEFAULT_LIFTS
+from veloexpress_bot.polls.render import DAY_LABELS, EN_SHORT_MONTHS, PollDraft
+from veloexpress_bot.wording import day_label, money
 
 MINIMUM_BIKE_PARK_RIDERS = BIKE_PARK_MINIMUM
 
@@ -34,13 +35,14 @@ def validate_bike_park_date(service_date: date, start_time: str, now: datetime) 
 def render_bike_park_poll(service_date: date, start_time: str, price_gel: int) -> PollDraft:
     return PollDraft(
         question=(
-            f"🚵 Bike park · {DAY_LABELS[service_date.weekday()]} {service_date:%d.%m.%Y}"
-            f" · {start_time}\n"
-            f"Vake · {price_gel} GEL per lift · minimum {MINIMUM_BIKE_PARK_RIDERS} riders\n"
-            "Usually 5–7 lifts; decide on site. Riders can leave; lifts end below 6 riders.\n"
-            "Pay for actual lifts afterwards: cash or bank transfer."
+            f"🚵 Bike park · {DAY_LABELS[service_date.weekday()]}, {service_date.day} "
+            f"{EN_SHORT_MONTHS[service_date.month]} · {start_time}\n"
+            f"From Vake · {money(price_gel)} per lift · minimum {MINIMUM_BIKE_PARK_RIDERS} riders\n"
+            "Usually 5–7 lifts; we decide on site. You can leave early; lifts stop "
+            f"when fewer than {MINIMUM_BIKE_PARK_RIDERS} riders are left.\n"
+            "Pay for your lifts afterwards: cash or transfer."
         ),
-        options=("🚵 I'm coming", "👀 View answers"),
+        options=("🚵 I'm coming", CHECK_ANSWERS_OPTION),
         allows_multiple_answers=False,
     )
 
@@ -90,9 +92,9 @@ def render_weekend_bike_park_notice(
 ) -> str:
     """One message, once: the time is fixed and nothing else is announced."""
     lines = [
-        f"🚵 <b>Bike park is on · {SHORT_DAY_LABELS[service_date.weekday()]} "
-        f"{service_date:%d.%m} · {start_time}</b>",
-        f"From Vake · {rider_count} voted · {price_gel} GEL per lift, pay on site.",
+        f"🚵 <b>Bike park is on · {day_label(service_date)} · {start_time}</b>",
+        f"From Vake · {rider_count} voted · {money(price_gel)} per lift.",
+        "Pay for your lifts afterwards: cash or transfer.",
     ]
     if replaced_lift_times:
         label = "Lift" if len(replaced_lift_times) == 1 else "Lifts"

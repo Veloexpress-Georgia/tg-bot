@@ -31,7 +31,7 @@ QUIET_GOLD = "#C8B68D"
 BLUE = "#75BAF9"
 PURPLE = "#C5A6FF"
 # State colours stay apart from the seat-source colours: a blue FULL read as
-# "external seats", a purple WAITLIST as "guests".
+# "offline seats", a purple WAITLIST as "guests".
 ORANGE = "#FFA46E"
 QUIET_RED = "#AF858C"
 # Its own colour: purple already means guests in the seat legend.
@@ -110,7 +110,7 @@ def _state(lift: LiftAvailability, *, deadline_passed: bool) -> tuple[str, str, 
         return "FULL", INK, PANEL
     if not lift.running:
         if deadline_passed:
-            return "BELOW MINIMUM", MUTED, PAST_DEADLINE_PANEL
+            return "STILL NEED RIDERS", MUTED, PAST_DEADLINE_PANEL
         return f"NEEDS {MINIMUM_RIDERS - lift.seat_count} MORE", QUIET_GOLD, QUIET_PANEL
     return f"{lift.capacity - lift.seat_count} SEATS LEFT", GREEN, PANEL
 
@@ -131,10 +131,10 @@ def _breakdown(lift: LiftAvailability) -> tuple[tuple[str, str], ...]:
     if lift.cancelled or not lift.off_poll_count:
         return ()
     segments = _seat_segments(lift)
-    external_seats, guest_seats, seated_votes = (segments[0][0], segments[1][0], segments[2][0])
+    offline_seats, guest_seats, seated_votes = (segments[0][0], segments[1][0], segments[2][0])
     parts: list[tuple[str, str]] = []
-    if external_seats:
-        parts.append((f"EXTERNAL +{external_seats}", BLUE))
+    if offline_seats:
+        parts.append((f"OFFLINE +{offline_seats}", BLUE))
     if guest_seats:
         parts.append((f"GUESTS +{guest_seats}", PURPLE))
     parts.append((f"VOTES {seated_votes}", GREEN))
@@ -155,7 +155,7 @@ def _draw_legend(
     draw: ImageDraw.ImageDraw, font: ImageFont.FreeTypeFont | ImageFont.ImageFont, y: int
 ) -> None:
     x = PADDING + 2
-    for label, color in (("EXTERNAL", BLUE), ("GUESTS", PURPLE), ("TG VOTES", GREEN)):
+    for label, color in (("OFFLINE", BLUE), ("GUESTS", PURPLE), ("TG VOTES", GREEN)):
         draw.rounded_rectangle((x, y + 10, x + 20, y + 30), radius=6, fill=color)
         draw.text((x + 30, y), label, font=font, fill=MUTED)
         x += 30 + round(draw.textlength(label, font=font)) + 38
@@ -267,7 +267,7 @@ def _draw_short_row(draw: ImageDraw.ImageDraw, lift: LiftAvailability, *, y: int
 
 
 def _short_summary(lift: LiftAvailability) -> str:
-    names = (("external", "external"), ("guest", "guests"), ("TG vote", "TG votes"))
+    names = (("offline", "offline"), ("guest", "guests"), ("TG vote", "TG votes"))
     source_labels = [
         f"{count} {one if count == 1 else many}"
         for (count, _), (one, many) in zip(_seat_segments(lift), names, strict=True)
@@ -286,9 +286,7 @@ def _draw_bike_park_row(draw: ImageDraw.ImageDraw, park: BikeParkCardRow, *, y: 
     time_font = _font(62, bold=True)
     draw.text((left + 30, y + 19), park.start_time, font=time_font, fill=INK)
     label_x = left + 30 + round(draw.textlength(park.start_time, font=time_font)) + 28
-    draw.text(
-        (label_x, y + 34), "BIKE PARK · TURTLE LAKE", font=_font(40, bold=True), fill=BIKE_PARK
-    )
+    draw.text((label_x, y + 34), "BIKE PARK · FROM VAKE", font=_font(40, bold=True), fill=BIKE_PARK)
 
 
 def _draw_cancelled_row(
@@ -373,7 +371,7 @@ def render_availability_card(
         y += 60
         if not full_rows:
             draw.text(
-                (44, y + 5), f"No lifts reached {MINIMUM_RIDERS} seats.", font=_font(32), fill=MUTED
+                (44, y + 5), f"No lift has {MINIMUM_RIDERS} seats yet.", font=_font(32), fill=MUTED
             )
             y += 65
     for lift, lines, breakdown, row_height in full_rows:
@@ -397,7 +395,7 @@ def render_availability_card(
         y += BIKE_PARK_ROW_HEIGHT + 12
     if short_lifts:
         y += 23
-        draw.text((44, y + 7), "BELOW MINIMUM", font=_font(36, bold=True), fill=MUTED)
+        draw.text((44, y + 7), "STILL NEED RIDERS", font=_font(36, bold=True), fill=MUTED)
         y += 55
         for lift in short_lifts:
             _draw_short_row(draw, lift, y=y)

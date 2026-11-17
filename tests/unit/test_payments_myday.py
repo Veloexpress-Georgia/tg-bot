@@ -66,12 +66,12 @@ def test_several_lifts_offer_one_tap_for_a_guest_riding_along() -> None:
         )
     )
 
-    assert "Your total: 60 GEL." in draft.text
+    assert "Your total: 60 ₾." in draft.text
     assert "10:00 — riding · 1 guest · full" in draft.text
     rows = _buttons(draft.reply_markup)
     assert rows[0] == [
-        ("💸 I paid · 60", "guest:pay:20260801"),
-        ("💵 I'll pay cash · 60", "guest:cash:20260801"),
+        ("💸 I paid · 60 ₾", "guest:pay:20260801"),
+        ("💵 Cash · 60 ₾", "guest:cash:20260801"),
     ]
     assert rows[1] == [
         ("− Guest from all lifts", "guest:allsub:20260801"),
@@ -95,11 +95,11 @@ def test_an_unfilled_lift_offers_settling_the_whole_day() -> None:
         )
     )
 
-    assert "Not filled yet: 10:00, 13:30." in draft.text
-    assert "Due now 15 GEL · whole day 45 GEL." in draft.text
+    assert "Not running yet: 10:00, 13:30." in draft.text
+    assert "Due now 15 ₾ · whole day 45 ₾." in draft.text
     assert _buttons(draft.reply_markup)[1] == [
-        ("💸 I paid all · 45", "guest:payall:20260801"),
-        ("💵 I'll pay cash all · 45", "guest:cashall:20260801"),
+        ("💸 I paid all · 45 ₾", "guest:payall:20260801"),
+        ("💵 Cash, all · 45 ₾", "guest:cashall:20260801"),
     ]
 
 
@@ -117,7 +117,7 @@ def test_nothing_pending_means_no_whole_day_button() -> None:
 
     # Paying "everything" would be the same as paying now, so the button would lie.
     assert "payall" not in str(_buttons(draft.reply_markup))
-    assert "Your total: 15 GEL." in draft.text
+    assert "Your total: 15 ₾." in draft.text
 
 
 def test_a_rider_with_no_booking_gets_no_controls() -> None:
@@ -140,8 +140,8 @@ def test_a_waitlisted_rider_is_told_the_queue_and_asked_for_nothing() -> None:
         )
     )
 
-    assert "8:30 — ⏳ waitlist, 2nd in line" in draft.text
-    assert "nothing to pay until one frees up" in draft.text
+    assert "8:30 — ⏳ waitlist #2" in draft.text
+    assert "Nothing to pay now." in draft.text
     # No money buttons: they hold no seat, so there is nothing to settle.
     assert draft.reply_markup is None or "guest:pay" not in str(_buttons(draft.reply_markup))
 
@@ -159,7 +159,7 @@ def test_paid_in_full_is_shown_as_settled() -> None:
         )
     )
 
-    assert "Paid 15 GEL ✅" in draft.text
+    assert "Paid 15 ₾ ✅" in draft.text
     # Nothing outstanding, so no pay button — but Undo stays reachable.
     buttons = str(_buttons(draft.reply_markup))
     assert "guest:pay" not in buttons
@@ -180,7 +180,9 @@ def test_paid_cash_can_be_changed_to_a_transfer_from_the_rider_card() -> None:
         )
     )
 
-    assert ("💸 Correct to transfer", "guest:pay:20260801") in _buttons(draft.reply_markup)[0]
+    assert ("💸 I paid by transfer instead", "guest:pay:20260801") in _buttons(draft.reply_markup)[
+        0
+    ]
 
 
 def test_the_weekend_is_one_card_with_day_tabs() -> None:
@@ -203,7 +205,7 @@ def test_the_weekend_is_one_card_with_day_tabs() -> None:
     assert "10:00 — riding · 1 seat left" in draft.text
     assert _buttons(draft.reply_markup)[-1] == [
         ("Sat 1", "guest:day:20260801"),
-        ("✅ Sun 2", "guest:day:20260802"),
+        ("▸ Sun 2", "guest:day:20260802"),
     ]
 
 
@@ -286,9 +288,9 @@ def test_my_past_rides_lists_the_days_and_the_season_under_them() -> None:
         )
     )
 
-    assert "Sat, 1 Aug · 8:30, 13:30 · 3 seats · 45 GEL" in draft.text
-    assert "Sun, 2 Aug · 10:00 · 1 seat · 15 GEL" in draft.text
-    assert "2 days · 3 lifts · 4 seats · 60 GEL" in draft.text
+    assert "Sat, 1 Aug · 8:30, 13:30 · 3 seats · 45 ₾" in draft.text
+    assert "Sun, 2 Aug · 10:00 · 1 seat · 15 ₾" in draft.text
+    assert "2 days · 3 lifts · 4 seats · 60 ₾" in draft.text
     assert ("⬅️ Back", "guest:card") in _buttons(draft.reply_markup)[-1]
 
 
@@ -364,9 +366,9 @@ def test_topup_buttons_show_only_the_unpaid_amount() -> None:
         )
     )
     buttons = dict((data, text) for row in _buttons(draft.reply_markup) for text, data in row)
-    assert buttons["guest:pay:20260801"] == "💸 I paid · 15"
-    assert buttons["guest:cash:20260801"] == "💵 I'll pay cash · 15"
-    assert buttons["guest:payall:20260801"] == "💸 I paid all · 30"
+    assert buttons["guest:pay:20260801"] == "💸 I paid · 15 ₾"
+    assert buttons["guest:cash:20260801"] == "💵 Cash · 15 ₾"
+    assert buttons["guest:payall:20260801"] == "💸 I paid all · 30 ₾"
 
 
 def test_prepaid_pending_rides_are_not_presented_as_a_refund() -> None:
@@ -382,7 +384,7 @@ def test_prepaid_pending_rides_are_not_presented_as_a_refund() -> None:
             )
         )
     )
-    assert "15 GEL prepaid" in draft.text
+    assert "15 ₾ prepaid" in draft.text
     assert "to come back" not in draft.text
     assert not any(
         data and data.startswith(("guest:pay", "guest:cash"))

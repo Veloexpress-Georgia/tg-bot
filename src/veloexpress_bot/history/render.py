@@ -3,6 +3,7 @@ import html
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from veloexpress_bot.payments.myday import MyDayDraft
+from veloexpress_bot.wording import money, plural
 from veloexpress_core.history import Statistics
 
 PAGE_SIZE = 8
@@ -18,17 +19,21 @@ def render_statistics(
     lines = ["📊 My statistics" if personal else "📊 Lift statistics", period, ""]
     if personal:
         rider = view.riders[0] if view.riders else None
-        lines.append(f"{rider.days if rider else 0} days · {rider.lifts if rider else 0} lifts")
-        lines.append(f"{rider.guests if rider else 0} guest seats")
+        lines.append(
+            f"{plural(rider.days if rider else 0, 'day')} · "
+            f"{plural(rider.lifts if rider else 0, 'lift')}"
+        )
+        lines.append(plural(rider.guests if rider else 0, "guest seat"))
         if rider and rider.last_day:
             lines.append(f"Last recorded day: {rider.last_day:%d %b %Y}")
     else:
         lines.extend(
             (
-                f"{view.days} days · {view.lifts} lifts",
-                f"{sum(r.days > 0 for r in view.riders)} riders · "
-                f"{sum(r.days for r in view.riders)} rider-days",
-                f"{view.seats} seats · {view.guests} guest · {view.manual} manual",
+                f"{plural(view.days, 'day')} · {plural(view.lifts, 'lift')}",
+                f"{plural(sum(r.days > 0 for r in view.riders), 'rider')} · "
+                f"{plural(sum(r.days for r in view.riders), 'rider-day')}",
+                f"{plural(view.seats, 'seat')} · {plural(view.guests, 'guest seat')} · "
+                f"{plural(view.manual, 'offline seat')}",
                 f"Occupancy: {view.seats / view.capacity:.0%}"
                 if view.capacity
                 else "Occupancy: no recorded lifts",
@@ -37,10 +42,10 @@ def render_statistics(
     lines.extend(
         (
             "",
-            f"Reported: {view.received_gel} GEL",
-            f"Reversed reports: {view.reversed_gel} GEL",
-            f"Refunded: {view.refunded_gel} GEL",
-            f"Reported total: {view.net_gel} GEL",
+            f"Reported: {money(view.received_gel)}",
+            f"Reversed reports: {money(view.reversed_gel)}",
+            f"Refunded: {money(view.refunded_gel)}",
+            f"Reported total: {money(view.net_gel)}",
         )
     )
     if view.first_record:
@@ -53,7 +58,9 @@ def render_statistics(
     else:
         lines.extend(("", "No recorded rides in this period."))
     if view.backfilled_days:
-        lines.append(f"⚠️ {view.backfilled_days} days reconstructed later.")
+        lines.append(
+            f"⚠️ {plural(view.backfilled_days, 'day was', 'days were')} reconstructed later."
+        )
     lines.append("Based on seats at day close; attendance is not checked.")
     rows = [
         [
@@ -74,7 +81,10 @@ def render_statistics(
         lines.extend(("", f"Riders · {page + 1}/{pages}"))
         for rider in view.riders[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]:
             label = html.escape(rider.label)
-            lines.append(f"{label} — {rider.days} days · {rider.lifts} lifts · {rider.net_gel} GEL")
+            lines.append(
+                f"{label} — {plural(rider.days, 'day')} · {plural(rider.lifts, 'lift')} · "
+                f"{money(rider.net_gel)}"
+            )
             rows.append(
                 [
                     InlineKeyboardButton(

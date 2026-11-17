@@ -156,7 +156,7 @@ export function AuditList({ entries, timezone }: { entries: CommandResult[]; tim
                   {entry.result ? plain(entry.result.message) : t.cmd.request(entry.id)}
                   <span className="audit-meta">
                     {stamp(entry.created_at, timezone)} ·{' '}
-                    {entry.actor_name ?? `Telegram ID ${entry.actor_user_id}`}
+                    {entry.actor_name ?? t.audit.telegramId(entry.actor_user_id)}
                   </span>
                 </>
               }

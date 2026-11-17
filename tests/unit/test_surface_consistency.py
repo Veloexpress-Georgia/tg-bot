@@ -157,7 +157,7 @@ def test_a_lift_locked_at_the_deadline_stays_running_after_a_drop_out() -> None:
     )
     line = next(text for text in reminder.splitlines() if text.startswith("10:00"))
     # Counted as a lift that is happening, short of paid seats, not of riders.
-    assert line.startswith("10:00 — 4 riders · 4/5 paid")
+    assert line.startswith("10:00 — 4 seats · 4/5 paid")
 
 
 async def test_the_booking_order_screen_receives_the_ledger_state(db: SharedDatabase) -> None:

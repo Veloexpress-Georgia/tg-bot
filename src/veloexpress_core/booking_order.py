@@ -25,6 +25,7 @@ from veloexpress_bot.db.models import (
 )
 from veloexpress_bot.polls.defaults import DEFAULT_LIFTS
 from veloexpress_bot.polls.seating import SeatCandidate, allocate_seats, queue_rank
+from veloexpress_bot.wording import day_label, money
 from veloexpress_core.seat_hold import held_waitlist
 
 if TYPE_CHECKING:
@@ -298,11 +299,11 @@ def payment_label(payment: dict[str, Any]) -> str:
     if payment["paid"]:
         return "cash on site" if payment["cash"] else "payment reported"
     if payment.get("state") == "partial":
-        return f"partly paid · {payment['due_gel']} GEL still due"
+        return f"partly paid · {money(payment['due_gel'])} still due"
     if payment.get("state") == "pending":
-        return "lift not filled yet · nothing due"
+        return "lift not running yet · nothing due"
     amount = payment["paid_gel"]
-    note = f" · {amount} GEL reported for the day" if amount else ""
+    note = f" · {money(amount)} reported for the day" if amount else ""
     return f"payment not reported{note}"
 
 
@@ -409,9 +410,9 @@ async def save(
         seat_state.held_waitlist_ids = seat_state.waitlist_ids
         seat_state.updated_at = datetime.now(UTC)
         labels = {r.telegram_user_id: r.label for r in state.ordered}
-        lines = [f"🎟 Booking order updated · {lift_time} · {service_date:%d %b}"]
+        lines = [f"🔄 Booking order updated · {lift_time} · {day_label(service_date)}"]
         for title, changed in (
-            ("Now holds a seat", result["promoted"]),
+            ("Now has a seat", result["promoted"]),
             ("Now on the waitlist", result["demoted"]),
         ):
             if changed:
@@ -420,6 +421,8 @@ async def save(
                     for uid in changed
                 )
                 lines.append(f"{title}: {mentions}")
+        if result["promoted"]:
+            lines.append("Got a seat? Pay as usual. Can't ride? Remove your vote.")
         if result["promoted"] or result["demoted"]:
             session.add(
                 TelegramOutbox(

@@ -4,11 +4,9 @@ import pytest
 
 from veloexpress_bot.polls.defaults import CHECK_ANSWERS_OPTION, PaymentTerms, StartLocation
 from veloexpress_bot.polls.render import (
-    GuestParty,
     LiftAvailability,
     PollRenderInput,
-    WaitlistRider,
-    render_availability_status,
+    partition_availability_lifts,
     render_poll,
     render_poll_notice,
 )
@@ -17,7 +15,7 @@ from veloexpress_bot.polls.render import (
 def test_render_poll_uses_ru_en_weekend_template() -> None:
     draft = render_poll(PollRenderInput(service_date=date(2026, 5, 16)))
 
-    assert draft.question == "🚐 Saturday · May 16"
+    assert draft.question == "🚐 Saturday, 16 May"
     assert draft.options[-1] == CHECK_ANSWERS_OPTION
     assert draft.options[0] == "🚲 8:30"
     assert draft.options[1] == "🚲 10:00"
@@ -39,8 +37,8 @@ def test_render_poll_notice_explains_dynamic_first_lift_location() -> None:
 def test_render_poll_notice_keeps_only_booking_essentials_and_links() -> None:
     assert render_poll_notice(StartLocation.VAKE, terms=TERMS).splitlines() == [
         '📍 <a href="https://maps.app.goo.gl/nSNiv7GnNiQt5J64A">Opposite Vake Park</a>',
-        "💳 <b>15 GEL / seat.</b> Bank transfer once your lift reaches 5 booked seats, "
-        "by <b>20:00 the evening before</b>. Late bookings: transfer immediately.",
+        "💳 <b>15 ₾ per seat.</b> Transfer when your lift has 5 seats, "
+        "by <b>20:00 the evening before</b>. Booked later? Transfer right away.",
         "💵 Cash is paid to Misho on site on the lift day.",
         '<a href="https://pay.example">Where to pay</a> · '
         '<a href="https://t.me/c/2200954181/5">Rules &amp; bank details</a>',
@@ -54,7 +52,7 @@ def test_the_poll_notice_omits_the_link_when_none_is_configured() -> None:
     )
 
     assert "Where to pay" not in notice
-    assert "15 GEL / seat" in notice
+    assert "15 ₾ per seat" in notice
     assert notice.endswith('<a href="https://t.me/c/2200954181/5">Rules &amp; bank details</a>')
 
 
@@ -62,73 +60,23 @@ def test_short_poll_notice_uses_the_service_days_price_and_deadline() -> None:
     notice = render_poll_notice(
         StartLocation.VAKE, terms=PaymentTerms(price_gel=20, deadline_time="19:30")
     )
-    assert "<b>20 GEL / seat.</b>" in notice
+    assert "<b>20 ₾ per seat.</b>" in notice
     assert "<b>19:30 the evening before</b>" in notice
 
 
-def test_availability_names_the_waitlist_where_the_seats_are_counted() -> None:
-    """ "waitlist +2" is a riddle without names. The board is edited in place, and a
-    Telegram edit sends no notification, so naming informs without pinging."""
-    status = render_availability_status(
-        date(2026, 8, 1),
-        (
-            LiftAvailability(
-                time="8:30",
-                seat_count=12,
-                waitlist=(
-                    WaitlistRider(telegram_user_id=11, label="@konstantin"),
-                    WaitlistRider(telegram_user_id=12, label="Ivan"),
-                ),
-            ),
-            LiftAvailability(time="10:00", seat_count=6),
-        ),
-    )
-
-    lines = status.splitlines()
-    assert lines[2] == "8:30 — <b>12/10</b> · waitlist +2"
-    assert lines[3] == (
-        '    ⏳ <a href="tg://user?id=11">@konstantin</a> <a href="tg://user?id=12">Ivan</a>'
-    )
-    # A lift with nobody waiting stays a single line.
-    assert lines[4] == "10:00 — <b>6/10</b> · 4 left"
-
-
-def test_render_availability_status_shows_counts_and_state_tags() -> None:
-    status = render_availability_status(
-        date(2026, 5, 16),
-        (
-            LiftAvailability(time="8:30", seat_count=3),
-            LiftAvailability(time="10:00", seat_count=6),
-            LiftAvailability(time="11:45", seat_count=10),
-            LiftAvailability(time="15:30", seat_count=12),
-        ),
-    )
-
-    assert "🚐 Availability · Sat, 16 May" in status
-    # Below the minimum reads "needs N more"; at/above, remaining seats.
-    assert "8:30 — <b>3/10</b> · needs 2 more" in status
-    assert "10:00 — <b>6/10</b> · 4 left" in status
-    assert "11:45 — <b>10/10</b> · full" in status
-    assert "15:30 — <b>12/10</b> · waitlist +2" in status
-    assert "🟢" not in status and "🔴" not in status
-    assert "<pre>" not in status
-
-
 def test_after_deadline_availability_groups_viable_lifts_before_short_lifts() -> None:
-    status = render_availability_status(
-        date(2026, 9, 26),
+    running, short, cancelled = partition_availability_lifts(
         (
             LiftAvailability(time="8:30", seat_count=1),
             LiftAvailability(time="10:00", seat_count=5),
             LiftAvailability(time="11:45", seat_count=3),
             LiftAvailability(time="13:30", seat_count=7),
             LiftAvailability(time="15:30", seat_count=0, cancelled=True),
-        ),
-        deadline_passed=True,
+        )
     )
-    assert status.index("10:00") < status.index("13:30") < status.index("Below minimum")
-    assert status.index("Below minimum") < status.index("8:30") < status.index("11:45")
-    assert status.index("11:45") < status.index("Cancelled") < status.index("15:30")
+    assert [lift.time for lift in running] == ["10:00", "13:30"]
+    assert [lift.time for lift in short] == ["8:30", "11:45"]
+    assert [lift.time for lift in cancelled] == ["15:30"]
 
 
 def test_render_poll_can_cancel_lifts() -> None:
@@ -154,54 +102,3 @@ def test_render_poll_requires_at_least_one_lift() -> None:
                 cancelled_lift_times=("8:30", "10:00", "11:45", "13:30", "15:30"),
             )
         )
-
-
-def test_availability_names_who_holds_the_seats_the_poll_cannot_show() -> None:
-    """Guests and manual bookings hold seats but cast no vote, so the board reads
-    higher than the poll. Naming the hosts under their lift answers "whose seat is
-    that" without a trip to the payments topic."""
-    status = render_availability_status(
-        date(2026, 8, 23),
-        (
-            LiftAvailability(time="8:30", seat_count=0),
-            LiftAvailability(
-                time="10:00",
-                seat_count=9,
-                guests=(GuestParty(telegram_user_id=21, label="@vitaly", count=1),),
-            ),
-            LiftAvailability(
-                time="11:45",
-                seat_count=11,
-                manual_count=2,
-                guests=(GuestParty(telegram_user_id=21, label="@vitaly", count=1),),
-            ),
-            LiftAvailability(
-                time="13:30",
-                seat_count=7,
-                cancelled=True,
-                guests=(GuestParty(telegram_user_id=21, label="@vitaly", count=1),),
-            ),
-        ),
-    )
-
-    lines = status.splitlines()
-    assert lines[2] == "8:30 — <b>0/10</b> · needs 5 more"
-    assert lines[3] == "10:00 — <b>9/10</b> · 1 left"
-    assert lines[4] == '    🎟 <a href="tg://user?id=21">@vitaly</a> +1'
-    assert lines[6] == ('    🎟 <a href="tg://user?id=21">@vitaly</a> +1 · +2 external seats')
-    # A cancelled lift carries nobody, so its guests are not worth a line.
-    assert lines[7] == "13:30 — ❌ cancelled"
-    assert len(lines) == 8
-
-
-def test_availability_has_no_guest_line_when_everyone_voted() -> None:
-    status = render_availability_status(
-        date(2026, 8, 23),
-        (
-            LiftAvailability(time="8:30", seat_count=3),
-            LiftAvailability(time="10:00", seat_count=6),
-        ),
-    )
-
-    assert "🎟" not in status
-    assert status.splitlines()[-1] == "10:00 — <b>6/10</b> · 4 left"

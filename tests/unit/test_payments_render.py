@@ -48,7 +48,7 @@ def test_board_lists_running_lifts_price_and_the_taps() -> None:
 
     assert "💸 Payments · Sat, 18 Jul" in draft.text
     assert "Payment open: 8:30, 10:00" in draft.text
-    assert "15 GEL per seat · transfer by Fri 20:00" in draft.text
+    assert "15 ₾ per seat · transfer by Fri 20:00" in draft.text
     assert "Waiting on:" in draft.text
     assert draft.reply_markup is not None
     # Cash has its own button rather than a rule telling riders to press the
@@ -74,8 +74,8 @@ def test_board_lists_payments_and_counts_the_rest() -> None:
         )
     )
 
-    assert "✓ @stas — 30 GEL · 2 seats" in draft.text
-    assert "✓ Anna — 15 GEL" in draft.text
+    assert "✓ @stas — 30 ₾ · 2 seats" in draft.text
+    assert "✓ Anna — 15 ₾" in draft.text
     assert "Waiting on:" in draft.text
 
 
@@ -91,10 +91,10 @@ def test_the_board_shows_what_is_still_due_after_a_re_vote() -> None:
         )
     )
 
-    assert "✓ @whekin — 30 GEL · 2 seats · +30 due" in draft.text
-    assert "✓ @anna — 30 GEL · 2 seats · 15 unallocated" in draft.text
+    assert "✓ @whekin — 30 ₾ · 2 seats · +30 ₾ due" in draft.text
+    assert "✓ @anna — 30 ₾ · 2 seats · 15 ₾ extra" in draft.text
     # Settled riders stay a plain line; no arithmetic to read where none is owed.
-    assert "✓ @stas — 15 GEL" in draft.text
+    assert "✓ @stas — 15 ₾" in draft.text
 
 
 def test_cash_is_named_on_the_board_and_transfers_are_not() -> None:
@@ -108,8 +108,8 @@ def test_cash_is_named_on_the_board_and_transfers_are_not() -> None:
         )
     )
 
-    assert "✓ @stas — 15 GEL · cash" in draft.text
-    assert "✓ Anna — 15 GEL" in draft.text
+    assert "✓ @stas — 15 ₾ · cash" in draft.text
+    assert "✓ Anna — 15 ₾" in draft.text
 
 
 def test_a_cash_post_is_marked_so_misho_does_not_hunt_for_a_transfer() -> None:
@@ -146,7 +146,7 @@ def test_board_tags_who_still_owes() -> None:
 def test_board_has_no_taps_before_a_lift_reaches_the_minimum() -> None:
     draft = render_payments_board(_view(running_lift_times=()))
 
-    assert "No lift has reached the minimum yet." in draft.text
+    assert "No lift has 5 seats yet. Nothing to pay now." in draft.text
     assert draft.reply_markup is None
 
 
@@ -167,7 +167,7 @@ def test_payment_post_tags_the_rider_with_the_amount() -> None:
 
     # No lift names: payment covers the day, and riders may re-vote until the
     # deadline, so a receipt listing lifts would go stale on the next slot change.
-    assert text == '💸 <a href="tg://user?id=10">@stas</a> — 30 GEL · Sat, 18 Jul'
+    assert text == '💸 <a href="tg://user?id=10">@stas</a> — 30 ₾ · Sat, 18 Jul'
 
 
 def test_payment_post_counts_guest_seats_not_guest_people() -> None:
@@ -211,12 +211,12 @@ def test_single_lift_report_shows_only_refund_amounts() -> None:
     )
     assert report == (
         "💸 15:30 · Sat, 5 Sep cancelled\n\n"
-        '<a href="tg://user?id=2">@partial</a> — 15 GEL back\n'
-        "Paid 30 · rides 15 GEL\n\n"
-        '<a href="tg://user?id=3">@leaving</a> — 15 GEL back\n'
-        "Paid 15 · rides 0 GEL\n\n"
-        "Total to return: 30 GEL\n"
-        "Cumulative for the day · payouts not tracked."
+        '<a href="tg://user?id=2">@partial</a> — 15 ₾ back\n'
+        "Paid 30 ₾ · kept for rides 15 ₾\n\n"
+        '<a href="tg://user?id=3">@leaving</a> — 15 ₾ back\n'
+        "Paid 15 ₾ · kept for rides 0 ₾\n\n"
+        "Total to return: 30 ₾\n"
+        "All refunds for this day so far. Mark each one paid in the cabinet's refunds screen."
     )
 
 
@@ -229,7 +229,7 @@ def test_single_lift_without_refunds_omits_day_payments() -> None:
     assert report is not None
     assert report.endswith("Nothing to refund.")
     assert "@staying" not in report
-    assert "30 GEL" not in report
+    assert "30 ₾" not in report
 
 
 def test_cancellation_without_payments_stays_quiet() -> None:

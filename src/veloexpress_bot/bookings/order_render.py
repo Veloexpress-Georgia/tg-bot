@@ -6,6 +6,7 @@ from typing import Any
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from veloexpress_bot.bookings.render import BookingMonitorDraft
+from veloexpress_bot.wording import day_label
 from veloexpress_core.booking_order import payment_label
 
 PAGE_SIZE = 8
@@ -21,7 +22,7 @@ def render_booking_order(payload: dict[str, Any]) -> BookingMonitorDraft:
     day = date.fromisoformat(payload["date"])
     time = payload["time"]
     back = f"mon:lift:{day:%Y%m%d}:{time.replace(':', '').zfill(4)}"
-    lines = [f"↕️ Booking order · {time} · {day:%d %b}", ""]
+    lines = [f"↕️ Booking order · {time} · {day_label(day)}", ""]
     rows: list[list[InlineKeyboardButton]] = []
     if mode == "confirm":
         lines.append(payload["preview"]["details"])

@@ -7,12 +7,12 @@ from datetime import date, datetime, timedelta
 from aiogram.types import InlineKeyboardMarkup
 
 from veloexpress_bot.payment_copy import CASH_BUTTON as CASH_BUTTON
-from veloexpress_bot.payment_copy import CASH_ON_SITE_TEXT, CASH_REPORT_TEXT
 from veloexpress_bot.payment_copy import PAID_BUTTON as PAID_BUTTON
 from veloexpress_bot.payment_copy import UNDO_BUTTON as UNDO_BUTTON
 from veloexpress_bot.payments.controls import payment_keyboard
 from veloexpress_bot.payments.details import bank_details_text
-from veloexpress_bot.polls.render import EN_SHORT_MONTHS, SHORT_DAY_LABELS
+from veloexpress_bot.polls.render import SHORT_DAY_LABELS
+from veloexpress_bot.wording import day_label, money, plural
 
 PAYMENTS_PARSE_MODE = "HTML"
 
@@ -81,32 +81,49 @@ def render_cancellation_report(
     service_date: date,
     cancelled_lift_time: str | None,
     rows: tuple[RefundRow, ...],
+    tracked: bool = True,
+    earlier_refunds_elsewhere: bool = False,
 ) -> str | None:
     """Tell the admin who paid for something that just stopped running.
 
     Returns None when nobody paid, so a quiet cancellation stays quiet.
+    `tracked` is False for the read-only estimate kept for legacy days, whose
+    payouts the cabinet cannot mark. `earlier_refunds_elsewhere` says the day
+    also has tracked refunds this estimate leaves out.
     """
     if not rows:
         return None
     what = f"{cancelled_lift_time} · " if cancelled_lift_time else ""
     heading = f"💸 {what}{_long_day_label(service_date)} cancelled"
+    elsewhere = (
+        (
+            "Refunds for earlier lift cancellations are listed separately "
+            "in the cabinet's refunds screen.",
+        )
+        if earlier_refunds_elsewhere
+        else ()
+    )
     refunds = tuple(row for row in rows if row.refund_gel > 0)
     if not refunds:
-        return f"{heading}\n\nNothing to refund."
+        return "\n".join((heading, "", "Nothing to refund.", *elsewhere))
     lines = [heading, ""]
     for row in refunds:
         mention = f'<a href="tg://user?id={row.telegram_user_id}">{html.escape(row.label)}</a>'
         lines.extend(
             (
-                f"{mention} — {row.refund_gel} GEL back",
-                f"Paid {row.amount_gel} · rides {row.amount_gel - row.refund_gel} GEL",
+                f"{mention} — {money(row.refund_gel)} back",
+                f"Paid {money(row.amount_gel)} · kept for rides "
+                f"{money(row.amount_gel - row.refund_gel)}",
                 "",
             )
         )
     lines.extend(
         (
-            f"Total to return: {sum(row.refund_gel for row in refunds)} GEL",
-            "Cumulative for the day · payouts not tracked.",
+            f"Total to return: {money(sum(row.refund_gel for row in refunds))}",
+            "All refunds for this day so far. Mark each one paid in the cabinet's refunds screen."
+            if tracked
+            else "Estimate only. Payouts for it are not tracked.",
+            *elsewhere,
         )
     )
     return "\n".join(lines)
@@ -124,7 +141,7 @@ def render_payments_board(view: PaymentsBoardView) -> PaymentsBoardDraft:
         return PaymentsBoardDraft(text=f"{header}\n\n❌ The day is cancelled.", reply_markup=None)
     if not view.running_lift_times:
         return PaymentsBoardDraft(
-            text=f"{header}\n\nNo lift has reached the minimum yet.",
+            text=f"{header}\n\nNo lift has 5 seats yet. Nothing to pay now.",
             reply_markup=None,
         )
 
@@ -132,7 +149,7 @@ def render_payments_board(view: PaymentsBoardView) -> PaymentsBoardDraft:
         header,
         "",
         f"Payment open: {', '.join(view.running_lift_times)}",
-        f"{view.price_gel} GEL per seat · transfer by "
+        f"{money(view.price_gel)} per seat · transfer by "
         f"{_weekday(view.service_date - timedelta(days=1))} {view.deadline_time}",
     ]
     if view.payments:
@@ -167,24 +184,24 @@ def render_unpaid_deadline_notice(
     riders: tuple[OutstandingRider, ...],
     minimum: int,
 ) -> str:
-    """Booking closed with the trip underfunded — ask, do not cancel.
+    """The deadline passed with the trip underfunded — ask, do not cancel.
 
     Somebody forgetting to tap a button is not a reason to call off a van, so
     this names the shortfall and tags whoever is missing from it. Whether the
     lift actually runs is Misho's decision, and the bot does not pre-empt it.
     """
     lines = [
-        f"⏳ {_long_day_label(service_date)} — booking is closed. Payments reported so far:",
+        f"⏰ {_long_day_label(service_date)} — the deadline has passed. Paid seats so far:",
         "",
     ]
     lines.extend(f"{lift.lift_time} — {lift.paid_seats}/{minimum} paid" for lift in lifts)
     lines.extend(
         (
             "",
-            f"Fewer than {minimum} seats have payments recorded on these lifts. "
-            "Misho decides whether they go ahead.",
-            f"💵 {CASH_ON_SITE_TEXT}",
-            f"Paying on site? Tap {CASH_BUTTON} on the board. {CASH_REPORT_TEXT}",
+            f"Each lift needs {minimum} paid seats. Misho decides if it goes.",
+            f"Tagged? Transfer now and tap {PAID_BUTTON}, "
+            f"or tap {CASH_BUTTON} if you pay Misho on site.",
+            "You can still book while seats are free.",
         )
     )
     if riders:
@@ -211,15 +228,15 @@ def render_payment_post(
     """
     mention = f'<a href="tg://user?id={user_id}">{html.escape(label)}</a>'
     marker = "💵" if cash else "💸"
-    parts = [f"{marker} {mention} — {amount_gel} GEL · {_long_day_label(service_date)}"]
+    parts = [f"{marker} {mention} — {money(amount_gel)} · {_long_day_label(service_date)}"]
     if guests > 0:
         # Seats, not people: one guest riding three lifts is three seats, and
         # "+3 guests" had the group counting three visitors who did not exist.
-        parts.append(f"{seats} seats · {guests} for guests")
+        parts.append(f"{plural(seats, 'seat')} · {guests} for guests")
     if cash:
         parts.append("cash")
     elif cash_gel:
-        parts.append(f"{cash_gel} GEL cash")
+        parts.append(f"{money(cash_gel)} cash")
     return " · ".join(parts)
 
 
@@ -241,21 +258,21 @@ def _payment_line(payment: RiderPayment) -> str:
     seats = f" · {payment.seats} seats" if payment.seats > 1 else ""
     cash = " · cash" if payment.cash else ""
     if not payment.cash and payment.cash_gel:
-        cash = f" · {payment.cash_gel} cash"
+        cash = f" · {money(payment.cash_gel)} cash"
     # Re-voting is free until the deadline, so what a rider owes moves after they
     # pay. Showing the gap keeps the paid figure honest instead of restating it.
     gap = ""
     if payment.gap_gel > 0:
-        gap = f" · +{payment.gap_gel} due"
+        gap = f" · +{money(payment.gap_gel)} due"
     elif payment.gap_gel < 0:
         # A free amount is an estimate, not a completed or promised bank payout.
         prepaid = min(payment.prepaid_gel, -payment.gap_gel)
         unallocated = -payment.gap_gel - prepaid
         if prepaid:
-            gap += f" · {prepaid} prepaid"
+            gap += f" · {money(prepaid)} prepaid"
         if unallocated:
-            gap += f" · {unallocated} unallocated"
-    return f"✓ {html.escape(payment.label)} — {payment.amount_gel} GEL{seats}{cash}{gap}"
+            gap += f" · {money(unallocated)} extra"
+    return f"✓ {html.escape(payment.label)} — {money(payment.amount_gel)}{seats}{cash}{gap}"
 
 
 def _weekday(service_date: date) -> str:
@@ -263,5 +280,4 @@ def _weekday(service_date: date) -> str:
 
 
 def _long_day_label(service_date: date) -> str:
-    day = SHORT_DAY_LABELS.get(service_date.weekday(), "Lift day")
-    return f"{day}, {service_date.day} {EN_SHORT_MONTHS[service_date.month]}"
+    return day_label(service_date)

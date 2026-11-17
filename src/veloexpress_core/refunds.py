@@ -386,9 +386,18 @@ async def reverse_day_cancellation(
         from veloexpress_core.daybook import rider_label
 
         claims = await _claims(session, settings, service_date)
+        # Tracked lift refunds on this day are payable in the cabinet and left
+        # out of this estimate, so the admin would see fewer people here.
+        tracked_refunds = await session.scalar(
+            select(RefundObligation.id)
+            .where(*_scope(RefundObligation, settings, service_date))
+            .limit(1)
+        )
         report = render_cancellation_report(
             service_date=service_date,
             cancelled_lift_time=None,
+            tracked=False,
+            earlier_refunds_elsewhere=tracked_refunds is not None,
             rows=tuple(
                 RefundRow(
                     label=rider_label(claim.username, claim.full_name),

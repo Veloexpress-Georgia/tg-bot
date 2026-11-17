@@ -581,7 +581,7 @@ async def test_queue_only_correction_notifies_the_right_rider_on_next_vacancy(db
         poll_id=poll_id, telegram_user_id=109, username=None, full_name="Rider 9", option_ids=()
     )
     await payments.offer_freed_seats()
-    notices = [r.text for r in client.sent if "seat freed up" in r.text]
+    notices = [r.text for r in client.sent if "Free seat" in r.text]
     assert len(notices) == 1 and "tg://user?id=111" in notices[0]
     assert "tg://user?id=110" not in notices[0]
     # Offered, not seated: 111 is first in line until they tap.
@@ -633,9 +633,7 @@ async def test_correction_keeps_payments_and_deadline_roster_and_sends_no_duplic
     )
     await payments.offer_freed_seats()
     notices = [
-        r.text
-        for r in client.sent
-        if "Booking order updated" in r.text or "seat freed up" in r.text
+        r.text for r in client.sent if "Booking order updated" in r.text or "Free seat" in r.text
     ]
     assert len(notices) == 1
     async with db.session() as session:

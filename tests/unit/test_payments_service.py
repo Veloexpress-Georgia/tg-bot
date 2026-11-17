@@ -30,13 +30,14 @@ from veloexpress_bot.payments.myday import RiderSeason
 from veloexpress_bot.polls.liftsignals import booking_deadline_at, lift_departure_at
 from veloexpress_bot.polls.render import PollDraft
 from veloexpress_bot.polls.seatoffer import (
-    ACCEPTED_TEXT,
     DECLINED_TEXT,
     GONE_TEXT,
     NOT_FOR_YOU_TEXT,
+    accepted_text,
     lift_label,
     parse_offer_callback,
 )
+from veloexpress_bot.wording import day_label
 from veloexpress_core.lifts import (
     PollPostingService,
     PollSetup,
@@ -48,6 +49,7 @@ from veloexpress_core.payments import (
     CASH_METHOD,
     METHOD_VERIFIED_TEXT,
     NOT_BOOKED_TEXT,
+    NOT_RUNNING_YET_TEXT,
     PAYMENTS_DISABLED_TEXT,
     UNDO_AFTER_DEADLINE_TEXT,
     UNDO_VERIFIED_TEXT,
@@ -486,9 +488,9 @@ async def test_a_claim_posts_the_rider_line_with_the_amount(db: SharedDatabase) 
     # The toast names the lifts so the amount explains itself; the posted receipt
     # does not, because re-voting would make a lift list stale.
     assert "8:30, 10:00" in notice
-    assert "Total reported: 30 GEL" in notice
+    assert "Total reported: 30 ₾" in notice
     posted = client.payments_sends()[-1]
-    assert "30 GEL" in posted.text
+    assert "30 ₾" in posted.text
     assert "8:30" not in posted.text
     assert "tg://user?id=100" in posted.text
 
@@ -546,11 +548,11 @@ async def test_payment_feedback_names_day_total_and_no_addition_on_repeat(
     second = await payments.claim(
         service_date=saturday, telegram_user_id=100, username="rider100", full_name="Rider"
     )
-    assert saturday.isoformat() in first.text
-    assert "recorded +15 GEL" in first.text
-    assert "Total reported: 15 GEL" in first.text
-    assert saturday.isoformat() in second.text
-    assert "reported 15 GEL" in second.text
+    assert day_label(saturday) in first.text
+    assert "recorded +15 ₾" in first.text
+    assert "Total reported: 15 ₾" in first.text
+    assert day_label(saturday) in second.text
+    assert "reported 15 ₾" in second.text
     assert "Nothing added" in second.text
     async with db.session() as session:
         entries = (await session.scalars(select(PaymentEntry))).all()
@@ -655,7 +657,7 @@ async def test_cash_report_is_undone_like_a_transfer(db: SharedDatabase) -> None
         full_name="Rider",
         method=CASH_METHOD,
     )
-    assert await payments.undo(service_date=day, telegram_user_id=100) == "Removed."
+    assert await payments.undo(service_date=day, telegram_user_id=100) == "Payment report removed."
     async with db.session() as session:
         entries = (await session.scalars(select(PaymentEntry).order_by(PaymentEntry.id))).all()
     assert [(entry.amount_gel, entry.method, entry.kind) for entry in entries] == [
@@ -731,11 +733,11 @@ async def test_cash_reports_count_as_paid_at_the_deadline(db: SharedDatabase) ->
     before = len(client.payments_sends())
     await payments.capture_deadline_rosters(now=_after_deadline(day))
     assert not any(
-        "booking is closed" in record.text for record in client.payments_sends()[before:]
+        "the deadline has passed" in record.text for record in client.payments_sends()[before:]
     )
     await polls.evaluate_lift_signals(now=_after_deadline(day) - timedelta(hours=1))
     reminder = next(record.text for record in client.sent if "Tomorrow" in record.text)
-    assert "8:30 — 5 riders · funded" in reminder
+    assert "8:30 — 5 seats · minimum paid ✅" in reminder
     assert "needs 5 more paid seats" not in reminder
 
 
@@ -784,9 +786,9 @@ async def test_cash_is_never_refunded_when_its_lift_is_cancelled(db: SharedDatab
     )
     report = await payments.cancellation_preview(service_date=day, cancelled_lift_time="8:30")
     assert report is not None
-    assert "@rider100</a> — 15 GEL back" in report
+    assert "@rider100</a> — 15 ₾ back" in report
     assert "rider101" not in report
-    assert "Total to return: 15 GEL" in report
+    assert "Total to return: 15 ₾" in report
 
 
 async def test_mixed_payment_returns_only_the_transferred_part(db: SharedDatabase) -> None:
@@ -810,8 +812,8 @@ async def test_mixed_payment_returns_only_the_transferred_part(db: SharedDatabas
     # The whole day goes: the transfer comes back, the cash is never collected.
     whole_day = await payments.cancellation_preview(service_date=day)
     assert whole_day is not None
-    assert "@rider100</a> — 15 GEL back" in whole_day
-    assert "Paid 15 · rides 0 GEL" in whole_day
+    assert "@rider100</a> — 15 ₾ back" in whole_day
+    assert "Paid 15 ₾ · kept for rides 0 ₾" in whole_day
 
 
 async def test_booking_status_keeps_payment_in_topic(db: SharedDatabase) -> None:
@@ -856,7 +858,7 @@ async def test_re_voting_after_paying_moves_the_bill_not_the_payment(
     await payments.sync_boards()
 
     board_edits = [text for message_id, text in client.edits if message_id == board.message_id]
-    assert "✓ @stas — 30 GEL · 2 seats · +15 due" in board_edits[-1]
+    assert "✓ @stas — 30 ₾ · 2 seats · +15 ₾ due" in board_edits[-1]
 
     # Settling again clears the gap without a second receipt in the topic.
     sends_before = len(client.payments_sends())
@@ -865,11 +867,11 @@ async def test_re_voting_after_paying_moves_the_bill_not_the_payment(
             service_date=saturday, telegram_user_id=100, username="rider100", full_name="R100"
         )
     ).text
-    assert "45 GEL" in notice
+    assert "45 ₾" in notice
     assert len(client.payments_sends()) == sends_before
     await payments.sync_boards()
     board_edits = [text for message_id, text in client.edits if message_id == board.message_id]
-    assert "45 GEL · 3 seats" in board_edits[-1]
+    assert "45 ₾ · 3 seats" in board_edits[-1]
     assert "due" not in board_edits[-1]
 
 
@@ -923,7 +925,7 @@ async def test_the_waitlist_is_not_billed_and_is_warned_before_paying(
         full_name="Last",
         acknowledged=True,
     )
-    assert "15 GEL" in second.text
+    assert "15 ₾" in second.text
     async with db.session() as session:
         assert await session.scalar(select(PaymentClaim)) is not None
 
@@ -950,7 +952,7 @@ async def test_manual_bookings_take_seats_before_telegram_voters(db: SharedDatab
     first = await payments.claim(
         service_date=saturday, telegram_user_id=100, username="first", full_name="First"
     )
-    assert "15 GEL" in first.text
+    assert "15 ₾" in first.text
 
 
 async def test_partial_booking_warns_before_charging_for_only_the_filled_lift(
@@ -972,8 +974,8 @@ async def test_partial_booking_warns_before_charging_for_only_the_filled_lift(
     )
 
     assert first.needs_confirmation is True
-    assert "Only 8:30 filled — 15 GEL now" in first.text
-    assert "10:00 still short (+15 later)" in first.text
+    assert "Only 8:30 has 5 riders — pay 15 ₾ now" in first.text
+    assert "10:00 needs more riders (+15 ₾ later)" in first.text
     assert len(first.text) <= 200, "Telegram truncates a callback answer past 200 characters"
     async with db.session() as session:
         assert await session.scalar(select(PaymentClaim)) is None
@@ -985,7 +987,7 @@ async def test_partial_booking_warns_before_charging_for_only_the_filled_lift(
         full_name="Stas",
         acknowledged=True,
     )
-    assert "15 GEL" in second.text
+    assert "15 ₾" in second.text
 
 
 async def test_a_rider_can_settle_the_whole_day_including_unfilled_lifts(
@@ -1009,11 +1011,11 @@ async def test_a_rider_can_settle_the_whole_day_including_unfilled_lifts(
     )
 
     assert "8:30, 10:00" in outcome.text
-    assert "Total reported: 30 GEL" in outcome.text
+    assert "Total reported: 30 ₾" in outcome.text
     await payments.sync_boards()
     board_edits = [text for message_id, text in client.edits if message_id == board.message_id]
     # Paid 30, owes 15 right now — that is a prepayment, not an overpayment.
-    assert "· 15 prepaid" in board_edits[-1]
+    assert "· 15 ₾ prepaid" in board_edits[-1]
     assert "back" not in board_edits[-1]
 
 
@@ -1031,7 +1033,7 @@ async def test_cash_report_is_a_paid_line_on_the_board(db: SharedDatabase) -> No
     )
     text = [text for mid, text in client.edits if mid == board.message_id][-1]
     paid, _, waiting = text.partition("Waiting on:")
-    assert "@rider100 — 15 GEL · cash" in paid
+    assert "@rider100 — 15 ₾ · cash" in paid
     assert "rider100" not in waiting
 
 
@@ -1046,7 +1048,7 @@ async def test_a_rider_can_correct_cash_to_transfer_without_changing_the_amount(
     card = await payments.my_day_card(service_date=saturday, telegram_user_id=100)
     assert card.reply_markup is not None
     assert any(
-        button.text == "💸 Correct to transfer"
+        button.text == "💸 I paid by transfer instead"
         for row in card.reply_markup.inline_keyboard
         for button in row
     )
@@ -1076,7 +1078,7 @@ async def test_a_rider_can_correct_cash_to_transfer_without_changing_the_amount(
     )
     board_text = [text for message_id, text in client.edits if message_id == board.message_id][-1]
     assert "· cash" not in board_text
-    assert "15 GEL" in board_text
+    assert "15 ₾" in board_text
 
     again = await payments.claim(
         service_date=saturday,
@@ -1195,7 +1197,10 @@ async def test_undo_removes_the_claim_and_the_posted_line(db: SharedDatabase) ->
     )
     posted = client.payments_sends()[-1]
 
-    assert await payments.undo(service_date=saturday, telegram_user_id=100) == "Removed."
+    assert (
+        await payments.undo(service_date=saturday, telegram_user_id=100)
+        == "Payment report removed."
+    )
 
     assert posted.message_id in client.deleted
     async with db.session() as session:
@@ -1251,9 +1256,9 @@ async def test_cancelling_a_day_reports_every_payment_as_a_refund(db: SharedData
 
     assert report is not None
     assert "cancelled" in report
-    assert "@stas</a> — 30 GEL back" in report
-    assert "@anna</a> — 15 GEL" in report
-    assert "Total to return: 45 GEL" in report
+    assert "@stas</a> — 30 ₾ back" in report
+    assert "@anna</a> — 15 ₾" in report
+    assert "Total to return: 45 ₾" in report
     # A whole day leaves nothing to ride, and the header already said so, so rows
     # carry neither "still on" nor a per-rider refund note.
     assert "still on" not in report
@@ -1354,8 +1359,8 @@ async def test_cancelling_one_lift_separates_refunds_from_riders_who_stay(
     # A seat is priced per running lift, so @rider100 paid for 8:30 only — 10:00
     # was still short of the minimum when they claimed.
     assert "@rider100" not in report
-    assert "@rider101</a> — 15 GEL" in report
-    assert "Total to return: 15 GEL" in report
+    assert "@rider101</a> — 15 ₾" in report
+    assert "Total to return: 15 ₾" in report
 
 
 async def test_forgetting_a_day_clears_its_payments_after_the_report(
@@ -1437,6 +1442,23 @@ async def test_a_paid_seat_stays_paid_after_a_late_cancellation(db: SharedDataba
         service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
     )
     assert notice.text.startswith(ALREADY_SETTLED_TEXT)
+
+
+async def test_a_rider_only_on_a_lift_below_the_minimum_is_told_nothing_is_due(
+    db: SharedDatabase,
+) -> None:
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    await _fill(poll_service, poll_id, 0, riders=5)
+    await _vote(poll_service, poll_id, 200, 1)
+    before = len(client.payments_sends())
+
+    notice = await payments.claim(
+        service_date=saturday, telegram_user_id=200, username="rider200", full_name="Rider 200"
+    )
+
+    # Booked, so "not booked" would be false: the lift just has no 5 riders yet.
+    assert notice.text == NOT_RUNNING_YET_TEXT
+    assert len(client.payments_sends()) == before
 
 
 async def test_leaving_unpaid_after_the_deadline_owes_nothing(db: SharedDatabase) -> None:
@@ -1524,7 +1546,7 @@ async def test_a_seat_booked_after_the_deadline_is_still_charged(db: SharedDatab
         service_date=saturday, telegram_user_id=100, username="stas", full_name="Stas"
     )
     assert "8:30, 10:00" in notice.text
-    assert "Total reported: 30 GEL" in notice.text
+    assert "Total reported: 30 ₾" in notice.text
 
 
 async def test_cancelling_a_lift_after_the_deadline_still_refunds(db: SharedDatabase) -> None:
@@ -1549,7 +1571,7 @@ async def test_cancelling_a_lift_after_the_deadline_still_refunds(db: SharedData
     # it is owed back, so it no longer sits on the board as the rider's credit.
     board_text = [text for message_id, text in client.edits if message_id == board.message_id][-1]
     assert "unallocated" not in board_text
-    assert "@stas — 15 GEL" in board_text
+    assert "@stas — 15 ₾" in board_text
     assert [r["amount_gel"] for r in await payments.refunds()] == [15]
 
 
@@ -1583,7 +1605,7 @@ async def _lift_sends(client: FakeTelegramClient) -> list[SentRecord]:
     return [
         record
         for record in client.sent
-        if record.thread_id == LIFT_THREAD and "freed up" in record.text
+        if record.thread_id == LIFT_THREAD and "Free seat" in record.text
     ]
 
 
@@ -1621,7 +1643,7 @@ async def test_a_freed_seat_is_offered_not_assigned(db: SharedDatabase) -> None:
 
     notices = await _lift_sends(client)
     assert len(notices) == 1
-    assert "A seat freed up on 8:30" in notices[0].text
+    assert "🎟 Free seat on 8:30" in notices[0].text
     assert "tg://user?id=110" in notices[0].text
     # And only that rider: the ones who never moved are not tagged.
     assert "tg://user?id=101" not in notices[0].text
@@ -1650,7 +1672,7 @@ async def test_accepting_an_offer_takes_the_seat(db: SharedDatabase) -> None:
 
     # Only the tagged rider's tap counts.
     assert await _answer(payments, offer_id, 105, accept=True) == NOT_FOR_YOU_TEXT
-    assert await _answer(payments, offer_id, 110, accept=True) == ACCEPTED_TEXT
+    assert await _answer(payments, offer_id, 110, accept=True) == accepted_text(15)
 
     day = await payments.day_bookings(saturday)
     assert day is not None
@@ -1715,13 +1737,13 @@ async def test_silence_widens_the_offer_instead_of_passing_it_on(db: SharedDatab
     assert len(notices) == 2
     assert "tg://user?id=110" in notices[1].text
     assert "tg://user?id=111" in notices[1].text
-    assert "First to tap takes it." in notices[1].text
+    assert "First tap gets the seat." in notices[1].text
     assert notices[0].message_id in client.deleted
     offer_id = _offer_id(notices[1])
     assert _offer_id(notices[0]) == offer_id
 
     # The second rider is quicker; the first kept the right to tap but lost the race.
-    assert await _answer(payments, offer_id, 111, accept=True) == ACCEPTED_TEXT
+    assert await _answer(payments, offer_id, 111, accept=True) == accepted_text(15)
     assert await _answer(payments, offer_id, 110, accept=True) == GONE_TEXT
     day = await payments.day_bookings(saturday)
     assert day is not None
@@ -1835,7 +1857,9 @@ async def test_the_first_sight_of_a_lift_announces_nothing(db: SharedDatabase) -
 
 
 def _unpaid_notices(client: FakeTelegramClient) -> list[SentRecord]:
-    return [record for record in client.payments_sends() if "booking is closed" in record.text]
+    return [
+        record for record in client.payments_sends() if "the deadline has passed" in record.text
+    ]
 
 
 async def test_an_underfunded_lift_is_chased_not_cancelled(db: SharedDatabase) -> None:
@@ -1975,8 +1999,8 @@ async def test_the_card_tells_a_waitlisted_rider_their_place(db: SharedDatabase)
 
     card = await payments.my_day_card(service_date=saturday, telegram_user_id=111)
 
-    assert "8:30 — ⏳ waitlist, 2nd in line" in card.text
-    assert "nothing to pay until one frees up" in card.text
+    assert "8:30 — ⏳ waitlist #2" in card.text
+    assert "Nothing to pay now." in card.text
 
 
 async def test_adding_a_lift_keeps_a_legacy_votes_place_in_the_first_queue(
@@ -2119,7 +2143,7 @@ async def test_a_rider_who_stayed_still_owes_when_others_dropped_out(
     outcome = await payments.claim(
         service_date=saturday, telegram_user_id=102, username="rider102", full_name="Rider 102"
     )
-    assert "Total reported: 15 GEL." in outcome.text
+    assert "Total reported: 15 ₾." in outcome.text
 
 
 async def test_peeking_at_the_results_is_not_a_booking(db: SharedDatabase) -> None:
@@ -2185,7 +2209,7 @@ async def test_a_manual_seat_cannot_displace_a_paid_rider(db: SharedDatabase) ->
     last = await payments.claim(
         service_date=saturday, telegram_user_id=109, username="tenth", full_name="Tenth"
     )
-    assert "15 GEL" in last.text
+    assert "15 ₾" in last.text
 
     with pytest.raises(ValueError, match="No seats left"):
         await poll_service.adjust_manual_booking(
@@ -2249,9 +2273,9 @@ async def test_cancelling_one_lift_refunds_only_the_seats_it_took(db: SharedData
     report = await payments.cancellation_report(service_date=saturday, cancelled_lift_time="10:00")
 
     assert report is not None
-    assert "@rider100</a> — 15 GEL" in report
-    assert "Paid 30 · rides 15 GEL" in report
-    assert "Total to return: 15 GEL" in report
+    assert "@rider100</a> — 15 ₾" in report
+    assert "Paid 30 ₾ · kept for rides 15 ₾" in report
+    assert "Total to return: 15 ₾" in report
 
 
 async def test_a_cancelled_lift_nobody_rode_alone_refunds_the_whole_payment(
@@ -2271,8 +2295,8 @@ async def test_a_cancelled_lift_nobody_rode_alone_refunds_the_whole_payment(
     report = await payments.cancellation_report(service_date=saturday, cancelled_lift_time="8:30")
 
     assert report is not None
-    assert "@rider100</a> — 15 GEL" in report
-    assert "Total to return: 15 GEL" in report
+    assert "@rider100</a> — 15 ₾" in report
+    assert "Total to return: 15 ₾" in report
 
 
 async def test_a_guest_can_be_added_to_a_lift_that_has_not_filled_yet(
@@ -2316,8 +2340,8 @@ async def test_paying_for_the_whole_day_covers_guests_on_lifts_still_short(
     )
 
     # 8:30 for the rider, 10:00 for the rider and their guest: three seats.
-    assert "45 GEL" in outcome.text
-    assert "💸 I paid all · 45" in [
+    assert "45 ₾" in outcome.text
+    assert "💸 I paid all · 45 ₾" in [
         button.text
         for row in (card.reply_markup.inline_keyboard if card.reply_markup else [])
         for button in row
@@ -2373,7 +2397,7 @@ async def test_undo_still_works_before_the_deadline(db: SharedDatabase) -> None:
 
     notice = await payments.undo(service_date=saturday, telegram_user_id=100)
 
-    assert notice == "Removed."
+    assert notice == "Payment report removed."
     async with db.session() as session:
         assert await session.scalar(select(PaymentClaim)) is None
 
@@ -2420,7 +2444,7 @@ async def test_payment_follows_a_changed_lift_before_the_deadline(db: SharedData
         username="rider100",
         full_name="Rider 100",
     )
-    assert "15 GEL" in first.text
+    assert "15 ₾" in first.text
 
     await _vote(poll_service, poll_id, 100, 1)
     moved = await payments.claim(
@@ -2455,7 +2479,7 @@ async def test_adding_a_lift_records_only_the_top_up(db: SharedDatabase) -> None
         full_name="Rider 100",
     )
 
-    assert "30 GEL" in topped_up.text
+    assert "30 ₾" in topped_up.text
     async with db.session() as session:
         entries = (await session.scalars(select(PaymentEntry).order_by(PaymentEntry.id))).all()
     assert [entry.amount_gel for entry in entries] == [15, 15]
@@ -2505,7 +2529,7 @@ async def test_service_day_keeps_the_price_it_was_published_with(db: SharedDatab
         full_name="Rider 100",
     )
 
-    assert "15 GEL" in outcome.text
+    assert "15 ₾" in outcome.text
     async with db.session() as session:
         terms = await session.scalar(select(ServiceDayTerms))
         entry = await session.scalar(select(PaymentEntry))
@@ -2525,7 +2549,10 @@ async def test_undo_appends_a_reversal_instead_of_erasing_money_history(
         full_name="Rider 100",
     )
 
-    assert await payments.undo(service_date=saturday, telegram_user_id=100) == "Removed."
+    assert (
+        await payments.undo(service_date=saturday, telegram_user_id=100)
+        == "Payment report removed."
+    )
 
     async with db.session() as session:
         entries = (await session.scalars(select(PaymentEntry).order_by(PaymentEntry.id))).all()
@@ -2753,8 +2780,8 @@ async def test_refund_reports_are_cumulative_and_reverse_cancelled_seats(
     await polls.cancel_lift(service_date=saturday, lift_time="10:00", admin_user_id=1)
     first = await payments.cancellation_report(service_date=saturday, cancelled_lift_time="10:00")
     assert first is not None
-    assert "Total to return: 15 GEL" in first
-    assert "Paid 30 · rides 15 GEL" in first
+    assert "Total to return: 15 ₾" in first
+    assert "Paid 30 ₾ · kept for rides 15 ₾" in first
     assert (
         await payments.cancellation_report(service_date=saturday, cancelled_lift_time="10:00")
         == first
@@ -2767,9 +2794,12 @@ async def test_refund_reports_are_cumulative_and_reverse_cancelled_seats(
         service_date=saturday, cancelled_lift_time=None if cancel_whole_day else "8:30"
     )
     assert second is not None
-    assert "Total to return: 30 GEL" in second
-    assert "Paid 30 · rides 0 GEL" in second
-    assert "Cumulative for the day · payouts not tracked." in second
+    assert "Total to return: 30 ₾" in second
+    assert "Paid 30 ₾ · kept for rides 0 ₾" in second
+    assert (
+        "All refunds for this day so far. Mark each one paid in the cabinet's refunds screen."
+        in second
+    )
     async with db.session() as session:
         entries = (await session.scalars(select(PaymentEntry))).all()
         reports = (await session.scalars(select(RefundReport))).all()
@@ -2904,15 +2934,15 @@ async def test_weekend_cards_and_reminders_have_separate_deadlines(db: SharedDat
     ]
     assert len(cards) == 2
     assert not any(r.thread_id == LIFT_THREAD and "Payment open:" in r.text for r in client.sent)
-    assert not any("⏳ Tomorrow" in r.text for r in client.sent)
+    assert not any("⏰ Tomorrow" in r.text for r in client.sent)
     friday = datetime.combine(saturday - timedelta(days=1), datetime.min.time(), tzinfo=UTC)
     await polls.evaluate_lift_signals(now=friday.replace(hour=14))
-    reminders = [r for r in client.sent if "⏳ Tomorrow" in r.text]
+    reminders = [r for r in client.sent if "⏰ Tomorrow" in r.text]
     assert len(reminders) == 1
     assert f"Sat, {saturday.day} {saturday:%b}" in reminders[0].text
     assert f"https://t.me/c/123/{LIFT_THREAD}/{cards[0].message_id}" in reminders[0].text
     await polls.evaluate_lift_signals(now=friday.replace(hour=14) + timedelta(days=1))
-    reminders = [r for r in client.sent if "⏳ Tomorrow" in r.text]
+    reminders = [r for r in client.sent if "⏰ Tomorrow" in r.text]
     assert len(reminders) == 2
     sunday = saturday + timedelta(days=1)
     assert f"Sun, {sunday.day} {sunday:%b}" in reminders[1].text
@@ -2923,7 +2953,7 @@ async def test_funded_lift_reminder_updates_without_another_message(db: SharedDa
     await _fill(polls, poll_id, 0)
     deadline = booking_deadline_at(saturday, "20:00", zone=ZoneInfo("Asia/Tbilisi"))
     await polls.evaluate_lift_signals(now=deadline - timedelta(hours=2))
-    reminder = next(r for r in client.sent if "⏳ Tomorrow" in r.text)
+    reminder = next(r for r in client.sent if "⏰ Tomorrow" in r.text)
     assert "0/5 paid" in reminder.text
     for user_id in range(100, 105):
         await payments.claim(
@@ -2933,9 +2963,9 @@ async def test_funded_lift_reminder_updates_without_another_message(db: SharedDa
             full_name=f"Rider {user_id}",
         )
     await polls.evaluate_lift_signals(now=deadline - timedelta(hours=1))
-    assert sum("⏳ Tomorrow" in r.text for r in client.sent) == 1
+    assert sum("⏰ Tomorrow" in r.text for r in client.sent) == 1
     assert any(
-        mid == reminder.message_id and "8:30 — 5 riders · funded" in text
+        mid == reminder.message_id and "8:30 — 5 seats · minimum paid ✅" in text
         for mid, text in client.edits
     )
 
@@ -3001,7 +3031,7 @@ async def test_deleted_poll_preserves_money_and_records_refund_estimate(db: Shar
         reports = list(await session.scalars(select(RefundReport)))
     assert [entry.amount_gel for entry in entries] == [15, -15]
     assert claims == []
-    assert len(reports) == 1 and "15 GEL" in reports[0].text
+    assert len(reports) == 1 and "15 ₾" in reports[0].text
     assert any("cancelled" in text for _, text in client.edits)
 
 
@@ -3285,7 +3315,7 @@ async def test_lift_cancel_releases_are_captured_once_and_reused_by_the_report(
     await _vote(polls, poll_id, 100)
     report = await payments.cancellation_report(service_date=day, cancelled_lift_time="10:00")
 
-    assert report is not None and "Total to return: 15 GEL" in report
+    assert report is not None and "Total to return: 15 ₾" in report
     assert [r["amount_gel"] for r in await payments.refunds()] == [15]
     assert await _net_received(db, 100) == 15
 
@@ -3314,7 +3344,7 @@ async def test_restoring_a_lift_voids_an_unpaid_refund_and_recredits(db: SharedD
     await polls.cancel_lift(service_date=day, lift_time="10:00", admin_user_id=1)
     assert [r["amount_gel"] for r in await payments.refunds()] == [15]
     assert await _net_received(db, 100) == 15
-    assert await payments.undo(service_date=day, telegram_user_id=100) == "Removed."
+    assert await payments.undo(service_date=day, telegram_user_id=100) == "Payment report removed."
     assert await _net_received(db, 100) == 0
     assert await payments.refunds() == []
 
@@ -3545,7 +3575,10 @@ async def test_legacy_lift_cancellation_is_not_reversed_again(db: SharedDatabase
     await polls.cancel_day(service_date=day, admin_user_id=1)
     report = await payments.cancellation_report(service_date=day)
     assert await payments.refunds() == []
-    assert report is not None and "@rider100</a> — 30 GEL back" in report
+    assert report is not None and "@rider100</a> — 30 ₾ back" in report
+    # An estimate, not a payable list; with no tracked refunds there is nothing elsewhere.
+    assert "Estimate only. Payouts for it are not tracked." in report
+    assert "listed separately" not in report
 
 
 async def test_reposting_keeps_state_unless_the_latest_batch_was_cancelled(
@@ -3640,7 +3673,7 @@ async def test_restore_does_not_resurrect_a_fully_withdrawn_receipt(db: SharedDa
         service_date=day, telegram_user_id=100, username="rider100", full_name="Rider"
     )
     await polls.cancel_lift(service_date=day, lift_time="8:30", admin_user_id=1)
-    assert await payments.undo(service_date=day, telegram_user_id=100) == "Removed."
+    assert await payments.undo(service_date=day, telegram_user_id=100) == "Payment report removed."
     await _fill(polls, poll_id, 1, riders=5)
     await payments.claim(
         service_date=day, telegram_user_id=100, username="rider100", full_name="Rider"
@@ -3675,8 +3708,13 @@ async def test_legacy_day_estimate_survives_cleanup_without_duplicating_obligati
     await payments.forget_day(service_date=day)
     reports = await payments.recent_refund_reports(tracked=False)
     assert len(reports) == 1
-    assert "Total to return: 15 GEL" in reports[0].text
+    assert "Total to return: 15 ₾" in reports[0].text
     assert [r["amount_gel"] for r in await payments.refunds()] == [15]
+    # The 10:00 refund is tracked in the cabinet and left out of this estimate.
+    assert reports[0].text.endswith(
+        "Refunds for earlier lift cancellations are listed separately "
+        "in the cabinet's refunds screen."
+    )
 
 
 @pytest.mark.parametrize("latest_status", ["failed", "cancelled"])

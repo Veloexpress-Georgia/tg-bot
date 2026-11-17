@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
-from veloexpress_bot.payment_copy import CASH_BUTTON, CASH_ON_SITE_TEXT, CASH_REPORT_TEXT
-
 
 class StartLocation(StrEnum):
     JUSTICE_HALL = "justice_hall"
@@ -48,32 +46,10 @@ class PaymentTerms:
     deadline_time: str
     link: str = ""
 
-    def rules(self) -> tuple[str, ...]:
-        lines = (
-            f"💳 {self.price_gel} GEL per seat · 10 seats per lift.",
-            f"A lift runs from {MINIMUM_RIDERS} booked seats. Transfer for each booked seat "
-            f"once its lift reaches {MINIMUM_RIDERS}.",
-            f"Bank transfer by {self.deadline_time} the evening before; "
-            "if you book later, transfer immediately.",
-            "Be at the meeting point 10 minutes before departure. Message the chat if late.",
-            "If leaving, remove your vote and post the day and time in the chat early.",
-            "A paid seat is not refunded if you miss your lift; find a replacement if possible.",
-            f"💵 {CASH_ON_SITE_TEXT} Choose {CASH_BUTTON}. {CASH_REPORT_TEXT}",
-        )
-        return (*lines, self._link_line("Where to pay")) if self.link else lines
-
-    def pay_now(self) -> tuple[str, ...]:
-        lines = (
-            f"💳 Bank transfer: {self.price_gel} GEL per seat, "
-            f"by {self.deadline_time} the day before the lift.",
-            f"💵 {CASH_ON_SITE_TEXT}",
-        )
-        return (*lines, self._link_line("Pay here")) if self.link else lines
-
     def pay_link(self, label: str) -> str:
         return f'<a href="{self.link}">{label}</a>'
 
-    def _link_line(self, label: str) -> str:
+    def link_line(self, label: str) -> str:
         # An anchor, not a bare URL: Telegram renders the raw link as noisy text.
         return f'🔗 <a href="{self.link}">{label}</a>'
 

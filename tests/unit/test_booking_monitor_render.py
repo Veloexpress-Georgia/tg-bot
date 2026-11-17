@@ -61,15 +61,15 @@ def test_booking_monitor_renders_day_tabs_counts_and_controls() -> None:
     # Two short lines, not one with six figures in it. Reaching the rider minimum
     # and being paid for are different states and stay on different halves.
     assert "2 of 2 lifts running · 0 funded" in draft.text
-    assert "Reported 60 of 240 GEL" in draft.text
-    assert "🚐 8:30 · 7/10 seats · 0/5 paid · 1 manual" in draft.text
+    assert "Reported 60 ₾ of 240 ₾" in draft.text
+    assert "🚐 8:30 · 7/10 seats · 0/5 paid · 1 offline seat" in draft.text
     assert "🚐 10:00 · 9/10 seats · 0/5 paid" in draft.text
     # The old header invited both of these readings, and both were wrong.
     assert "claimed" not in draft.text
     assert "Needs attention" not in draft.text
     assert draft.reply_markup is not None
     assert [button.text for button in draft.reply_markup.inline_keyboard[0]] == [
-        "✅ Sat 18",
+        "▸ Sat 18",
         "Sun 19",
     ]
     buttons = _button_map(draft.reply_markup)
@@ -95,7 +95,7 @@ def test_booking_monitor_counts_a_waitlist_apart_from_seats() -> None:
 
     assert "Sun, 19 Jul" in draft.text
     # Twelve bookings, ten seats. `12/10` read as twelve people in a ten-seat van.
-    assert "🚐 10:00 · 10/10 seats · 2 waiting · 0/5 paid · 2 manual" in draft.text
+    assert "🚐 10:00 · 10/10 seats · 2 waiting · 0/5 paid · 2 offline seats" in draft.text
     assert "12/10" not in draft.text
 
 
@@ -135,7 +135,7 @@ def test_a_day_with_nothing_running_says_so_instead_of_counting_to_zero() -> Non
     )
 
     assert "Nothing running yet · 2 seats booked" in draft.text
-    assert "💤 Not filled: 8:30" in draft.text
+    assert "💤 Not running yet: 8:30" in draft.text
 
 
 def test_booking_monitor_puts_operational_attention_on_the_top_level() -> None:
@@ -166,9 +166,9 @@ def test_booking_monitor_puts_operational_attention_on_the_top_level() -> None:
     # No total above them: one rider in two categories used to be counted twice,
     # and a waitlist read as a fault.
     assert "Needs attention" not in draft.text
-    assert "🔴 No payment reported: @anna 15 GEL" in draft.text
+    assert "🔴 No payment reported: @anna 15 ₾" in draft.text
     # Reported like a transfer and counted for the lift; collected on site.
-    assert "💵 Cash on site: @vitaly 30 GEL" in draft.text
+    assert "💵 Cash on site: @vitaly 30 ₾" in draft.text
     assert "Cash to collect" not in draft.text
     assert "⏳ Waitlist: @giorgi 10:00 #1" in draft.text
     assert "⏰ Left after deadline: @stas 10:00 · 21:14" in draft.text
@@ -193,7 +193,7 @@ def test_a_long_handle_does_not_turn_a_category_into_a_paragraph() -> None:
     )
 
     line = next(line for line in draft.text.splitlines() if line.startswith("🔴"))
-    assert "@a_really_long_telegram_handle_here 30 GEL" in line
+    assert "@a_really_long_telegram_handle_here 30 ₾" in line
     assert line.endswith("more")
     assert len(line) <= 80
 
@@ -274,14 +274,14 @@ def test_destructive_cancellations_require_a_second_explicit_callback() -> None:
             LiftRider(1, "@anna", paid=True),
             LiftRider(2, "@nika"),
         ),
-        refund_preview="Refund estimate: @anna 15 GEL",
+        refund_preview="Refund estimate: @anna 15 ₾",
     )
     assert "⚠️ Cancel 10:00" in lift_confirmation.text
     assert "10 seats · 2 riders from the poll" in lift_confirmation.text
-    assert "1 added by hand · 2 guests" in lift_confirmation.text
+    assert "1 offline seat · 2 guests" in lift_confirmation.text
     assert "1 of them reported a payment" in lift_confirmation.text
     # Read before deciding, so the estimate is on the screen rather than promised.
-    assert "Refund estimate: @anna 15 GEL" in lift_confirmation.text
+    assert "Refund estimate: @anna 15 ₾" in lift_confirmation.text
     lift_buttons = _button_map(lift_confirmation.reply_markup)
     assert lift_buttons["mon:docancel:20260822:1000"] == "🚫 Confirm cancel 10:00"
     assert lift_buttons["mon:lift:20260822:1000"] == "Keep lift"
@@ -296,7 +296,7 @@ def test_destructive_cancellations_require_a_second_explicit_callback() -> None:
     )
     assert "⚠️ Cancel the whole day" in day_confirmation.text
     assert "1 lift · 10 seats" in day_confirmation.text
-    assert "1 rider reported 30 GEL" in day_confirmation.text
+    assert "1 rider reported 30 ₾" in day_confirmation.text
     day_buttons = _button_map(day_confirmation.reply_markup)
     assert day_buttons["mon:docancelday:20260822"] == "🚫 Confirm cancel whole day"
     assert day_buttons["mon:day:20260822"] == "Keep day"
@@ -313,7 +313,7 @@ def test_lift_card_reads_and_acts_on_one_screen() -> None:
     )
     assert "🚲 8:30 · Sat, 18 Jul" in card.text
     assert "6/10 seats · 0/5 paid" in card.text
-    assert "5 from the poll · 1 added by hand" in card.text
+    assert "5 from the poll · 1 offline seat" in card.text
     assert "Payment reported by 1 of 2" in card.text
     assert "✅ @stas" in card.text
     assert "🔴 Anna" in card.text
@@ -433,7 +433,7 @@ def test_a_quiet_week_turns_the_monitor_into_the_way_in() -> None:
     assert "⏰ Next polls open Thu 18:00." in draft.text
     # Both days of the weekend just gone, not the one before it.
     assert "Last lifts · 22–23 Aug" in draft.text
-    assert "🚐 6 lifts · 54 seats · 810 GEL" in draft.text
+    assert "🚐 6 lifts · 54 seats · 810 ₾" in draft.text
     buttons = _button_map(draft.reply_markup)
     assert buttons["menu:weekend_plan"] == "📋 Weekend"
     assert buttons["menu:extra_day"] == "➕ Extra day"
@@ -472,8 +472,8 @@ def test_lift_history_lists_the_days_and_the_season_under_them() -> None:
         )
     )
 
-    assert "Sun, 23 Aug · 3/5 lifts · 28 seats · 420 GEL" in draft.text
-    assert "All time · 12 days · 47 lifts · 380 seats · 5700 GEL" in draft.text
+    assert "Sun, 23 Aug · 3/5 lifts · 28 seats · 420 ₾" in draft.text
+    assert "All time · 12 days · 47 lifts · 380 seats · 5700 ₾" in draft.text
     assert _button_map(draft.reply_markup)["mon:menu"] == "⬅️ Back"
 
 
@@ -499,7 +499,7 @@ def test_guests_are_counted_like_any_other_seat() -> None:
 
     # Guests are in the seat count and named in their own section; repeating them
     # on the lift line was the same fact three times.
-    assert "🚐 8:30 · 10/10 seats · full · 0/5 paid · 1 manual" in draft.text
+    assert "🚐 8:30 · 10/10 seats · full · 0/5 paid · 1 offline seat" in draft.text
 
 
 def test_a_day_that_already_ran_cannot_be_cancelled() -> None:
@@ -547,10 +547,10 @@ def test_bumped_report_separates_the_refund_from_the_rest() -> None:
         price_gel=15,
     )
 
-    assert text.startswith("⚠️ 11:45 · Sun, 23 Aug — manual seat added.")
-    assert 'tg://user?id=11">@egor</a> — paid, refund 15 GEL' in text
+    assert text.startswith("⚠️ 11:45 · Sun, 23 Aug — offline seat added.")
+    assert 'tg://user?id=11">@egor</a> — paid, refund 15 ₾' in text
     assert 'tg://user?id=12">Ivan</a> — nothing paid' in text
-    assert text.endswith("Refund 15 GEL.")
+    assert text.endswith("Refund 15 ₾.")
 
 
 def test_bumped_report_says_when_no_money_is_owed() -> None:
@@ -639,7 +639,7 @@ def test_lift_history_opens_each_day_and_offers_the_older_page() -> None:
     assert buttons["mon:history:0"] == "⏮ Latest"
     assert buttons["mon:trend"] == "🕑 By time"
     # A page is a page; the season line still counts the whole season.
-    assert "All time · 12 days · 47 lifts · 380 seats · 5700 GEL" in draft.text
+    assert "All time · 12 days · 47 lifts · 380 seats · 5700 ₾" in draft.text
 
 
 def test_a_period_carries_through_history_and_back_out_of_it() -> None:
@@ -777,7 +777,7 @@ def test_history_flags_a_day_it_wrote_down_late() -> None:
         )
     )
 
-    assert "Sun, 23 Aug · 3/5 lifts · 28 seats · 420 GEL ⚠️" in draft.text
+    assert "Sun, 23 Aug · 3/5 lifts · 28 seats · 420 ₾ ⚠️" in draft.text
 
 
 def test_the_day_audit_names_the_van_and_who_had_not_paid() -> None:
@@ -815,8 +815,8 @@ def test_the_day_audit_names_the_van_and_who_had_not_paid() -> None:
     )
 
     assert "🗓 Sun, 23 Aug" in draft.text
-    assert "15 GEL per seat · 120 GEL received · 30 GEL refunded" in draft.text
-    assert "🚐 8:30 · ran · 9/10 · 8 paid · 1 manual · 1 guest" in draft.text
+    assert "15 ₾ per seat · 120 ₾ received · 30 ₾ refunded" in draft.text
+    assert "🚐 8:30 · ran · 9/10 · 8 paid · 1 offline seat · 1 guest" in draft.text
     assert "✅ @stas · +1 guest" in draft.text
     assert "🔴 @misho" in draft.text
     assert "💤 13:30 · did not run · 3/10 · 0 paid" in draft.text
@@ -852,6 +852,6 @@ def test_the_trend_names_a_departure_that_never_runs() -> None:
     )
 
     assert "25 Jul – 23 Aug" in draft.text
-    assert "8:30 — ran 12 of 14 · 7.4 seats avg" in draft.text
+    assert "8:30 — ran 12 of 14 · 7.4 seats on average" in draft.text
     assert "15:30 — never ran in 14" in draft.text
-    assert "Sat — ran 7 of 7 · 20.0 seats avg" in draft.text
+    assert "Sat — ran 7 of 7 · 20.0 seats on average" in draft.text

@@ -12,6 +12,8 @@ from tests.unit.test_payments_service import (
     _vote,
 )
 
+from veloexpress_bot.polls.seatoffer import accepted_text
+
 
 @pytest.fixture
 async def db() -> AsyncIterator[SharedDatabase]:
@@ -62,7 +64,7 @@ async def test_order_labels_and_save_notice_use_actual_holders(db: SharedDatabas
         expected_digest=preview["digest"],
         admin_user_id=1,
     )
-    assert any("Now holds a seat" in r.text and "tg://user?id=110" in r.text for r in client.sent)
+    assert any("Now has a seat" in r.text and "tg://user?id=110" in r.text for r in client.sent)
 
 
 async def test_offer_tap_after_departure_closes_offer_without_a_scan(
@@ -186,7 +188,7 @@ async def test_cancellation_refund_does_not_retain_money_for_waitlist(db: Shared
     )
     await service.cancel_lift(service_date=date, lift_time="8:30", admin_user_id=1)
     report = await payments.cancellation_report(service_date=date, cancelled_lift_time="8:30")
-    assert report is not None and "Total to return: 15 GEL" in report
+    assert report is not None and "Total to return: 15 ₾" in report
 
 
 async def test_deadline_obligation_does_not_occupy_a_freed_seat(db: SharedDatabase) -> None:
@@ -320,7 +322,7 @@ async def test_seat_taken_after_the_deadline_on_a_locked_lift_can_be_paid(
         await _vote(service, poll, uid)
     await payments.offer_freed_seats(now=late + timedelta(minutes=1))
     offer = _offer_id((await _lift_sends(client))[-1])
-    assert await _answer(payments, offer, 110, accept=True) == "✅ The seat is yours."
+    assert await _answer(payments, offer, 110, accept=True) == accepted_text(15)
     day = await payments.day_bookings(date)
     assert day is not None
     assert "8:30" in day.running_lift_times

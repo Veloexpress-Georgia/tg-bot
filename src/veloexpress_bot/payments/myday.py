@@ -22,9 +22,9 @@ from datetime import date, datetime
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from veloexpress_bot.payment_copy import CASH_BUTTON
 from veloexpress_bot.payments.details import bank_details_text
-from veloexpress_bot.polls.render import EN_SHORT_MONTHS, SHORT_DAY_LABELS
+from veloexpress_bot.polls.render import SHORT_DAY_LABELS
+from veloexpress_bot.wording import day_label, money, plural
 
 MY_DAY_PARSE_MODE = "HTML"
 # Wire format, not a description: this prefix and the `guest:` callbacks are
@@ -133,7 +133,7 @@ def render_rider_card(view: RiderCardView) -> MyDayDraft:
     lines = [
         f"🚲 My rides · {_long_day_label(day.service_date)}",
         "",
-        f"{day.price_gel} GEL per seat",
+        f"{money(day.price_gel)} per seat",
         "",
     ]
     lines.extend(_row_line(row) for row in day.rows)
@@ -148,10 +148,17 @@ def _money_lines(day: RiderDayView) -> list[str]:
     if day.waitlisted:
         # Said plainly, because the board only shows it as a name in a list and a
         # rider who cannot see a seat should not be guessing whether they have one.
-        lines.extend(("", "⏳ You hold no seat yet — nothing to pay until one frees up."))
+        lines.extend(
+            (
+                "",
+                "⏳ You are on the waitlist. Nothing to pay now.",
+                "If a seat becomes free, the bot tags you in the group. "
+                "Tap ✅ I'm in to take it and pay, or 🙅 Skip.",
+            )
+        )
         if day.paid_gel:
             lines.append(
-                f"Paid {day.paid_gel} GEL reported. Arrange any refund with Misho; "
+                f"You reported {money(day.paid_gel)}. Ask Misho about a refund; "
                 "the bot does not return money."
             )
         return lines
@@ -162,16 +169,16 @@ def _money_lines(day: RiderDayView) -> list[str]:
         lines.extend(
             (
                 "",
-                f"Not filled yet: {pending}.",
-                f"Due now {day.due_now_gel} GEL · whole day {day.due_all_gel} GEL.",
+                f"Not running yet: {pending}.",
+                f"Due now {money(day.due_now_gel)} · whole day {money(day.due_all_gel)}.",
             )
         )
     elif day.due_all_gel:
-        lines.extend(("", f"Your total: {day.due_all_gel} GEL."))
+        lines.extend(("", f"Your total: {money(day.due_all_gel)}."))
     if day.paid_gel:
         gap = day.due_now_gel - day.paid_gel
         if gap > 0:
-            lines.append(f"Paid {day.paid_gel} GEL · {gap} GEL still due.")
+            lines.append(f"Paid {money(day.paid_gel)} · {money(gap)} still due.")
         elif gap < 0:
             prepaid = (
                 min(-gap, max(day.due_all_gel - day.due_now_gel, 0))
@@ -179,39 +186,27 @@ def _money_lines(day: RiderDayView) -> list[str]:
                 else 0
             )
             surplus = -gap - prepaid
-            parts = [f"Paid {day.paid_gel} GEL"]
+            parts = [f"Paid {money(day.paid_gel)}"]
             if prepaid:
-                parts.append(f"{prepaid} GEL prepaid")
+                parts.append(f"{money(prepaid)} prepaid")
             if surplus:
-                parts.append(f"{surplus} GEL above current bookings")
+                parts.append(f"{money(surplus)} extra")
             lines.append(" · ".join(parts) + ".")
             if surplus:
-                lines.append("Arrange any refund with Misho; the bot does not return money.")
+                lines.append("Ask Misho about a refund; the bot does not return money.")
         else:
-            lines.append(f"Paid {day.paid_gel} GEL ✅")
+            lines.append(f"Paid {money(day.paid_gel)} ✅")
     return lines
 
 
 def _row_line(row: RiderLiftRow) -> str:
     if row.waitlisted:
-        return f"{row.lift_time} — ⏳ waitlist, {_ordinal(row.waitlist_position)} in line"
-    parts = ["riding" if row.running else "not filled yet"]
+        return f"{row.lift_time} — ⏳ waitlist #{row.waitlist_position}"
+    parts = ["riding" if row.running else "not running yet"]
     if row.guests:
-        parts.append(f"{row.guests} guest" if row.guests == 1 else f"{row.guests} guests")
-    parts.append(
-        "full"
-        if row.seats_left <= 0
-        else "1 seat left"
-        if row.seats_left == 1
-        else f"{row.seats_left} seats left"
-    )
+        parts.append(plural(row.guests, "guest"))
+    parts.append("full" if row.seats_left <= 0 else f"{plural(row.seats_left, 'seat')} left")
     return f"{row.lift_time} — {' · '.join(parts)}"
-
-
-def _ordinal(position: int) -> str:
-    if 10 <= position % 100 <= 20:
-        return f"{position}th"
-    return f"{position}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(position % 10, 'th') }"
 
 
 def _keyboard(view: RiderCardView, day: RiderDayView) -> InlineKeyboardMarkup:
@@ -266,8 +261,8 @@ def render_rider_season(season: RiderSeason) -> MyDayDraft:
         lines.extend(
             (
                 "",
-                f"{season.total_days} days · {season.total_rides} lifts · "
-                f"{season.total_seats} seats · {season.total_gel} GEL",
+                f"{plural(season.total_days, 'day')} · {plural(season.total_rides, 'lift')} · "
+                f"{plural(season.total_seats, 'seat')} · {money(season.total_gel)}",
             )
         )
     return MyDayDraft(
@@ -282,10 +277,9 @@ def render_rider_season(season: RiderSeason) -> MyDayDraft:
 
 
 def _season_day_line(day: RiderSeasonDay) -> str:
-    seats = "1 seat" if day.seats == 1 else f"{day.seats} seats"
     return (
         f"{_long_day_label(day.service_date)} · {', '.join(day.lift_times)} · "
-        f"{seats} · {day.paid_gel} GEL"
+        f"{plural(day.seats, 'seat')} · {money(day.paid_gel)}"
     )
 
 
@@ -297,11 +291,11 @@ def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyb
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"💸 I paid · {due_now}",
+                    text=f"💸 I paid · {money(due_now)}",
                     callback_data=f"guest:pay:{encoded_date}",
                 ),
                 InlineKeyboardButton(
-                    text=f"{CASH_BUTTON} · {due_now}",
+                    text=f"💵 Cash · {money(due_now)}",
                     callback_data=f"guest:cash:{encoded_date}",
                 ),
             ]
@@ -312,11 +306,11 @@ def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyb
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"💸 I paid all · {due_all}",
+                    text=f"💸 I paid all · {money(due_all)}",
                     callback_data=f"guest:payall:{encoded_date}",
                 ),
                 InlineKeyboardButton(
-                    text=f"{CASH_BUTTON} all · {due_all}",
+                    text=f"💵 Cash, all · {money(due_all)}",
                     callback_data=f"guest:cashall:{encoded_date}",
                 ),
             ]
@@ -327,7 +321,8 @@ def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyb
                 rows.append(
                     [
                         InlineKeyboardButton(
-                            text="💸 Correct to transfer", callback_data=f"guest:pay:{encoded_date}"
+                            text="💸 I paid by transfer instead",
+                            callback_data=f"guest:pay:{encoded_date}",
                         )
                     ]
                 )
@@ -335,7 +330,8 @@ def _money_rows(day: RiderDayView, *, encoded_date: str) -> list[list[InlineKeyb
                 rows.append(
                     [
                         InlineKeyboardButton(
-                            text="💵 Correct to cash", callback_data=f"guest:cash:{encoded_date}"
+                            text="💵 I'll pay cash instead",
+                            callback_data=f"guest:cash:{encoded_date}",
                         )
                     ]
                 )
@@ -354,7 +350,7 @@ def _day_tabs(view: RiderCardView) -> list[list[InlineKeyboardButton]]:
         [
             InlineKeyboardButton(
                 text=(
-                    "✅ "
+                    "▸ "
                     if selected is not None and day.service_date == selected.service_date
                     else ""
                 )
@@ -460,8 +456,7 @@ def decode_guest_time(value: str) -> str:
 
 
 def _long_day_label(service_date: date) -> str:
-    day = SHORT_DAY_LABELS.get(service_date.weekday(), "Lift day")
-    return f"{day}, {service_date.day} {EN_SHORT_MONTHS[service_date.month]}"
+    return day_label(service_date)
 
 
 def _short_day_label(service_date: date) -> str:

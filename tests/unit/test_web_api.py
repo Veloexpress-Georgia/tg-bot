@@ -8,6 +8,7 @@ from tests.unit.test_payments_service import SharedDatabase, settings
 from veloexpress_api.app import create_app
 from veloexpress_api.auth import SessionSigner
 from veloexpress_api.settings import WebSettings
+from veloexpress_bot.wording import day_label
 
 SECRET = "s" * 40
 
@@ -60,7 +61,7 @@ async def test_unpaid_cancellation_preview_has_text_and_can_be_confirmed(
             assert response.status_code == 200
             preview = response.json()
             assert isinstance(preview["details"], str) and preview["details"]
-            assert day.isoformat() in preview["details"]
+            assert day_label(day) in preview["details"]
             assert ("lift 8:30" if action == "cancel_lift" else "all lifts") in preview["details"]
             assert (
                 "No payments have been reported"

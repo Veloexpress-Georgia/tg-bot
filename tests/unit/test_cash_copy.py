@@ -18,12 +18,7 @@ from veloexpress_bot.payments.render import (
     render_unpaid_deadline_notice,
 )
 from veloexpress_bot.polls.defaults import PaymentTerms, StartLocation
-from veloexpress_bot.polls.liftsignals import (
-    LiftEvent,
-    LiftSignal,
-    render_deadline_reminder,
-    render_lift_signal_notice,
-)
+from veloexpress_bot.polls.liftsignals import LiftSignal, render_deadline_reminder
 from veloexpress_bot.polls.render import render_poll_notice
 
 DAY = date(2026, 7, 18)
@@ -33,8 +28,6 @@ TERMS = PaymentTerms(price_gel=20, deadline_time="19:30")
 @pytest.mark.parametrize(
     "text",
     [
-        "\n".join(TERMS.rules()),
-        "\n".join(TERMS.pay_now()),
         render_poll_notice(StartLocation.VAKE, terms=TERMS),
         bank_details_text(),
         render_payments_board(
@@ -47,9 +40,6 @@ TERMS = PaymentTerms(price_gel=20, deadline_time="19:30")
             )
         ).text,
         render_deadline_reminder(DAY, (LiftSignal(DAY, "8:30", 5),), terms=TERMS),
-        render_lift_signal_notice(
-            "confirmed", terms=TERMS, events=(LiftEvent("confirmed", DAY, "8:30", 5),)
-        ),
         render_unpaid_deadline_notice(
             service_date=DAY, lifts=(UnpaidLift("8:30", 2),), riders=(), minimum=5
         ),
