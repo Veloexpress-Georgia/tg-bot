@@ -553,7 +553,7 @@ export const en = {
     nothingDue: 'Nothing to pay yet',
     paymentDetails: 'Payment details',
     priceNote: (price: string, all: string) =>
-      `${price} per seat. Pay now only for lifts with 5 riders. Whole day: ${all}.`,
+      `${price} per seat. Pay now for running lifts. Whole day: ${all}.`,
     undoMark: 'Undo my payment report',
     undoNote: 'Undoing depends on the deadline and on admin confirmation.',
     noBooking: 'You have no bookings for this day yet.',

@@ -30,6 +30,8 @@ from veloexpress_bot.payments.myday import RiderSeason
 from veloexpress_bot.polls.liftsignals import booking_deadline_at, lift_departure_at
 from veloexpress_bot.polls.render import PollDraft
 from veloexpress_bot.polls.seatoffer import (
+    ACCEPTED_COVERED_TEXT,
+    ACCEPTED_NOT_DUE_TEXT,
     DECLINED_TEXT,
     GONE_TEXT,
     NOT_FOR_YOU_TEXT,
@@ -1605,7 +1607,7 @@ async def _lift_sends(client: FakeTelegramClient) -> list[SentRecord]:
     return [
         record
         for record in client.sent
-        if record.thread_id == LIFT_THREAD and "Free seat" in record.text
+        if record.thread_id == LIFT_THREAD and "free seat" in record.text.casefold()
     ]
 
 
@@ -3789,3 +3791,37 @@ async def test_a_repost_that_reuses_an_older_batch_is_the_live_day(db: SharedDat
     )
     assert "cancelled" not in reply.text.lower()
     assert await _claim_row(db, 100) is not None
+
+
+async def test_accepting_does_not_ask_again_for_money_already_reported(db: SharedDatabase) -> None:
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    noon = _noon_before(saturday)
+    await _fill(poll_service, poll_id, 0, riders=11)
+    await payments.offer_freed_seats(now=noon)
+    # Rider 110 waits and reports a transfer in advance.
+    await payments.claim(
+        service_date=saturday,
+        telegram_user_id=110,
+        username=None,
+        full_name="Rider",
+        acknowledged=True,
+        include_pending=True,
+    )
+    day = await payments.day_bookings(saturday)
+    assert day is not None and day.paid_amount_by_user.get(110) == 15
+    await _vote(poll_service, poll_id, 100)
+    await payments.offer_freed_seats(now=noon + timedelta(minutes=1))
+    offer_id = _offer_id((await _lift_sends(client))[0])
+    assert await _answer(payments, offer_id, 110, accept=True) == ACCEPTED_COVERED_TEXT
+
+
+async def test_accepting_on_a_lift_below_five_asks_for_nothing_yet(db: SharedDatabase) -> None:
+    poll_service, payments, client, poll_id, saturday = await _setup(db)
+    noon = _noon_before(saturday)
+    await _fill(poll_service, poll_id, 0, riders=11)
+    await payments.offer_freed_seats(now=noon)
+    for user_id in range(100, 107):
+        await _vote(poll_service, poll_id, user_id)
+    await payments.offer_freed_seats(now=noon + timedelta(minutes=1))
+    offer_id = _offer_id((await _lift_sends(client))[0])
+    assert await _answer(payments, offer_id, 110, accept=True) == ACCEPTED_NOT_DUE_TEXT

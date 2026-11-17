@@ -36,6 +36,12 @@ NOT_FOR_YOU_TEXT = "This seat is offered to the riders tagged in the message."
 GONE_TEXT = "This seat is already taken."
 
 
+ACCEPTED_COVERED_TEXT = "✅ The seat is yours. Your reported payment already covers it."
+ACCEPTED_NOT_DUE_TEXT = (
+    "✅ The seat is yours. Nothing to pay until this lift reaches 5 booked seats."
+)
+
+
 def accepted_text(price_gel: int) -> str:
     """Taking the seat is what makes it billable, so the toast says so."""
     return (

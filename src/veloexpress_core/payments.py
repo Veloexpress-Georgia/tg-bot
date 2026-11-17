@@ -69,6 +69,8 @@ from veloexpress_bot.polls.liftsignals import (
 )
 from veloexpress_bot.polls.seating import WAITLIST_FREEZE_LEAD
 from veloexpress_bot.polls.seatoffer import (
+    ACCEPTED_COVERED_TEXT,
+    ACCEPTED_NOT_DUE_TEXT,
     DECLINED_TEXT,
     GONE_TEXT,
     NOT_FOR_YOU_TEXT,
@@ -1830,7 +1832,26 @@ class PaymentsService:
             accept,
             extra={"offer_id": offer_id, "telegram_user_id": telegram_user_id, "accepted": accept},
         )
-        return accepted_text(price) if accept else DECLINED_TEXT
+        if not accept:
+            return DECLINED_TEXT
+        return await self._accepted_reply(service_date, lift_time, telegram_user_id, price)
+
+    async def _accepted_reply(
+        self, service_date: date, lift_time: str, telegram_user_id: int, price: int
+    ) -> str:
+        """Ask for money only when the new seat actually makes some due."""
+        day = await self._day(service_date)
+        if day is None:
+            return accepted_text(price)
+        running = day.lift_times_by_user.get(telegram_user_id, ())
+        if lift_time not in running:
+            return ACCEPTED_NOT_DUE_TEXT
+        owed_seats = len(running) + sum(
+            day.guests_by_user_lift.get((telegram_user_id, time_), 0) for time_ in running
+        )
+        if day.paid_amount_by_user.get(telegram_user_id, 0) >= owed_seats * price:
+            return ACCEPTED_COVERED_TEXT
+        return accepted_text(price)
 
     def _seat_lock_key(self, service_date: date) -> str:
         return f"payment-day:{self._settings.app_env}:{self._require_chat_id()}:{service_date}"
